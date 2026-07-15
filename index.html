@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Black Hole Lab</title>
+  <link rel="icon" href="data:," />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
+    #view { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+    #view:active { cursor: grabbing; }
+    #panel {
+      position: fixed; top: 12px; left: 12px; width: 240px;
+      max-height: calc(100vh - 24px); overflow-y: auto;
+      background: rgba(10, 12, 20, 0.78); backdrop-filter: blur(6px);
+      border: 1px solid rgba(120, 140, 200, 0.25); border-radius: 10px;
+      padding: 14px 16px; color: #cdd6f4;
+      font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
+      user-select: none;
+    }
+    #panel button {
+      margin-top: 10px; width: 100%; padding: 5px 0;
+      background: rgba(60, 70, 110, 0.5); color: #dfe6ff;
+      border: 1px solid rgba(120, 140, 200, 0.35); border-radius: 6px;
+      font: 12px "Segoe UI", system-ui, sans-serif; cursor: pointer;
+    }
+    #panel button:hover { background: rgba(80, 92, 140, 0.6); }
+    #panel h1 { font-size: 15px; font-weight: 600; margin-bottom: 2px; color: #e8ecff; }
+    #panel .sub { font-size: 11px; color: #8a93b8; margin-bottom: 10px; }
+    #panel label { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; }
+    #panel input[type="range"] { width: 100%; accent-color: #ffb35c; }
+    #panel .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; }
+    #panel .readout { margin-top: 10px; font-size: 11px; color: #9aa5c8; font-variant-numeric: tabular-nums; }
+    #panel .hint { margin-top: 8px; font-size: 11px; color: #6b7394; }
+    #overlay {
+      position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+      background: #000; color: #aeb8dd; font: 14px "Segoe UI", system-ui, sans-serif;
+      z-index: 10;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="view"></canvas>
+
+  <div id="panel">
+    <h1>Black Hole Lab</h1>
+    <div class="sub">Slice 5 — mass, temperature &amp; tidal disruption</div>
+
+    <label>Black hole spin a <span id="spin-val"></span></label>
+    <input id="spin" type="range" min="0" max="0.998" step="0.002" value="0.7" />
+
+    <label>Black hole mass <span id="mass-val"></span> M☉</label>
+    <input id="mass" type="range" min="5" max="11" step="0.05" value="6.5" />
+
+    <label>Accretion rate <span id="mdot-val"></span> Edd</label>
+    <input id="mdot" type="range" min="-3" max="0" step="0.05" value="-1" />
+
+    <div class="check">
+      <input id="couple" type="checkbox" checked />
+      <label for="couple" style="margin:0">Disk T from mass &amp; ṁ (physical)</label>
+    </div>
+
+    <label>Field of view <span id="fov-val"></span>°</label>
+    <input id="fov" type="range" min="30" max="100" step="1" value="60" />
+
+    <label>Exposure <span id="exposure-val"></span></label>
+    <input id="exposure" type="range" min="0.2" max="4" step="0.05" value="1" />
+
+    <label>Bloom <span id="bloom-val"></span></label>
+    <input id="bloom" type="range" min="0" max="2" step="0.05" value="0.7" />
+
+    <label>Star density <span id="stars-val"></span></label>
+    <input id="stars" type="range" min="0.2" max="2" step="0.05" value="1" />
+
+    <label>Disk temperature <span id="disktemp-val"></span> K</label>
+    <input id="disktemp" type="range" min="3000" max="20000" step="100" value="8000" />
+
+    <label>Disk brightness <span id="diskbright-val"></span></label>
+    <input id="diskbright" type="range" min="0" max="3" step="0.05" value="1" />
+
+    <label>Disk size <span id="disksize-val"></span> M</label>
+    <input id="disksize" type="range" min="8" max="30" step="0.5" value="19" />
+
+    <label>Time speed <span id="timespeed-val"></span> M/s</label>
+    <input id="timespeed" type="range" min="0" max="120" step="1" value="30" />
+
+    <label>Jet power <span id="jetpower-val"></span></label>
+    <input id="jetpower" type="range" min="0" max="2" step="0.05" value="1" />
+
+    <div class="check">
+      <input id="lensing" type="checkbox" checked />
+      <label for="lensing" style="margin:0">Gravitational lensing</label>
+    </div>
+
+    <div class="check">
+      <input id="disk" type="checkbox" checked />
+      <label for="disk" style="margin:0">Accretion disk</label>
+    </div>
+
+    <div class="check">
+      <input id="doppler" type="checkbox" checked />
+      <label for="doppler" style="margin:0">Doppler &amp; redshift</label>
+    </div>
+
+    <div class="check">
+      <input id="stars-on" type="checkbox" checked />
+      <label for="stars-on" style="margin:0">Orbiting stars</label>
+    </div>
+
+    <div class="check">
+      <input id="gas-on" type="checkbox" checked />
+      <label for="gas-on" style="margin:0">Infalling gas</label>
+    </div>
+
+    <div class="check">
+      <input id="jets-on" type="checkbox" checked />
+      <label for="jets-on" style="margin:0">Relativistic jets</label>
+    </div>
+
+    <button id="tde">☄ Throw a star at it (TDE)</button>
+    <button id="pause">⏸ Pause</button>
+
+    <div class="readout" id="tde-readout"></div>
+    <div class="readout" id="phys-readout"></div>
+    <div class="readout" id="dist-readout"></div>
+    <div class="readout" id="fps-readout"></div>
+    <div class="hint">Drag to orbit · scroll to zoom</div>
+  </div>
+
+  <div id="overlay"><div id="overlay-text">Compiling geodesic integrator…</div></div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
