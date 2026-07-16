@@ -16,6 +16,7 @@ import {
 } from "./edu";
 import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
 import type { CameraBasis } from "./camera";
+import { splitMidpoint } from "./compare";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
@@ -97,7 +98,9 @@ export function drawCompareDivider(
   leftLabel: string,
   rightLabel: string
 ): void {
-  const mid = x0 + regionW / 2;
+  // Same midpoint the scene pass split on, from the same function — the
+  // divider has to land over the gutter, not merely near it.
+  const mid = splitMidpoint(x0, regionW);
   ctx.save();
   ctx.fillStyle = "rgba(6,8,14,0.95)";
   ctx.fillRect(mid - gutter / 2, 0, gutter, cssH);
