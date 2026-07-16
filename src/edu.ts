@@ -4,8 +4,8 @@
  * hud.ts, wiring in main.ts.
  */
 
-import { circUt, horizonRadius, ksMetric } from "./kerr";
-import type { V3 } from "./kerr";
+import { circUt, horizonRadius, ksMetric, traceRayKerr } from "./kerr";
+import type { Tetrad, V3, V4 } from "./kerr";
 import type { CameraBasis } from "./camera";
 
 export type { V3 } from "./kerr";
@@ -283,4 +283,126 @@ export function embeddingZAt(p: EmbeddingProfile, r: number): number {
   if (t >= n - 1) return p.z[n - 1];
   const i = Math.floor(t);
   return p.z[i] + (p.z[i + 1] - p.z[i]) * (t - i);
+}
+
+// ---------- shadow & photon-ring outline (6f) ----------
+
+/** The shadow's screen outline: where captured rays give way to escaping ones. */
+export interface ShadowEdge {
+  /** NDC (ndcX, ndcY) pairs at nAz equally spaced screen azimuths — a closed loop. */
+  pts: Float64Array;
+  /** False when the center ray isn't captured (the camera isn't aimed at the hole). */
+  valid: boolean;
+}
+
+/**
+ * The exact shadow edge for the current camera, spin and lens, one screen
+ * azimuth per yield. Rays launch precisely as the scene shader launches them
+ * (same static tetrad, same ndc → direction map), so the outline matches the
+ * rendered black disk by construction — no far-field or small-angle
+ * approximation, and the Kerr D-shape comes out for free. Along each azimuth
+ * the capture/escape transition is bracketed by geometric growth from ndc
+ * radius 0.05 and bisected 16 times, pinning it to a few 1e-6 in ndc.
+ *
+ * Cost is ~20 traces per azimuth, ~1000 per outline — and a single trace is
+ * the atomic unit of work, from ~0.1 ms in the easy cases to milliseconds for
+ * a near-critical ray winding thousands of RK4 steps at high spin (a full
+ * 48-azimuth outline measures ~66 ms at a = 0 and ~540 ms at a = 0.998).
+ * Hence the generator, yielding after every trace: main.ts drains it against
+ * a per-frame time budget; findShadowEdge drains it whole for tests and
+ * non-interactive callers, so both run the same code path. The yielded value
+ * is the azimuth in progress.
+ */
+export function* findShadowEdgeIncremental(
+  camPos: V3,
+  tet: Tetrad,
+  a: number,
+  tanHalfFov: number,
+  aspect: number,
+  nAz = 48,
+  opts: { camDist?: number } = {}
+): Generator<number, ShadowEdge> {
+  const camDist = opts.camDist ?? Math.hypot(camPos[0], camPos[1], camPos[2]);
+  const pts = new Float64Array(2 * nAz);
+  const m: V4 = [0, 0, 0, 0];
+  // An escaping ray must at least clear the camera's own radius; +40 keeps
+  // the verdict cheap without misreading a wide photon loop as an escape
+  // (traceRayKerr also demands outward motion at the escape radius).
+  const rEscape = camDist + 40;
+
+  const captured = (ndcX: number, ndcY: number): boolean => {
+    const vx = ndcX * tanHalfFov * aspect;
+    const vy = ndcY * tanHalfFov;
+    const inv = 1 / Math.hypot(vx, vy, 1);
+    for (let i = 0; i < 4; i++) {
+      m[i] =
+        vx * inv * tet.rightCov[i] +
+        vy * inv * tet.upCov[i] +
+        inv * tet.fwdCov[i] -
+        tet.uCov[i];
+    }
+    return !traceRayKerr(camPos, m, a, { rEscape }).escaped;
+  };
+
+  // The camera always looks at the origin in this app, so the center ray must
+  // fall in. If someone changes the camera model, degrade to "draw nothing"
+  // rather than bisecting azimuths that have no transition to find.
+  if (!captured(0, 0)) return { pts, valid: false };
+  yield 0;
+
+  // Fallback when an azimuth never escapes within s = 3 (the whole screen is
+  // shadow — possible right up against the hole with a narrow lens): reuse
+  // the neighbouring azimuth's radius, or the cap itself for the first one.
+  let sPrev = 3;
+  for (let k = 0; k < nAz; k++) {
+    const psi = (k / nAz) * Math.PI * 2;
+    const c = Math.cos(psi);
+    const sn = Math.sin(psi);
+    let lo = 0;
+    let hi = 0.05;
+    let bracketed = false;
+    while (hi <= 3) {
+      const cap = captured(hi * c, hi * sn);
+      yield k;
+      if (cap) {
+        lo = hi;
+        hi *= 1.6;
+      } else {
+        bracketed = true;
+        break;
+      }
+    }
+    let s = sPrev;
+    if (bracketed) {
+      for (let i = 0; i < 16; i++) {
+        const mid = 0.5 * (lo + hi);
+        const cap = captured(mid * c, mid * sn);
+        yield k;
+        if (cap) lo = mid;
+        else hi = mid;
+      }
+      s = 0.5 * (lo + hi);
+    }
+    sPrev = s;
+    pts[2 * k] = s * c;
+    pts[2 * k + 1] = s * sn;
+  }
+  return { pts, valid: true };
+}
+
+/** One-shot edge finder: drains the incremental generator to completion. */
+export function findShadowEdge(
+  camPos: V3,
+  tet: Tetrad,
+  a: number,
+  tanHalfFov: number,
+  aspect: number,
+  nAz = 48,
+  opts: { camDist?: number } = {}
+): ShadowEdge {
+  const gen = findShadowEdgeIncremental(camPos, tet, a, tanHalfFov, aspect, nAz, opts);
+  for (;;) {
+    const r = gen.next();
+    if (r.done) return r.value;
+  }
 }

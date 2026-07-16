@@ -306,6 +306,47 @@ describe("Kerr geodesic integrator", () => {
     expect(gRight).toBeGreaterThan(1.0); // +z side: approaching, blueshifted
     expect(gLeft).toBeLessThan(1.0); // -z side: receding, redshifted
   });
+
+  it("never reports escape for rays aimed inside the shadow", () => {
+    // Regression: a captured backward ray belongs to the outgoing family,
+    // which ingoing Kerr–Schild does not regularize — it hugs the horizon
+    // from outside with diverging covariant momentum. The runaway used to
+    // let some of these wander back out past rEscape as fake escapes,
+    // visible as spikes on the 6f shadow outline. Shadow angular radius from
+    // r = 25 is ~11.5 deg at a = 0 (asin(3√3·√(1−2/r)/r)); the prograde side
+    // shrinks with spin, so the spinning case stays within 4 deg.
+    const pos: V3 = [
+      25 * Math.cos(0.15) * Math.sin(0.6),
+      25 * Math.sin(0.15),
+      25 * Math.cos(0.15) * Math.cos(0.6),
+    ];
+    const fwd = pos.map((v) => -v / 25) as V3;
+    const rn = Math.hypot(fwd[2], fwd[0]);
+    const right: V3 = [-fwd[2] / rn, 0, fwd[0] / rn]; // cross(fwd, +y), unit
+    const up: V3 = [
+      right[1] * fwd[2] - right[2] * fwd[1],
+      right[2] * fwd[0] - right[0] * fwd[2],
+      right[0] * fwd[1] - right[1] * fwd[0],
+    ];
+    for (const [a, thetas] of [
+      [0, [0.02, 0.06, 0.1, 0.16]],
+      [0.9, [0.02, 0.04, 0.07]],
+    ] as Array<[number, number[]]>) {
+      const tet = buildStaticTetrad(pos, a, right, up, fwd);
+      for (const th of thetas) {
+        for (let k = 0; k < 8; k++) {
+          const psi = (k / 8) * Math.PI * 2 + 0.13; // off the symmetry planes
+          const d: V3 = [
+            Math.sin(th) * Math.cos(psi),
+            Math.sin(th) * Math.sin(psi),
+            Math.cos(th),
+          ];
+          const res = traceRayKerr(pos, launchM(tet, d), a, { rEscape: 65 });
+          expect(res.escaped).toBe(false);
+        }
+      }
+    }
+  });
 });
 
 describe("exact shift helpers", () => {

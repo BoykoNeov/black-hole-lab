@@ -14,7 +14,7 @@ import {
   projectToScreen,
   vEff,
 } from "./edu";
-import type { EmbeddingProfile, Projected, Trail, V3 } from "./edu";
+import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
 import type { CameraBasis } from "./camera";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
@@ -679,6 +679,124 @@ function drawOneTrail(
  * for it arrived along a bent geodesic and can sit somewhere else entirely —
  * on the far side of the shadow, or doubled. The UI copy says so too.
  */
+// ---------- shadow & photon-ring annotation (6f) ----------
+
+/**
+ * Every callout label (6f, extended by 6g) in one place, so copy edits never
+ * touch drawing code. Bodies are pre-wrapped into lines by hand: the HUD
+ * redraws each frame, and runtime word-wrap would measure and allocate.
+ */
+export const CALLOUT_COPY = {
+  shadow: {
+    title: "shadow edge",
+    body: [
+      "no light from inside ever reaches you —",
+      "about 2.6× the horizon's diameter",
+    ],
+  },
+  photonRing: {
+    title: "photon ring",
+    body: [
+      "light that orbited the hole before escaping",
+      "piles up in ever-thinner subrings",
+      "converging on this edge",
+    ],
+  },
+} as const;
+
+/**
+ * Leader-line label: a dot on the subject, a line out to a title + body text
+ * block at (tx, ty). The block grows away from the anchor horizontally (text
+ * is right-aligned when it sits left of its anchor) and downward from the
+ * title, so callers place ty above the anchor for labels that must sit
+ * outside what they point at. Shared by 6f and the 6g callout mode.
+ */
+export function drawCallout(
+  ctx: CanvasRenderingContext2D,
+  ax: number,
+  ay: number,
+  tx: number,
+  ty: number,
+  title: string,
+  body: readonly string[]
+): void {
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = HUD_STYLE.faint;
+  ctx.fillStyle = HUD_STYLE.accent;
+  ctx.beginPath();
+  ctx.arc(ax, ay, 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.lineTo(tx, ty);
+  ctx.stroke();
+  const rightward = tx >= ax;
+  ctx.textAlign = rightward ? "left" : "right";
+  ctx.textBaseline = "middle";
+  const ox = rightward ? 5 : -5;
+  ctx.font = HUD_STYLE.font;
+  ctx.fillText(title, tx + ox, ty);
+  ctx.font = HUD_STYLE.small;
+  ctx.fillStyle = HUD_STYLE.stroke;
+  for (let i = 0; i < body.length; i++) {
+    ctx.fillText(body[i], tx + ox, ty + 14 + i * 12);
+  }
+  ctx.restore();
+}
+
+/**
+ * The 6f outline with its two labels. The outline is edu.ts's bisected
+ * capture boundary, so it hugs the rendered black disk exactly; the labels
+ * anchor to the outline's own computed extremes rather than to a fitted
+ * circle, so at high spin they follow the flattened side of the D-shape.
+ * alpha < 1 marks a stale outline: the view moved and a replacement is being
+ * traced a few azimuths per frame.
+ */
+export function drawShadowEdge(
+  ctx: CanvasRenderingContext2D,
+  edge: ShadowEdge,
+  w: number,
+  h: number,
+  alpha: number
+): void {
+  const n = edge.pts.length / 2;
+  if (!edge.valid || n < 3) return;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = HUD_STYLE.accent;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 5]);
+  ctx.beginPath();
+  for (let k = 0; k <= n; k++) {
+    const i = (k % n) * 2;
+    const x = ((edge.pts[i] + 1) / 2) * w;
+    const y = ((1 - edge.pts[i + 1]) / 2) * h;
+    if (k === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.lineWidth = 1;
+
+  let iLeft = 0; // min ndcX — the outline's leftmost point
+  let iTop = 0; // max ndcY — its top
+  for (let k = 1; k < n; k++) {
+    if (edge.pts[k * 2] < edge.pts[iLeft * 2]) iLeft = k;
+    if (edge.pts[k * 2 + 1] > edge.pts[iTop * 2 + 1]) iTop = k;
+  }
+  const lx = ((edge.pts[iLeft * 2] + 1) / 2) * w;
+  const ly = ((1 - edge.pts[iLeft * 2 + 1]) / 2) * h;
+  drawCallout(ctx, lx, ly, lx - 30, ly + 46, CALLOUT_COPY.shadow.title, CALLOUT_COPY.shadow.body);
+
+  // The photon ring converges onto the shadow edge from OUTSIDE (the last
+  // subring is the boundary itself), so its anchor sits just off the outline.
+  const px = ((edge.pts[iTop * 2] + 1) / 2) * w;
+  const py = ((1 - edge.pts[iTop * 2 + 1]) / 2) * h - 5;
+  drawCallout(ctx, px, py, px + 48, py - 46, CALLOUT_COPY.photonRing.title, CALLOUT_COPY.photonRing.body);
+  ctx.restore();
+}
+
 export function drawTrails(
   ctx: CanvasRenderingContext2D,
   groups: TrailGroup[],

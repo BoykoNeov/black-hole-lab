@@ -498,6 +498,18 @@ export function traceRayKerr(
     mv = next.mv;
     const rNew = ksRadius(p, a);
     if (rNew < rHor) break; // fell through the horizon
+    // A captured backward ray belongs to the outgoing family, which ingoing
+    // Kerr–Schild does not regularize: it approaches the horizon from outside
+    // with covariant |mv| diverging like 1/(r - r+). RK4 eventually can't
+    // follow that; mv runs away just above the cull radius and the garbage
+    // trajectory can wander out past rEscape as a fake escape. Healthy rays
+    // keep |mv| below ~50 even winding at the a = 0.998 photon orbit, so a
+    // runaway this far past that can only be a captured ray — stop it as one,
+    // the job the GLSL's isnan/step-budget breaks do on the GPU. The negated
+    // comparison also catches NaN momenta.
+    if (!(mv[0] * mv[0] + mv[1] * mv[1] + mv[2] * mv[2] < 1e8) || !Number.isFinite(rNew)) {
+      break;
+    }
     if (rNew > rEscape) {
       const out = p[0] * mv[0] + p[1] * mv[1] + p[2] * mv[2];
       if (out > 0) {

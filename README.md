@@ -142,17 +142,25 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static
   camera and circular orbiters, equatorial Kerr effective potential and
-  Bardeen photon-orbit radii, and the equatorial embedding profile z(r) —
+  Bardeen photon-orbit radii, the equatorial embedding profile z(r) —
   Flamm's paraboloid at a = 0, integrated with the rim's inverse-square-root
-  singularity split off in closed form — and `Trail`, the fixed-size ring
-  buffer of (position, time) samples behind the orbit trails (pure, tested)
+  singularity split off in closed form — `Trail`, the fixed-size ring
+  buffer of (position, time) samples behind the orbit trails, and the
+  shadow-edge finder: the on-screen capture boundary, located by bisecting
+  CPU rays launched exactly as the shader launches them, exposed as a
+  generator yielding per trace so the render loop can drain it against a
+  time budget (pure, tested)
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
-  funnel, orbit trails; DOM-only, verified by eye)
+  funnel, orbit trails, dashed shadow outline with leader-line callouts and
+  all callout copy in one `CALLOUT_COPY` table; DOM-only, verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
-  asymmetry, conserved H/m_t/λ, exact face-on disk redshift √(1−3/r)
+  asymmetry, conserved H/m_t/λ, exact face-on disk redshift √(1−3/r),
+  rays aimed inside the shadow never misreported as escapes (the captured
+  backward ray hugs the horizon with diverging covariant momentum — the
+  integrator stops the runaway as a capture, as the GLSL's budget does)
 - `test/lens.test.ts` — checks against closed-form GR results (weak-field
   deflection 4M/b, critical impact parameter 3√3 M, photon-ring divergence)
 - `test/disk.test.ts` — checks orbit speed (ISCO at c/2), shift factor
@@ -169,7 +177,10 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   rates tied to the rendering tetrad's u^t, effective potential cross-checked
   against the circEL oracle (V_eff(r_c) = E with zero slope at every spin),
   Schwarzschild ISCO marginal stability, Bardeen photon-orbit radii, trail
-  ring-buffer overflow/thinning/clear
+  ring-buffer overflow/thinning/clear, shadow edge against the exact
+  Schwarzschild angular radius (sin θ = 3√3·√(1−2/r)/r, circular to 1e-6,
+  and at the app's widescreen aspect), the Kerr D-shape's x-offset with
+  y-symmetry, the looks-away valid=false path, and incremental ≡ one-shot
 - `test/tde.test.ts` — timelike stepper holds a circular orbit at its exact
   period (norm conserved), raise∘lower = id, disruption at r_t with a
   bound/unbound energy spread, bound debris loops out and falls back while
@@ -197,3 +208,7 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    - 6d embedding diagram — the funnel, with live matter riding it ✅
    - 6e orbit trails — star rings that fail to close (Lense–Thirring), gas
      spirals, the TDE stream and its fallback loops ✅
+   - 6f shadow & photon-ring annotation — the exact on-screen capture
+     boundary (bisected CPU geodesics launched as the shader launches them,
+     debounced and time-sliced across frames), labelled at its own computed
+     extremes so the D-shape carries its labels with it ✅

@@ -13,6 +13,8 @@ import {
   circRate,
   embeddingProfile,
   embeddingZAt,
+  findShadowEdge,
+  findShadowEdgeIncremental,
   photonOrbitRadius,
   projectToScreen,
   staticRate,
@@ -266,6 +268,104 @@ describe("embeddingZAt", () => {
   it("clamps outside the sampled range", () => {
     expect(embeddingZAt(p, 1)).toBe(p.z[0]);
     expect(embeddingZAt(p, 1e6)).toBe(p.z[p.z.length - 1]);
+  });
+});
+
+describe("findShadowEdge", () => {
+  it("matches the exact Schwarzschild shadow angle and stays circular", () => {
+    // camera exactly as main.ts builds it, generic (off-axis) orientation
+    const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
+    const tet = buildStaticTetrad(b.pos, 0, b.right, b.up, b.fwd);
+    const edge = findShadowEdge(b.pos, tet, 0, T, 1, 8);
+    expect(edge.valid).toBe(true);
+    // For a static observer at r in Schwarzschild the shadow's angular radius
+    // obeys sin θ = 3√3 √(1 − 2/r) / r — exact GR, no approximation — and the
+    // launch map ties θ to ndc radius s by tan θ = s·tan(fov/2) at aspect 1.
+    const sinTh = (3 * Math.sqrt(3) * Math.sqrt(1 - 2 / 25)) / 25;
+    const sExp = Math.tan(Math.asin(sinTh)) / T;
+    const radii: number[] = [];
+    for (let k = 0; k < 8; k++) {
+      radii.push(Math.hypot(edge.pts[2 * k], edge.pts[2 * k + 1]));
+    }
+    for (const s of radii) expect(Math.abs(s - sExp)).toBeLessThan(1e-3);
+    // Circularity: the spacetime is spherically symmetric, so any azimuthal
+    // spread is numerical — a skewed tetrad or a wrong aspect/ndc map.
+    for (const s of radii) expect(Math.abs(s - radii[0])).toBeLessThan(1e-6);
+  });
+
+  it("keeps the true angular size at a widescreen aspect", () => {
+    // Regression for the app's actual aspect: the outline is an ellipse in
+    // ndc (x is squeezed by 1/aspect) but the launch ANGLE at each azimuth is
+    // fixed by tan θ = tanHalfFov · hypot(ndcX·aspect, ndcY). Before the
+    // integrator's runaway guard, azimuths off the symmetry planes collapsed
+    // to spurious inner "escapes" and the outline grew spikes.
+    const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
+    const tet = buildStaticTetrad(b.pos, 0, b.right, b.up, b.fwd);
+    const aspect = 1.6;
+    const nAz = 48;
+    const edge = findShadowEdge(b.pos, tet, 0, T, aspect, nAz);
+    expect(edge.valid).toBe(true);
+    const sinTh = (3 * Math.sqrt(3) * Math.sqrt(1 - 2 / 25)) / 25;
+    const sExp = Math.tan(Math.asin(sinTh)) / T;
+    for (let k = 0; k < nAz; k++) {
+      const q = Math.hypot(edge.pts[2 * k] * aspect, edge.pts[2 * k + 1]);
+      expect(Math.abs(q - sExp)).toBeLessThan(1e-3);
+    }
+  });
+
+  it("shows the Kerr D-shape: offset in x, still symmetric in y", () => {
+    const nAz = 24;
+    const b = cameraBasis({ yaw: 0.6, pitch: 0, dist: 25, fovDeg: 60 });
+    const tet = buildStaticTetrad(b.pos, 0.9, b.right, b.up, b.fwd);
+    const edge = findShadowEdge(b.pos, tet, 0.9, T, 1, nAz);
+    expect(edge.valid).toBe(true);
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    let mean = 0;
+    for (let k = 0; k < nAz; k++) {
+      const x = edge.pts[2 * k];
+      const y = edge.pts[2 * k + 1];
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+      mean += Math.hypot(x, y) / nAz;
+    }
+    // Frame dragging squeezes the prograde side toward the hole and pushes
+    // the retrograde side out, sliding the whole outline off screen center...
+    expect(Math.abs(Math.abs(minX) - Math.abs(maxX))).toBeGreaterThan(0.1 * mean);
+    // ...while an equatorial view keeps it mirror-symmetric top-to-bottom.
+    expect(Math.abs(maxY + minY)).toBeLessThan(0.02 * mean);
+  });
+
+  it("degrades to valid=false when the camera looks away from the hole", () => {
+    const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
+    const back: V3 = [-b.fwd[0], -b.fwd[1], -b.fwd[2]];
+    const tet = buildStaticTetrad(b.pos, 0.5, b.right, b.up, back);
+    const edge = findShadowEdge(b.pos, tet, 0.5, T, 1, 8);
+    expect(edge.valid).toBe(false);
+  });
+
+  it("computes the same outline incrementally as in one shot", () => {
+    // findShadowEdge drains the generator today, but this pins the contract:
+    // main.ts's sliced path and the tests must never diverge
+    const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
+    const tet = buildStaticTetrad(b.pos, 0.7, b.right, b.up, b.fwd);
+    const oneShot = findShadowEdge(b.pos, tet, 0.7, T, 1, 8);
+    const gen = findShadowEdgeIncremental(b.pos, tet, 0.7, T, 1, 8);
+    let yields = 0;
+    let r = gen.next();
+    while (!r.done) {
+      yields++;
+      r = gen.next();
+    }
+    // one yield per trace — the slicing granularity main.ts's budget relies
+    // on: at least the 16 bisection traces for each of the 8 azimuths
+    expect(yields).toBeGreaterThan(8 * 16);
+    expect(r.value.valid).toBe(true);
+    expect(Array.from(r.value.pts)).toEqual(Array.from(oneShot.pts));
   });
 });
 

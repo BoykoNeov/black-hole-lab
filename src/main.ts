@@ -32,6 +32,7 @@ import {
   drawClocks,
   drawEmbedding,
   drawPotential,
+  drawShadowEdge,
   drawTrails,
   initHud,
   resizeHud,
@@ -45,8 +46,10 @@ import {
   Trail,
   circRate,
   embeddingProfile,
+  findShadowEdgeIncremental,
   staticRate,
   type EmbeddingProfile,
+  type ShadowEdge,
 } from "./edu";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
@@ -177,6 +180,7 @@ const params = {
   fpsLimit: FPS_UNLIMITED, // redraw cap; FPS_UNLIMITED = don't limit
   // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
   eduCallouts: false,
+  eduShadow: false,
   eduTrails: false,
   eduClocks: false,
   eduPotential: false,
@@ -248,6 +252,41 @@ const trailGroups: TrailGroup[] = [
   { trails: tdeTrails, group: EMBED_TDE, on: true },
 ];
 const trailScratch: V3 = [0, 0, 0];
+
+// Shadow & photon-ring outline (6f). One outline is ~1000 CPU geodesic traces
+// — tens of milliseconds, never affordable inside a frame. So it recomputes
+// only when (spin, view, lens, aspect) changes, only once the camera has been
+// still for the debounce window, and even then a few azimuths per frame; the
+// previous outline stays up, faded, until the new one lands.
+let shadowEdge: ShadowEdge | null = null;
+let shadowGen: Generator<number, ShadowEdge> | null = null;
+/** True while shadowEdge is the outline OF the current view (not mid-drag). */
+let shadowFresh = false;
+let shadowDeadline = 0; // performance.now() before which no recompute may start
+let shadowSpin = NaN;
+let shadowYaw = NaN;
+let shadowPitch = NaN;
+let shadowDist = NaN;
+let shadowFov = NaN;
+let shadowAspect = NaN;
+const SHADOW_DEBOUNCE_MS = 250;
+/**
+ * Per-frame tracing budget. The generator yields per geodesic trace, because
+ * that is the atomic unit of work: a near-critical ray at a = 0.998 can wind
+ * thousands of RK4 steps (milliseconds by itself), so any fixed count of
+ * azimuths — or even of traces — per frame would blow the HUD's ~3 ms rule
+ * exactly where the outline is most interesting. A full outline is ~66 ms of
+ * tracing at a = 0 and ~540 ms at a = 0.998, spread across frames.
+ *
+ * The budget scales with the measured frame interval (floor 3 ms, cap 30 ms):
+ * at 60 fps that is the strict 3 ms rule, while on a machine already crawling
+ * at software-rendering speeds a fixed 3 ms would stretch one outline over
+ * minutes of wall time — there, a slice that is still ≤ ~6% of the frame it
+ * rides on hitches nothing and finishes in seconds.
+ */
+const SHADOW_MS_FLOOR = 3;
+const SHADOW_MS_CAP = 30;
+const SHADOW_FRAME_FRACTION = 0.15;
 
 const rng = mulberry32(0x5eed);
 const gasBlobs: GasBlob[] = [];
@@ -340,6 +379,7 @@ bindCheckbox("stars-on", (v) => (params.stars = v));
 bindCheckbox("gas-on", (v) => (params.gas = v));
 bindCheckbox("jets-on", (v) => (params.jets = v));
 bindCheckbox("edu-callouts", (v) => (params.eduCallouts = v));
+bindCheckbox("edu-shadow", (v) => (params.eduShadow = v));
 bindCheckbox("edu-trails", (v) => (params.eduTrails = v));
 bindCheckbox("edu-clocks", (v) => (params.eduClocks = v));
 bindCheckbox("edu-potential", (v) => (params.eduPotential = v));
@@ -527,6 +567,54 @@ function render() {
   // static-observer tetrad at the camera (covariant legs for the shader)
   const tet = buildStaticTetrad(basis.pos, params.spin, basis.right, basis.up, basis.fwd);
 
+  // 6f shadow outline: debounced, then traced a few azimuths per frame so the
+  // GL loop never waits on it. Callout mode (6g) shares the computed edge.
+  const shadowOn = params.eduShadow || params.eduCallouts;
+  if (shadowOn) {
+    const aspect = canvas.clientWidth / canvas.clientHeight;
+    if (
+      params.spin !== shadowSpin ||
+      camera.yaw !== shadowYaw ||
+      camera.pitch !== shadowPitch ||
+      camera.dist !== shadowDist ||
+      camera.fovDeg !== shadowFov ||
+      aspect !== shadowAspect
+    ) {
+      shadowSpin = params.spin;
+      shadowYaw = camera.yaw;
+      shadowPitch = camera.pitch;
+      shadowDist = camera.dist;
+      shadowFov = camera.fovDeg;
+      shadowAspect = aspect;
+      shadowGen = null; // any in-flight outline belongs to a stale view
+      shadowFresh = false;
+      // a drag changes the view every frame, pushing the deadline ahead of
+      // itself — tracing starts once the camera has been still this long
+      shadowDeadline = now0 + SHADOW_DEBOUNCE_MS;
+    }
+    if (!shadowGen && !shadowFresh && now0 >= shadowDeadline) {
+      shadowGen = findShadowEdgeIncremental(basis.pos, tet, params.spin, tanHalfFov, aspect);
+    }
+    if (shadowGen) {
+      const budget = Math.min(
+        Math.max(dtReal * 1000 * SHADOW_FRAME_FRACTION, SHADOW_MS_FLOOR),
+        SHADOW_MS_CAP
+      );
+      // at least one trace per frame so even a very slow machine progresses
+      const t0 = performance.now();
+      for (;;) {
+        const step = shadowGen.next();
+        if (step.done) {
+          shadowEdge = step.value;
+          shadowGen = null;
+          shadowFresh = true;
+          break;
+        }
+        if (performance.now() - t0 >= budget) break;
+      }
+    }
+  }
+
   // Scene -> HDR target
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo.fb);
   gl.viewport(0, 0, sceneFbo.w, sceneFbo.h);
@@ -659,6 +747,19 @@ function render() {
       canvas.clientWidth,
       canvas.clientHeight,
       simT
+    );
+  }
+
+  if (shadowOn && shadowEdge && shadowEdge.valid) {
+    // Faded while stale: the view moved on and the replacement outline is
+    // still being traced. valid=false (camera not aimed at the hole — can't
+    // happen with the current orbit camera) degrades to drawing nothing.
+    drawShadowEdge(
+      hudCtx,
+      shadowEdge,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      shadowFresh ? 1 : 0.35
     );
   }
 
