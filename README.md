@@ -69,10 +69,15 @@ The star and all 32 debris elements move on exact timelike Kerr geodesics
 integrated with the same Kerr–Schild Hamiltonian RK4 as the photons (only
 the mass shell differs: m·m = -1, with E = -m_t conserved exactly), so the
 stream's stretch, the relativistic capture of the deepest debris, and the
-horizon crossing all emerge from the integration. Two knobs are honestly
-artistic and documented in the code: the debris energy spread is widened
-so first fallback takes ~1600 M instead of months, and the flare's display
-brightness is sqrt-compressed (the readout reports the physical ratio).
+horizon crossing all emerge from the integration. Three knobs are honestly
+artistic and documented in the code: the debris energy spread is widened so
+first fallback takes ~600 M instead of months (Kepler ties that period to
+how far the tail loops out, so it also keeps the stream in frame), the split
+is biased ~70/30 toward bound rather than the physical 50/50 so the fallback
+stays populated, and the flare's display brightness is sqrt-compressed (the
+readout reports the physical ratio). The bound tail loops out and fades as
+the disk eats it — it never plunges the horizon; only the Hills-mass
+swallowed-whole case crosses.
 
 Slice 3 adds matter in motion, all sampled **along the same per-pixel
 geodesics** rather than as unlensed billboards, so every piece of matter is

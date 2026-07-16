@@ -14,6 +14,7 @@ import {
 import { mulberry32 } from "../src/matter";
 import { tidalRadiusM } from "../src/astro";
 import {
+  BOUND_FRAC,
   DEBRIS_COUNT,
   FALLBACK_T0,
   aliveBodies,
@@ -127,6 +128,18 @@ describe("tidal disruption event", () => {
     const Es = st.bodies.map((b) => -b.mt);
     expect(Math.min(...Es)).toBeLessThan(0.99);
     expect(Math.max(...Es)).toBeGreaterThan(1.01);
+  });
+
+  it("biases the split toward the bound tail rather than the physical 50/50", () => {
+    const a = 0;
+    const st = launchTde(1e7, a);
+    runUntil(st, a, 1, 1500, (s) => s.phase === "debris");
+    const frac = st.bodies.filter((b) => -b.mt < 1).length / DEBRIS_COUNT;
+    expect(frac).toBeGreaterThan(0.55); // the bias is real, not the physical 50/50
+    // The star's own E lands within O(1/r0^2) of 1 rather than exactly on it,
+    // sliding the E = 1 crossing a couple of elements off the geometric split.
+    // BOUND_FRAC is a display choice, so bracket it rather than pin a count.
+    expect(Math.abs(frac - BOUND_FRAC)).toBeLessThan(0.12);
   });
 
   it("bound debris loops out and falls back while unbound debris escapes", () => {

@@ -19,11 +19,13 @@
  * bound tail's return, and capture across the horizon all emerge from the
  * integration.
  *
- * One knob is honestly artistic: the debris energy spread. The physical
- * spread dE = (Mstar/M)^(1/3) / r_t would put the most-bound debris on an orbit
- * of ~1e5-1e6 M — real TDE flares take months. We widen the spread so the
- * first fallback lands FALLBACK_T0 after disruption (minutes of wall clock
- * at the default time speed). Slice 6 will label such knobs explicitly.
+ * Two knobs here are honestly artistic. The debris energy spread: the
+ * physical spread dE = (Mstar/M)^(1/3) / r_t would put the most-bound debris on
+ * an orbit of ~1e5-1e6 M — real TDE flares take months. We widen the spread
+ * so the first fallback lands FALLBACK_T0 after disruption (minutes of wall
+ * clock at the default time speed). And BOUND_FRAC: a real disruption leaves
+ * half the debris unbound, which simply exits the scene forever, so we bias
+ * the split toward the tail that comes back.
  */
 
 import {
@@ -50,8 +52,21 @@ export const TDE_MAX = DEBRIS_COUNT;
  * its angular momentum and loops back instead of being captured outright
  * (speed-scaling the debris also scales L, and the relativistic capture
  * threshold for marginally bound orbits sits at L = 4).
+ *
+ * Kepler ties this to how far the stream flies: period T0 means semi-major
+ * axis (T0/2pi)^(2/3), so the most-bound element's apocenter grows with it.
+ * At 600 the bound tail tops out near 29 M — just past the default camera's
+ * ~26 M framing, so the fallback stays watchable instead of leaving the
+ * scene. Slowing the flare down means widening that loop; use the time-speed
+ * slider to watch it in slow motion instead, which leaves the orbit alone.
  */
-export const FALLBACK_T0 = 1600;
+export const FALLBACK_T0 = 600;
+/**
+ * Fraction of the debris left bound. A real disruption is ~50/50 and the
+ * unbound half leaves for good; we bias toward the returning tail so the
+ * fallback — the part actually worth watching — stays populated. Artistic.
+ */
+export const BOUND_FRAC = 0.7;
 const STAR_TEMP_K = 5800;
 
 export interface TdeBody {
@@ -198,7 +213,12 @@ export function spawnDebris(
   const dE = 1 / (2 * aMB); // most-bound element: E = 1 - dE
   const out: TdeBody[] = [];
   for (let i = 0; i < DEBRIS_COUNT; i++) {
-    const s = -1 + (2 * i) / (DEBRIS_COUNT - 1);
+    // s in [-1, 1] straddles E = 1, but piecewise so BOUND_FRAC of the
+    // elements land on the bound side. Both ends still reach |s| = 1, which
+    // keeps the most-bound element's period exactly FALLBACK_T0.
+    const f = i / (DEBRIS_COUNT - 1);
+    const s =
+      f < BOUND_FRAC ? (f - BOUND_FRAC) / BOUND_FRAC : (f - BOUND_FRAC) / (1 - BOUND_FRAC);
     const scale = 1 + (s * dE) / v2; // dE_newt = v dv
     const vi: V3 = [
       v[0] * scale + 0.012 * (rand() - 0.5),
