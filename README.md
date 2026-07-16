@@ -187,10 +187,12 @@ ISCO and photon-orbit markers, which run 6.00 M and 3.00 M at a = 0 against
 drops L_isco from 3.46 to 1.39, so the same L now buys an orbit far outside the
 ISCO rather than sitting on it.
 
-Known limitation: with both insets on, compare mode needs roughly a 1400 px
-window before the funnel stops overlapping the potential panel's legend — the
-split halves the room each pair has, where single view only overlaps below
-~840 px. The grips are the remedy and already work per-side; the panels were
+Known limitation: with both insets on at scale 1, compare mode needs a 1435 px
+window before the funnel stops overlapping the potential panel's legend (the
+two just touch there; measured against the layout, and the panel column's own
+width sets it — the split leaves each half `(clientWidth − 264 − 3) / 2`, and
+the pair needs 584 of it). The split halves the room each pair has, where
+single view only overlaps below ~840 px. The grips are the remedy and already work per-side; the panels were
 not auto-shrunk to fit, because a clamp that silently overrides a drag is worse
 than an overlap the user can see and fix.
 
