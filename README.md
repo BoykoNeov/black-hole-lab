@@ -107,6 +107,36 @@ hundreds of M — larger than the scene — and keying the fade there dissolved
 the whole stream in open space, nowhere near anything that could eat it,
 before it could ever fall back.
 
+Slice 7 turns the spin slider into a controlled experiment. "Compare:
+Schwarzschild vs Kerr" splits the frame and renders a = 0 into the left
+viewport and the slider's a into the right, from one camera, at one mass and
+accretion rate, with the stars on identical orbital elements — so every
+difference on screen is the spin's doing and nothing else's. Neither half is
+faked or mirrored: the scene pass simply runs twice with a different a, so
+both are the full per-pixel geodesic renderer. It is close to free, because
+splitting halves each viewport's width and the two draws cover the pixel count
+the single one did — the cost is per pixel marched, not per draw. (The scene
+shader takes ray directions from `gl_FragCoord` relative to `uViewOrigin`, not
+the window, which is the only change the split needed.) The one thing NOT held
+constant besides a is the disk's peak temperature, and deliberately: the ISCO
+is where spin enters the temperature profile, so the two halves really are at
+different temperatures, and at a = 0.998 the right-hand disk goes *dimmer* in
+visible light because its hotter inner edge has moved into the X-ray.
+
+What compare mode does not show, it hides rather than fakes. Gas and TDE
+debris are stateful — advected and integrated frame to frame at one spin — so
+they cannot honestly appear on a side whose spin they were never stepped in,
+and they are dropped from both halves (with the TDE's flare, which would
+otherwise light both disks up to 8× from an event neither half draws). Stars
+survive the split because `starState` is a closed form in (t, a): the same
+scratch arrays are simply refilled at the other spin between the two draws.
+The slice-6 overlays are off while comparing, in two groups: trails, the
+shadow outline and the callouts project world points onto the *whole frame*
+and would stripe across both halves at positions belonging to neither; the
+clocks and the two insets each describe a single spacetime, and the potential
+inset is anchored where it would sit on the Schwarzschild half while plotting
+the Kerr side's curve. 7b and 7c bring them back per-side.
+
 Slice 3 adds matter in motion, all sampled **along the same per-pixel
 geodesics** rather than as unlensed billboards, so every piece of matter is
 gravitationally lensed for free (a star passing behind the hole smears into
@@ -165,6 +195,13 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `src/matter.ts` — star orbits + gas inspiral/plunge state, and `gasRates`,
   the (daz/dt, dR/dt) the shader sweeps backward to draw the sheared gas arcs
   (pure, tested)
+- `src/compare.ts` — slice 7's split-screen layout math: the two equal
+  viewports, their midpoint, and each side's name (pure, tested). Both halves
+  get exactly the same width — the gutter absorbs the odd pixel — because
+  unequal widths mean unequal aspect ratios, which would scale the two shadows
+  differently and forge a difference the spin didn't make. The split starts
+  clear of the control panel: splitting the whole frame puts the left half's
+  hole at w/4, behind the panel on any window under ~1000 px
 - `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
@@ -203,6 +240,11 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   `pointer-events: none` so camera drags reach the GL canvas, which means the
   grips can never receive a pointer event themselves — main.ts hit-tests them
   and claims the pointerdown through `attachControls`' `claimed` hook
+- `test/compare.test.ts` — checks the two viewports come out exactly equal in
+  width across odd/even frames, gutters and offsets, that they fill the region
+  and stay symmetric about its midpoint, that they are integers even after a
+  fractional quality scale, and that both halves' centres clear the panel
+  column at a narrow window (the regression the x0 offset exists for)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -269,3 +311,9 @@ an Einstein ring; the far-side jet base wraps around the shadow):
      the beamed and receding disk lobes, the far side wrapped over the pole,
      the jets, the ISCO edge, and an Einstein-ring detector that fires when a
      star passes nearly behind the hole ✅
+7. **Schwarzschild vs Kerr** — a split-screen mode that renders a = 0 and the
+   spin slider's a side by side from one camera, so frame dragging shows up by
+   contrast rather than by explanation
+   - 7a split-screen scene: two viewports, one FBO, per-side spin ✅
+   - 7b shadow outline traced per side (the circle vs the D-shape) — TODO
+   - 7c potential & embedding insets carrying both spins' curves — TODO

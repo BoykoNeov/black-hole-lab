@@ -32,7 +32,8 @@ export const FS_SCENE = `#version 300 es
 precision highp float;
 precision highp int;
 
-uniform vec2 uResolution;
+uniform vec2 uResolution;    // size of the viewport being drawn, NOT the frame
+uniform vec2 uViewOrigin;    // its lower-left corner; (0,0) unless comparing
 uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
@@ -539,7 +540,9 @@ void flatCrossing(vec3 p, vec3 v, inout vec3 accum, inout float thru) {
 }
 
 void main() {
-  vec2 ndc = (gl_FragCoord.xy / uResolution) * 2.0 - 1.0;
+  // Relative to the viewport, not the window: compare mode draws this pass
+  // twice into one target, and gl_FragCoord stays in window coordinates.
+  vec2 ndc = ((gl_FragCoord.xy - uViewOrigin) / uResolution) * 2.0 - 1.0;
   float aspect = uResolution.x / uResolution.y;
   vec3 v = normalize(uCamFwd
                      + ndc.x * uTanHalfFov * aspect * uCamRight

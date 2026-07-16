@@ -22,6 +22,13 @@ import {
 } from "./tde";
 import { compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
 import {
+  COMPARE_GUTTER,
+  COMPARE_SPIN_LEFT,
+  sideLabel,
+  splitViewports,
+  type Rect,
+} from "./compare";
+import {
   EMBED_GAS,
   EMBED_H,
   EMBED_STARS,
@@ -35,6 +42,7 @@ import {
   clearHud,
   drawCallouts,
   drawClocks,
+  drawCompareDivider,
   drawEmbedding,
   drawPotential,
   drawResizeGrip,
@@ -84,6 +92,7 @@ import {
   spawnGasBlob,
   starState,
   stepGasBlob,
+  type SpinCtx,
 } from "./matter";
 
 const BLOOM_LEVELS = 5;
@@ -200,6 +209,8 @@ const params = {
   coupleT: true, // disk temperature/brightness follow mass & mdot
   quality: "high" as Quality, // must match the selected <option> in index.html
   fpsLimit: FPS_UNLIMITED, // redraw cap; FPS_UNLIMITED = don't limit
+  // Split-screen a = 0 vs a = spin (slice 7)
+  compare: false,
   // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
   eduCallouts: false,
   eduShadow: false,
@@ -222,6 +233,17 @@ const params = {
 const INSET_MARGIN = 12;
 /** Left edge of the potential inset: clear of the opaque #panel column. */
 const POT_X = 280;
+/**
+ * Left edge of compare mode's split region, in CSS px — clear of the same
+ * opaque column, so neither half's hole ends up behind it. Measured once
+ * rather than hardcoded like POT_X: #panel is position:fixed at a fixed
+ * width, so its right edge never moves with the window, and reading it keeps
+ * this honest if the panel's CSS width ever changes.
+ */
+const COMPARE_X0 =
+  Math.ceil(
+    (document.getElementById("panel") as HTMLDivElement).getBoundingClientRect().right
+  ) + INSET_MARGIN;
 /** Grab forgiveness outside the grip's corner, in CSS px. */
 const GRIP_HALO = 5;
 
@@ -255,6 +277,13 @@ function insetBox(id: InsetId): { x: number; y: number; gx: number; gy: number }
 }
 
 function insetShown(id: InsetId): boolean {
+  // Compare mode hides both. Each plots exactly one spacetime, and the
+  // potential inset is anchored at POT_X — which lands on the LEFT
+  // (Schwarzschild) half while plotting the spin slider's a: a caption sitting
+  // on the wrong picture. Gated here rather than at the draw sites so the
+  // grips stop hit-testing too; an invisible inset that still eats camera
+  // drags would be worse than a wrong one. 7c gives them both curves.
+  if (params.compare) return false;
   return id === "pot" ? params.eduPotential : params.eduEmbed;
 }
 
@@ -314,6 +343,8 @@ canvas.addEventListener("pointerup", (e) => {
 let simT = 0; // simulation (coordinate) time in M
 let paused = false;
 let spinCtx = makeSpinCtx(params.spin);
+// Compare mode's left half never moves off a = 0, so its context is built once.
+const spinCtxSchw = makeSpinCtx(COMPARE_SPIN_LEFT);
 let tde: TdeState | null = null;
 
 // Proper time carried by each clock in the 6b overlay. The far-away
@@ -532,6 +563,13 @@ bindCheckbox("sky-on", (v) => {
   // Star density only has a sky to populate (same pattern as couple/disktemp).
   (document.getElementById("stars") as HTMLInputElement).disabled = !v;
 });
+bindCheckbox("compare", (v) => {
+  params.compare = v;
+  // Nothing to throw a star into while comparing: the debris is single-spin
+  // and hidden, so the button would look broken (same pattern as couple
+  // disabling the disk-temperature slider it overrides).
+  (document.getElementById("tde") as HTMLButtonElement).disabled = v;
+});
 bindCheckbox("edu-callouts", (v) => (params.eduCallouts = v));
 bindCheckbox("edu-shadow", (v) => (params.eduShadow = v));
 bindCheckbox("edu-trails", (v) => (params.eduTrails = v));
@@ -600,6 +638,19 @@ function render() {
   const basis = cameraBasis(camera);
   const tanHalfFov = Math.tan((camera.fovDeg * Math.PI) / 360);
 
+  // Compare mode's two viewports, in scene-target px. Everything about the
+  // split is declared in CSS px and scaled into the target by the same
+  // factor, so the HUD's divider lands exactly over the gap the scene pass
+  // leaves. The region starts clear of the control panel (see COMPARE_X0).
+  const glScaleX = sceneFbo.w / Math.max(canvas.clientWidth, 1);
+  const compareW = Math.max(canvas.clientWidth - COMPARE_X0, 0);
+  const split = splitViewports(
+    COMPARE_X0 * glScaleX,
+    compareW * glScaleX,
+    sceneFbo.h,
+    COMPARE_GUTTER * glScaleX
+  );
+
   // advance simulation time and the gas blobs
   const now0 = performance.now();
   const dtReal = Math.min((now0 - lastFrameT) * 0.001, 0.1);
@@ -644,29 +695,46 @@ function render() {
   // ---- mass -> temperature coupling and the TDE flare ----
   const massMsun = 10 ** params.massExp;
   const mdotBase = 10 ** params.mdotExp;
+  // Compare mode drops the flare with the debris that causes it. Keeping it
+  // would not break the comparison — mdot is one of the quantities held
+  // identical, so both halves would flare together — but it would light both
+  // disks by up to 8x from an event neither half is drawing, which reads as
+  // the spin doing something absurd. The event itself keeps running; turning
+  // compare off rejoins it wherever it has got to.
   const flare =
-    tde && tde.tDisrupt !== null
+    tde && tde.tDisrupt !== null && !params.compare
       ? flareMdotEdd(simT - tde.tDisrupt, FALLBACK_T0, flarePeakEdd(massMsun))
       : 0;
   const mdotTot = mdotBase + flare;
-  // T ∝ mdot^(1/4) M^(-1/4) (isco)^(-3/4); luminosity ∝ mdot (display-capped)
-  const effTempK = params.coupleT
-    ? peakTempK(massMsun, mdotTot, spinCtx.isco)
-    : params.diskTempK;
+  // T ∝ mdot^(1/4) M^(-1/4) (isco)^(-3/4); luminosity ∝ mdot (display-capped).
+  // Per side in compare mode, and not merely for tidiness: the ISCO is where
+  // the spin enters the temperature profile, so the two halves of the frame
+  // are genuinely at different peak temperatures. Forcing the Schwarzschild
+  // side to the Kerr side's temperature would hide the coupling that slice 5
+  // exists to show — the hotter inner edge IS part of what spin does.
+  const effTempFor = (ctx: SpinCtx) =>
+    params.coupleT ? peakTempK(massMsun, mdotTot, ctx.isco) : params.diskTempK;
+  const effTempK = effTempFor(spinCtx);
   // flare brightness is sqrt-compressed for display (the true bolometric
   // jump is ~mdot and would clip the whole frame to white); the readout
   // reports the physical ratio
   const effBright = params.diskBright * Math.min(Math.sqrt(mdotTot / mdotBase), 8);
 
-  // star + gas uniforms for this frame (positions plus exact 4-velocities)
-  for (let i = 0; i < STAR_COUNT; i++) {
-    const s = starState(STAR_ORBITS[i], simT, params.spin);
-    starPosArr.set(s.pos, i * 4);
-    starPosArr[i * 4 + 3] = STAR_ORBITS[i].radius;
-    starUArr.set(s.u, i * 4);
-    starTempArr[i] = STAR_ORBITS[i].tempK;
-    if (stepped) starTrails[i].push(s.pos, simT);
-  }
+  // star uniforms for this frame (positions plus exact 4-velocities).
+  // starState is a closed form in (t, a), so compare mode just fills the same
+  // scratch arrays again at the other spin between the two draws — no second
+  // copy of the star state has to exist anywhere. Called per side from the
+  // scene pass below; trails are recorded on the spin slider's side only.
+  const fillStars = (spin: number, pushTrails: boolean) => {
+    for (let i = 0; i < STAR_COUNT; i++) {
+      const s = starState(STAR_ORBITS[i], simT, spin);
+      starPosArr.set(s.pos, i * 4);
+      starPosArr[i * 4 + 3] = STAR_ORBITS[i].radius;
+      starUArr.set(s.u, i * 4);
+      starTempArr[i] = STAR_ORBITS[i].tempK;
+      if (pushTrails) starTrails[i].push(s.pos, simT);
+    }
+  };
   for (let i = 0; i < GAS_COUNT; i++) {
     const b = gasBlobs[i];
     const [gx, gz] = gasPosXZ(b, spinCtx);
@@ -729,7 +797,10 @@ function render() {
 
   // 6f shadow outline: debounced, then traced a few azimuths per frame so the
   // GL loop never waits on it. Callout mode (6g) shares the computed edge.
-  const shadowOn = params.eduShadow || params.eduCallouts;
+  // Suppressed while comparing: the outline is traced for one spin against
+  // one full-frame projection, and both halves would get the same curve in
+  // the same place — right on neither. 7b traces it per side.
+  const shadowOn = (params.eduShadow || params.eduCallouts) && !params.compare;
   if (shadowOn) {
     const aspect = canvas.clientWidth / canvas.clientHeight;
     if (
@@ -777,48 +848,81 @@ function render() {
 
   // Scene -> HDR target
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo.fb);
-  gl.viewport(0, 0, sceneFbo.w, sceneFbo.h);
   gl.useProgram(progScene);
-  gl.uniform2f(U(progScene, "uResolution"), sceneFbo.w, sceneFbo.h);
-  gl.uniform3fv(U(progScene, "uCamPos"), basis.pos);
-  gl.uniform3fv(U(progScene, "uCamRight"), basis.right);
-  gl.uniform3fv(U(progScene, "uCamUp"), basis.up);
-  gl.uniform3fv(U(progScene, "uCamFwd"), basis.fwd);
-  gl.uniform1f(U(progScene, "uTanHalfFov"), tanHalfFov);
-  gl.uniform1f(U(progScene, "uLensing"), params.lensing ? 1 : 0);
-  gl.uniform1f(U(progScene, "uStarDensity"), params.starDensity);
-  gl.uniform1f(U(progScene, "uSkyOn"), params.sky ? 1 : 0);
-  gl.uniform1f(U(progScene, "uSimT"), simT);
-  gl.uniform1f(U(progScene, "uDiskOn"), params.disk ? 1 : 0);
-  gl.uniform1f(U(progScene, "uDoppler"), params.doppler ? 1 : 0);
-  gl.uniform1f(U(progScene, "uDiskBright"), effBright);
-  gl.uniform1f(U(progScene, "uDiskTempK"), effTempK);
-  gl.uniform1f(U(progScene, "uDiskOuter"), params.diskOuter);
-  gl.uniform1f(U(progScene, "uStarsOn"), params.stars ? 1 : 0);
-  gl.uniform1f(U(progScene, "uGasOn"), params.gas ? 1 : 0);
-  gl.uniform1f(U(progScene, "uJetsOn"), params.jets ? 1 : 0);
-  gl.uniform1f(U(progScene, "uJetPower"), params.jetPower);
-  gl.uniform1i(U(progScene, "uMaxSteps"), QUALITY[params.quality].maxSteps);
-  gl.uniform1f(U(progScene, "uStepScale"), QUALITY[params.quality].stepScale);
-  gl.uniform1f(U(progScene, "uSpin"), params.spin);
-  gl.uniform1f(U(progScene, "uHorizon"), spinCtx.rHor);
-  gl.uniform1f(U(progScene, "uIsco"), spinCtx.isco);
-  gl.uniform1f(U(progScene, "uTNorm"), tempNorm(spinCtx.isco));
-  gl.uniform4fv(U(progScene, "uTetT"), tet.uCov);
-  gl.uniform4fv(U(progScene, "uTetR"), tet.rightCov);
-  gl.uniform4fv(U(progScene, "uTetU"), tet.upCov);
-  gl.uniform4fv(U(progScene, "uTetF"), tet.fwdCov);
-  gl.uniform4fv(U(progScene, "uStarPos"), starPosArr);
-  gl.uniform4fv(U(progScene, "uStarU"), starUArr);
-  gl.uniform1fv(U(progScene, "uStarTemp"), starTempArr);
-  gl.uniform4fv(U(progScene, "uGas"), gasArr);
-  gl.uniform4fv(U(progScene, "uGasU"), gasUArr);
-  gl.uniform4fv(U(progScene, "uGasArc"), gasArcArr);
-  gl.uniform1i(U(progScene, "uTdeN"), tdeN);
-  gl.uniform4fv(U(progScene, "uTdePos"), tdePosArr);
-  gl.uniform4fv(U(progScene, "uTdeU"), tdeUArr);
-  gl.uniform4fv(U(progScene, "uTdeInfo"), tdeInfoArr);
-  drawQuad();
+
+  /**
+   * One spacetime into one viewport. Called once normally, twice in compare
+   * mode (a = 0 into the left half, the slider's a into the right) — the
+   * whole per-pixel march is per-side, so nothing about the geometry has to
+   * be faked: each half is the renderer the lab has always been, aimed at a
+   * different a. Splitting halves each viewport's width, so the two draws
+   * cover the same pixel count as the single one and cost the same.
+   *
+   * Gas and the TDE are stateful (advected and integrated frame to frame at
+   * one spin), so they cannot honestly appear on a side whose spin they were
+   * not stepped in — compare mode turns them off on BOTH halves rather than
+   * show one side matter the other cannot have.
+   */
+  const drawSide = (view: Rect, spin: number, ctx: SpinCtx, sliderSide: boolean) => {
+    fillStars(spin, stepped && sliderSide);
+    const tet = buildStaticTetrad(basis.pos, spin, basis.right, basis.up, basis.fwd);
+    const matterOn = !params.compare;
+    gl.viewport(view.x, view.y, view.w, view.h);
+    gl.uniform2f(U(progScene, "uResolution"), view.w, view.h);
+    gl.uniform2f(U(progScene, "uViewOrigin"), view.x, view.y);
+    gl.uniform3fv(U(progScene, "uCamPos"), basis.pos);
+    gl.uniform3fv(U(progScene, "uCamRight"), basis.right);
+    gl.uniform3fv(U(progScene, "uCamUp"), basis.up);
+    gl.uniform3fv(U(progScene, "uCamFwd"), basis.fwd);
+    gl.uniform1f(U(progScene, "uTanHalfFov"), tanHalfFov);
+    gl.uniform1f(U(progScene, "uLensing"), params.lensing ? 1 : 0);
+    gl.uniform1f(U(progScene, "uStarDensity"), params.starDensity);
+    gl.uniform1f(U(progScene, "uSkyOn"), params.sky ? 1 : 0);
+    gl.uniform1f(U(progScene, "uSimT"), simT);
+    gl.uniform1f(U(progScene, "uDiskOn"), params.disk ? 1 : 0);
+    gl.uniform1f(U(progScene, "uDoppler"), params.doppler ? 1 : 0);
+    gl.uniform1f(U(progScene, "uDiskBright"), effBright);
+    gl.uniform1f(U(progScene, "uDiskTempK"), effTempFor(ctx));
+    gl.uniform1f(U(progScene, "uDiskOuter"), params.diskOuter);
+    gl.uniform1f(U(progScene, "uStarsOn"), params.stars ? 1 : 0);
+    gl.uniform1f(U(progScene, "uGasOn"), params.gas && matterOn ? 1 : 0);
+    gl.uniform1f(U(progScene, "uJetsOn"), params.jets ? 1 : 0);
+    gl.uniform1f(U(progScene, "uJetPower"), params.jetPower);
+    gl.uniform1i(U(progScene, "uMaxSteps"), QUALITY[params.quality].maxSteps);
+    gl.uniform1f(U(progScene, "uStepScale"), QUALITY[params.quality].stepScale);
+    gl.uniform1f(U(progScene, "uSpin"), spin);
+    gl.uniform1f(U(progScene, "uHorizon"), ctx.rHor);
+    gl.uniform1f(U(progScene, "uIsco"), ctx.isco);
+    gl.uniform1f(U(progScene, "uTNorm"), tempNorm(ctx.isco));
+    gl.uniform4fv(U(progScene, "uTetT"), tet.uCov);
+    gl.uniform4fv(U(progScene, "uTetR"), tet.rightCov);
+    gl.uniform4fv(U(progScene, "uTetU"), tet.upCov);
+    gl.uniform4fv(U(progScene, "uTetF"), tet.fwdCov);
+    gl.uniform4fv(U(progScene, "uStarPos"), starPosArr);
+    gl.uniform4fv(U(progScene, "uStarU"), starUArr);
+    gl.uniform1fv(U(progScene, "uStarTemp"), starTempArr);
+    gl.uniform4fv(U(progScene, "uGas"), gasArr);
+    gl.uniform4fv(U(progScene, "uGasU"), gasUArr);
+    gl.uniform4fv(U(progScene, "uGasArc"), gasArcArr);
+    gl.uniform1i(U(progScene, "uTdeN"), matterOn ? tdeN : 0);
+    gl.uniform4fv(U(progScene, "uTdePos"), tdePosArr);
+    gl.uniform4fv(U(progScene, "uTdeU"), tdeUArr);
+    gl.uniform4fv(U(progScene, "uTdeInfo"), tdeInfoArr);
+    drawQuad();
+  };
+
+  if (params.compare) {
+    // Neither viewport covers the gutter, so without this it would keep
+    // whatever the last frame left there. Clears the whole target (clear is
+    // bounded by the scissor box, not the viewport) before the two draws
+    // overwrite everything either side of the gap.
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    drawSide(split.left, COMPARE_SPIN_LEFT, spinCtxSchw, false);
+    drawSide(split.right, params.spin, spinCtx, true);
+  } else {
+    drawSide({ x: 0, y: 0, w: sceneFbo.w, h: sceneFbo.h }, params.spin, spinCtx, true);
+  }
 
   // dev diagnostics (?dbg): scan render targets for NaN/Inf/negatives —
   // a single bad scene pixel smears black blocks through the bloom pyramid
@@ -894,7 +998,22 @@ function render() {
   // HUD overlay (2D canvas above the GL frame; more overlays arrive in 6f–6g)
   clearHud(hudCtx, canvas.clientWidth, canvas.clientHeight);
 
-  if (params.eduTrails) {
+  if (params.compare) {
+    drawCompareDivider(
+      hudCtx,
+      COMPARE_X0,
+      compareW,
+      canvas.clientHeight,
+      COMPARE_GUTTER,
+      sideLabel(COMPARE_SPIN_LEFT),
+      sideLabel(params.spin)
+    );
+  }
+
+  // Trails and callouts project world points onto the whole frame, so in
+  // compare mode they would stripe across both halves at positions that
+  // belong to neither viewport. Off until they are made per-side.
+  if (params.eduTrails && !params.compare) {
     // Drawn first: the insets below are opaque panels and should cover them.
     // A group's trails go away with its matter, so the overlay never shows a
     // path for something the frame behind it isn't drawing.
@@ -961,7 +1080,7 @@ function render() {
     );
   }
 
-  if (params.eduCallouts) {
+  if (params.eduCallouts && !params.compare) {
     // Which way round the disk's beaming runs, from the same prograde
     // convention the scene shader's disk shift is built on.
     const azRight = Math.atan2(basis.right[2], basis.right[0]);
@@ -1072,7 +1191,9 @@ function render() {
 
   if (nCallouts > 0) drawCallouts(hudCtx, calloutItems, nCallouts, cw, ch);
 
-  if (params.eduClocks) {
+  // Also single-spin: every rate below is evaluated at params.spin, which is
+  // only the right half's story.
+  if (params.eduClocks && !params.compare) {
     clockEntries[0].tau = simT;
     clockEntries[1].tau = tauCam;
     clockEntries[1].rate = staticRate(basis.pos, params.spin);
@@ -1092,7 +1213,7 @@ function render() {
     drawClocks(hudCtx, clockEntries, nClocks, canvas.clientWidth - 12, 12);
   }
 
-  if (params.eduPotential) {
+  if (insetShown("pot")) {
     // E = -m_t is the conserved energy the geodesic integrator carries, so
     // the dots are exact — they can only slide along r.
     const nMark = Math.min(tdeBodies.length, POT_MARK_MAX);
@@ -1120,7 +1241,7 @@ function render() {
     drawResizeGrip(hudCtx, box.gx, box.gy, spec.inX, spec.inY, gripHot === "pot");
   }
 
-  if (params.eduEmbed) {
+  if (insetShown("embed")) {
     // Only bodies the renderer is actually showing get a dot, so the funnel
     // never disagrees with the frame behind it.
     let nDots = 0;
@@ -1201,7 +1322,10 @@ function render() {
   let tdeText =
     `sun-like star: r_t = ${tidalRadiusM(massMsun).toFixed(1)} M   ` +
     `Hills mass ${fmtSci(hills)} M☉`;
-  if (tde) {
+  if (params.compare && tde) {
+    // Don't narrate a flare the frame is neither drawing nor lit by.
+    tdeText = `TDE hidden while comparing — debris is stepped at one spin`;
+  } else if (tde) {
     if (tde.phase === "infall") {
       tdeText = `star infalling: r = ${ksRadius(tde.bodies[0].p, params.spin).toFixed(1)} M, r_t = ${tde.rt.toFixed(1)} M`;
     } else if (tde.phase === "swallowed") {

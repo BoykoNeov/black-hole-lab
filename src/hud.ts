@@ -79,6 +79,55 @@ export function clearHud(
   ctx.clearRect(0, 0, cssW, cssH);
 }
 
+/**
+ * Compare mode's seam (slice 7): fills the gutter the scene pass left between
+ * the two viewports and names the spacetime on each side.
+ *
+ * The divider is opaque on purpose. Bloom runs over the scene target as one
+ * image and knows nothing about the seam, so a bright disk lobe on one side
+ * throws a little glow across into the other; covering the gutter hides where
+ * that bleed is worst and stops the two frames reading as one wide image.
+ */
+export function drawCompareDivider(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  regionW: number,
+  cssH: number,
+  gutter: number,
+  leftLabel: string,
+  rightLabel: string
+): void {
+  const mid = x0 + regionW / 2;
+  ctx.save();
+  ctx.fillStyle = "rgba(6,8,14,0.95)";
+  ctx.fillRect(mid - gutter / 2, 0, gutter, cssH);
+  ctx.strokeStyle = HUD_STYLE.panelBorder;
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(mid, 0);
+  ctx.lineTo(mid, cssH);
+  ctx.stroke();
+
+  ctx.font = HUD_STYLE.font;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  const chip = (text: string, cx: number) => {
+    const w = ctx.measureText(text).width + 18;
+    const h = 22;
+    const x = cx - w / 2;
+    ctx.fillStyle = HUD_STYLE.panelBg;
+    panelPath(ctx, x, 10, w, h, 5);
+    ctx.fill();
+    ctx.strokeStyle = HUD_STYLE.panelBorder;
+    ctx.stroke();
+    ctx.fillStyle = HUD_STYLE.stroke;
+    ctx.fillText(text, cx, 10 + h / 2);
+  };
+  chip(leftLabel, x0 + regionW / 4);
+  chip(rightLabel, x0 + (regionW * 3) / 4);
+  ctx.restore();
+}
+
 export interface ClockEntry {
   label: string;
   /** Accumulated proper time in M. */
