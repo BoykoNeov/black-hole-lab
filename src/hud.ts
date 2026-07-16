@@ -984,10 +984,15 @@ export function drawCallout(
  *
  * alpha < 1 marks a stale outline: the view moved and a replacement is being
  * traced a few azimuths per frame.
+ *
+ * (x0, w) is the strip of the HUD the outline's NDC spans — the whole width
+ * normally, one half of the split when comparing (slice 7b), which is why the
+ * edge's NDC cannot simply be mapped over the canvas.
  */
 export function drawShadowOutline(
   ctx: CanvasRenderingContext2D,
   edge: ShadowEdge,
+  x0: number,
   w: number,
   h: number,
   alpha: number
@@ -1002,7 +1007,7 @@ export function drawShadowOutline(
   ctx.beginPath();
   for (let k = 0; k <= n; k++) {
     const i = (k % n) * 2;
-    const x = ((edge.pts[i] + 1) / 2) * w;
+    const x = x0 + ((edge.pts[i] + 1) / 2) * w;
     const y = ((1 - edge.pts[i + 1]) / 2) * h;
     if (k === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -1066,11 +1071,17 @@ function calloutWidth(ctx: CanvasRenderingContext2D, key: CalloutKey): number {
  * the control panel, and off each other. Blocks only ever move DOWN to resolve
  * an overlap, so `items` is a priority order — emit the labels that most need
  * their natural position first.
+ *
+ * (x0, w) bounds the strip the text may slide within: the whole canvas
+ * normally, but one half of the split when comparing (slice 7b). A label
+ * describing one spacetime must not drift across the divider and appear to
+ * caption the other — the strip is what stops it.
  */
 export function drawCallouts(
   ctx: CanvasRenderingContext2D,
   items: CalloutItem[],
   n: number,
+  x0: number,
   w: number,
   h: number
 ): void {
@@ -1086,8 +1097,9 @@ export function drawCallouts(
     // Slide the text horizontally into the free strip. The bounds allow for
     // the block hanging off either side of tx, because drawCallout picks the
     // side back off tx vs ax and the slide itself can cross the anchor.
-    const lo = CALLOUT_SAFE_X + bw + 5;
-    const hi = w - CALLOUT_EDGE_PAD - bw - 5;
+    // The panel only bites when the strip starts left of it (single view).
+    const lo = Math.max(CALLOUT_SAFE_X, x0) + bw + 5;
+    const hi = x0 + w - CALLOUT_EDGE_PAD - bw - 5;
     const tx = Math.min(Math.max(it.ax + it.dx, lo), Math.max(hi, lo));
     const bl = tx >= it.ax ? tx + 5 : tx - 5 - bw;
 

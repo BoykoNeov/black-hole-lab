@@ -411,17 +411,43 @@ const trailScratch: V3 = [0, 0, 0];
 // only when (spin, view, lens, aspect) changes, only once the camera has been
 // still for the debounce window, and even then a few azimuths per frame; the
 // previous outline stays up, faded, until the new one lands.
-let shadowEdge: ShadowEdge | null = null;
-let shadowGen: Generator<number, ShadowEdge> | null = null;
-/** True while shadowEdge is the outline OF the current view (not mid-drag). */
-let shadowFresh = false;
-let shadowDeadline = 0; // performance.now() before which no recompute may start
-let shadowSpin = NaN;
-let shadowYaw = NaN;
-let shadowPitch = NaN;
-let shadowDist = NaN;
-let shadowFov = NaN;
-let shadowAspect = NaN;
+interface ShadowTrace {
+  edge: ShadowEdge | null;
+  gen: Generator<number, ShadowEdge> | null;
+  /** True while `edge` is the outline OF the current view (not mid-drag). */
+  fresh: boolean;
+  /** performance.now() before which no recompute may start. */
+  deadline: number;
+  // The view this outline was traced for; any change invalidates it. NaN so
+  // that the first frame always misses.
+  spin: number;
+  yaw: number;
+  pitch: number;
+  dist: number;
+  fov: number;
+  aspect: number;
+}
+const makeShadowTrace = (): ShadowTrace => ({
+  edge: null,
+  gen: null,
+  fresh: false,
+  deadline: 0,
+  spin: NaN,
+  yaw: NaN,
+  pitch: NaN,
+  dist: NaN,
+  fov: NaN,
+  aspect: NaN,
+});
+/**
+ * Two outlines, because compare mode (7b) shows two spacetimes at once and an
+ * outline is only ever the boundary of ONE of them. Each carries its own view
+ * key: the halves differ in spin AND in aspect, so neither the trace nor the
+ * cache can be shared. In single view only the slider's is used, and
+ * shadowSchw stays untouched and empty.
+ */
+const shadowSlider = makeShadowTrace();
+const shadowSchw = makeShadowTrace();
 const SHADOW_DEBOUNCE_MS = 250;
 /**
  * Per-frame tracing budget. The generator yields per geodesic trace, because
@@ -650,6 +676,18 @@ function render() {
     sceneFbo.h,
     COMPARE_GUTTER * glScaleX
   );
+  // The viewport the slider's spin is rendered into: the whole target
+  // normally, the right half when comparing. Named because 6f's outline has
+  // to be traced at the aspect this rect gives the shader and drawn back over
+  // this rect, and in compare mode that is no longer the frame.
+  const viewSlider: Rect = params.compare
+    ? split.right
+    : { x: 0, y: 0, w: sceneFbo.w, h: sceneFbo.h };
+  /** A scene viewport mapped back into the CSS px the HUD draws in. Taken off
+   *  the GL rect rather than re-split in CSS: an independent CSS split rounds
+   *  differently and would sit up to a pixel off the disk it traces. */
+  const hudX = (v: Rect) => v.x / glScaleX;
+  const hudW = (v: Rect) => v.w / glScaleX;
 
   // advance simulation time and the gas blobs
   const now0 = performance.now();
@@ -792,58 +830,76 @@ function render() {
   }
   if (tdeN > 0) tdeInfoArr[(tdeN - 1) * 4 + 2] = 0;
 
-  // static-observer tetrad at the camera (covariant legs for the shader)
-  const tet = buildStaticTetrad(basis.pos, params.spin, basis.right, basis.up, basis.fwd);
-
   // 6f shadow outline: debounced, then traced a few azimuths per frame so the
   // GL loop never waits on it. Callout mode (6g) shares the computed edge.
-  // Suppressed while comparing: the outline is traced for one spin against
-  // one full-frame projection, and both halves would get the same curve in
-  // the same place — right on neither. 7b traces it per side.
-  const shadowOn = (params.eduShadow || params.eduCallouts) && !params.compare;
-  if (shadowOn) {
-    const aspect = canvas.clientWidth / canvas.clientHeight;
+  // The 6g layer is suppressed while comparing, so there it is the shadow
+  // checkbox alone that asks for an outline.
+  const shadowOn = params.eduShadow || (params.eduCallouts && !params.compare);
+
+  /**
+   * Advance one side's outline, for up to `budgetMs`; returns the ms spent.
+   *
+   * The aspect must be the one the SHADER used (uResolution's w/h for this
+   * side's viewport), not the canvas's — in compare mode a half is far from
+   * the frame's shape, and an outline traced at the wrong aspect would be a
+   * perfectly-computed boundary of a view nobody is looking at.
+   */
+  const pumpShadow = (st: ShadowTrace, spin: number, view: Rect, budgetMs: number): number => {
+    const aspect = view.w / view.h;
     if (
-      params.spin !== shadowSpin ||
-      camera.yaw !== shadowYaw ||
-      camera.pitch !== shadowPitch ||
-      camera.dist !== shadowDist ||
-      camera.fovDeg !== shadowFov ||
-      aspect !== shadowAspect
+      spin !== st.spin ||
+      camera.yaw !== st.yaw ||
+      camera.pitch !== st.pitch ||
+      camera.dist !== st.dist ||
+      camera.fovDeg !== st.fov ||
+      aspect !== st.aspect
     ) {
-      shadowSpin = params.spin;
-      shadowYaw = camera.yaw;
-      shadowPitch = camera.pitch;
-      shadowDist = camera.dist;
-      shadowFov = camera.fovDeg;
-      shadowAspect = aspect;
-      shadowGen = null; // any in-flight outline belongs to a stale view
-      shadowFresh = false;
+      st.spin = spin;
+      st.yaw = camera.yaw;
+      st.pitch = camera.pitch;
+      st.dist = camera.dist;
+      st.fov = camera.fovDeg;
+      st.aspect = aspect;
+      st.gen = null; // any in-flight outline belongs to a stale view
+      st.fresh = false;
       // a drag changes the view every frame, pushing the deadline ahead of
       // itself — tracing starts once the camera has been still this long
-      shadowDeadline = now0 + SHADOW_DEBOUNCE_MS;
+      st.deadline = now0 + SHADOW_DEBOUNCE_MS;
     }
-    if (!shadowGen && !shadowFresh && now0 >= shadowDeadline) {
-      shadowGen = findShadowEdgeIncremental(basis.pos, tet, params.spin, tanHalfFov, aspect);
+    if (!st.gen && !st.fresh && now0 >= st.deadline) {
+      // the static tetrad is spin-dependent, so each side launches its rays
+      // from its own — this is the camera as ITS spacetime sees it
+      const tet = buildStaticTetrad(basis.pos, spin, basis.right, basis.up, basis.fwd);
+      st.gen = findShadowEdgeIncremental(basis.pos, tet, spin, tanHalfFov, aspect);
     }
-    if (shadowGen) {
-      const budget = Math.min(
-        Math.max(dtReal * 1000 * SHADOW_FRAME_FRACTION, SHADOW_MS_FLOOR),
-        SHADOW_MS_CAP
-      );
-      // at least one trace per frame so even a very slow machine progresses
-      const t0 = performance.now();
-      for (;;) {
-        const step = shadowGen.next();
-        if (step.done) {
-          shadowEdge = step.value;
-          shadowGen = null;
-          shadowFresh = true;
-          break;
-        }
-        if (performance.now() - t0 >= budget) break;
+    if (!st.gen) return 0;
+    // at least one trace per frame so even a very slow machine progresses
+    const t0 = performance.now();
+    for (;;) {
+      const step = st.gen.next();
+      if (step.done) {
+        st.edge = step.value;
+        st.gen = null;
+        st.fresh = true;
+        break;
       }
+      if (performance.now() - t0 >= budgetMs) break;
     }
+    return performance.now() - t0;
+  };
+
+  if (shadowOn) {
+    // ONE frame's tracing budget, shared: compare mode has two outlines to
+    // find but no more of the frame to spend than single view ever had. The
+    // a = 0 side goes first because it is much the cheaper (~66 ms of tracing
+    // against ~540 ms at a = 0.998), so it lands within a few frames and then
+    // yields the whole budget to the slider's side.
+    let budget = Math.min(
+      Math.max(dtReal * 1000 * SHADOW_FRAME_FRACTION, SHADOW_MS_FLOOR),
+      SHADOW_MS_CAP
+    );
+    if (params.compare) budget -= pumpShadow(shadowSchw, COMPARE_SPIN_LEFT, split.left, budget);
+    pumpShadow(shadowSlider, params.spin, viewSlider, budget);
   }
 
   // Scene -> HDR target
@@ -919,10 +975,8 @@ function render() {
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     drawSide(split.left, COMPARE_SPIN_LEFT, spinCtxSchw, false);
-    drawSide(split.right, params.spin, spinCtx, true);
-  } else {
-    drawSide({ x: 0, y: 0, w: sceneFbo.w, h: sceneFbo.h }, params.spin, spinCtx, true);
   }
+  drawSide(viewSlider, params.spin, spinCtx, true);
 
   // dev diagnostics (?dbg): scan render targets for NaN/Inf/negatives —
   // a single bad scene pixel smears black blocks through the bloom pyramid
@@ -1052,22 +1106,46 @@ function render() {
     it.dy = dy;
     it.alpha = alpha;
   };
-  // ndc -> CSS px, the same map drawShadowOutline strokes the outline with
-  const ndcPxX = (x: number) => ((x + 1) / 2) * cw;
+  // ndc -> CSS px within one side's strip, the same map drawShadowOutline
+  // strokes that side's outline with
+  const sliderX0 = hudX(viewSlider);
+  const sliderW = hudW(viewSlider);
+  const ndcPxX = (x: number) => sliderX0 + ((x + 1) / 2) * sliderW;
   const ndcPxY = (y: number) => ((1 - y) / 2) * ch;
 
+  // The Schwarzschild half's outline (7b). Drawn but not labelled: the copy
+  // would be word-for-word the slider side's, and the divider's chips already
+  // say which spacetime this is. What it is here to show is its SHAPE — a
+  // circle against the Kerr half's D — and two identical labels would only
+  // crowd that.
+  if (shadowOn && params.compare && shadowSchw.edge && shadowSchw.edge.valid) {
+    drawShadowOutline(
+      hudCtx,
+      shadowSchw.edge,
+      hudX(split.left),
+      hudW(split.left),
+      ch,
+      shadowSchw.fresh ? 1 : 0.35
+    );
+  }
+
+  const shadowEdge = shadowSlider.edge;
   const haveEdge = shadowOn && shadowEdge !== null && shadowEdge.valid;
   // Faded while stale: the view moved on and the replacement outline is still
   // being traced, so every anchor taken off it is a moment out of date.
-  const edgeAlpha = shadowFresh ? 1 : 0.35;
+  const edgeAlpha = shadowSlider.fresh ? 1 : 0.35;
   if (haveEdge) {
     // valid=false (camera not aimed at the hole — unreachable with the orbit
     // camera) degrades to drawing nothing.
-    drawShadowOutline(hudCtx, shadowEdge!, cw, ch, edgeAlpha);
+    drawShadowOutline(hudCtx, shadowEdge!, sliderX0, sliderW, ch, edgeAlpha);
     shadowExtremes(shadowEdge!, calloutExt);
     // Emitted first, so that with only the 6f overlay on they keep the exact
     // positions they had before 6g gave them neighbours to make room for.
-    emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, edgeAlpha);
+    // The shadow-edge label sits out compare mode: its copy sizes the shadow
+    // against the horizon's diameter, and that ratio is a function of spin —
+    // true on the a = 0 half, false on the other.
+    if (!params.compare)
+      emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, edgeAlpha);
     // The photon ring converges onto the shadow edge from OUTSIDE (its last
     // subring IS the boundary), so its anchor sits just off the outline.
     emit(
@@ -1189,7 +1267,13 @@ function render() {
     }
   }
 
-  if (nCallouts > 0) drawCallouts(hudCtx, calloutItems, nCallouts, cw, ch);
+  // Every callout emitted above describes the slider's spacetime, so they are
+  // laid out within that side's strip — the whole canvas in single view, the
+  // right half when comparing. Without the bound the layout would happily
+  // slide a label across the divider onto the a = 0 half, which it does not
+  // describe.
+  if (nCallouts > 0)
+    drawCallouts(hudCtx, calloutItems, nCallouts, sliderX0, sliderW, ch);
 
   // Also single-spin: every rate below is evaluated at params.spin, which is
   // only the right half's story.

@@ -130,12 +130,39 @@ and they are dropped from both halves (with the TDE's flare, which would
 otherwise light both disks up to 8× from an event neither half draws). Stars
 survive the split because `starState` is a closed form in (t, a): the same
 scratch arrays are simply refilled at the other spin between the two draws.
-The slice-6 overlays are off while comparing, in two groups: trails, the
-shadow outline and the callouts project world points onto the *whole frame*
+7b gives each half its own traced shadow outline, which is the slice's whole
+argument in one picture: a circle on the left, and at high spin a flat-sided D
+on the right, each hugging the black disk it belongs to. Nothing about the
+tracer changed — `findShadowEdgeIncremental` already returned NDC and took an
+aspect — so 7b is a cache per side plus getting the two mappings right. Both
+matter. The aspect must be the one the *shader* used (its viewport's w/h, far
+from the frame's shape once halved), or the outline is a perfectly-computed
+boundary of a view nobody is looking at; and the strip it is drawn back into
+is the GL rect divided by the render scale, not an independently re-rounded
+CSS split, which would sit a pixel off the disk it claims to trace. The static
+tetrad is spin-dependent, so each side launches its rays from its own. The two
+outlines share ONE frame's tracing budget rather than each taking their own —
+the a = 0 side goes first because it is far the cheaper (~66 ms of tracing
+against ~540 ms at a = 0.998) and then yields the rest — so the HUD costs what
+it always did.
+
+The remaining slice-6 overlays stay off while comparing, in two groups: the
+trails and the 6g callout layer project world points onto the *whole frame*
 and would stripe across both halves at positions belonging to neither; the
 clocks and the two insets each describe a single spacetime, and the potential
 inset is anchored where it would sit on the Schwarzschild half while plotting
-the Kerr side's curve. 7b and 7c bring them back per-side.
+the Kerr side's curve. 7c brings the insets back per-side.
+
+Two labels are deliberately not duplicated onto the a = 0 half. The photon-ring
+callout is emitted once, against the slider's outline, and the callout layout
+is now bounded to that side's strip so it cannot slide across the divider and
+appear to caption the other spacetime. The shadow-edge callout is dropped in
+compare mode outright, because its copy sizes the shadow against the horizon's
+diameter and that ratio is a function of spin: measured off this repo's own
+tracer at the default camera it is 2.49× at a = 0, 3.23× at a = 0.9 and 4.11×
+at a = 0.998. The label's flat "about 2.6×" is a pre-existing single-view bug
+(it is wrong at high spin with compare mode switched off); it is recorded here
+rather than fixed inside slice 7.
 
 Slice 3 adds matter in motion, all sampled **along the same per-pixel
 geodesics** rather than as unlensed billboards, so every piece of matter is
@@ -315,5 +342,14 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    spin slider's a side by side from one camera, so frame dragging shows up by
    contrast rather than by explanation
    - 7a split-screen scene: two viewports, one FBO, per-side spin ✅
-   - 7b shadow outline traced per side (the circle vs the D-shape) — TODO
+   - 7b shadow outline traced per side (the circle vs the D-shape) ✅
    - 7c potential & embedding insets carrying both spins' curves — TODO
+   - 7d orbit trails per side, which is what would make Lense–Thirring
+     precession visible — TODO
+
+Known bug, predating slice 7 and living in single view: the shadow-edge
+callout says the shadow is "about 2.6× the horizon's diameter" at every spin.
+That holds only at a = 0 — the horizon shrinks with spin while the shadow
+barely does, so the true ratio climbs to ~4.1× at a = 0.998 (measured off
+`findShadowEdge`; see the slice 7 notes above). The copy needs to either state
+the ratio for the current spin or stop quoting a number.
