@@ -20,7 +20,8 @@ import {
   type TdeState,
 } from "./tde";
 import { compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
-import { clearHud, initHud, resizeHud } from "./hud";
+import { clearHud, drawClocks, initHud, resizeHud, type ClockEntry } from "./hud";
+import { circRate, staticRate } from "./edu";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
 import {
@@ -137,6 +138,19 @@ let paused = false;
 let spinCtx = makeSpinCtx(params.spin);
 let tde: TdeState | null = null;
 
+// Proper time carried by each clock in the 6b overlay. The far-away
+// observer's proper time IS simT, so it needs no accumulator.
+let tauCam = 0;
+let tauIsco = 0;
+let tauStar = 0;
+// preallocated: drawClocks runs every frame and must not allocate
+const clockEntries: ClockEntry[] = [
+  { label: "far away", tau: 0, rate: 1, gone: false },
+  { label: "camera", tau: 0, rate: 1, gone: false },
+  { label: "ISCO", tau: 0, rate: 1, gone: false },
+  { label: "the star", tau: 0, rate: 1, gone: false },
+];
+
 const rng = mulberry32(0x5eed);
 const gasBlobs: GasBlob[] = [];
 for (let i = 0; i < GAS_COUNT; i++) gasBlobs.push(spawnGasBlob(rng, params.diskOuter));
@@ -213,6 +227,7 @@ pauseBtn.addEventListener("click", () => {
 const tdeBtn = document.getElementById("tde") as HTMLButtonElement;
 tdeBtn.addEventListener("click", () => {
   tde = launchTde(10 ** params.massExp, params.spin);
+  tauStar = 0;
 });
 
 const distReadout = document.getElementById("dist-readout")!;
@@ -241,6 +256,12 @@ function render() {
   if (!paused && params.timeSpeed > 0) {
     const dtSim = dtReal * params.timeSpeed;
     simT += dtSim;
+    // Clock rates are re-evaluated every frame rather than cached: the
+    // camera's depth changes as it orbits and the ISCO moves with spin.
+    tauCam += dtSim * staticRate(basis.pos, params.spin);
+    tauIsco += dtSim * circRate(spinCtx.isco, params.spin);
+    const star = tde ? tde.bodies[0] : null;
+    if (star && star.alive) tauStar += dtSim / bodyU(star, params.spin)[0];
     for (const b of gasBlobs) stepGasBlob(b, dtSim, params.diskOuter, rng, spinCtx);
     if (tde) stepTde(tde, dtSim, params.spin, simT, rng);
   }
@@ -407,8 +428,27 @@ function render() {
   drawQuad();
   gl.activeTexture(gl.TEXTURE0);
 
-  // HUD overlay (2D canvas above the GL frame; overlays arrive in 6b–6g)
+  // HUD overlay (2D canvas above the GL frame; more overlays arrive in 6c–6g)
   clearHud(hudCtx, canvas.clientWidth, canvas.clientHeight);
+  if (params.eduClocks) {
+    clockEntries[0].tau = simT;
+    clockEntries[1].tau = tauCam;
+    clockEntries[1].rate = staticRate(basis.pos, params.spin);
+    clockEntries[2].tau = tauIsco;
+    clockEntries[2].rate = circRate(spinCtx.isco, params.spin);
+    let nClocks = 3;
+    const star = tde ? tde.bodies[0] : null;
+    if (star) {
+      // In Kerr–Schild u^t stays finite through the horizon, so the star's
+      // own clock keeps ticking across it — only the far-away observer sees
+      // it freeze. It stops here only when the body is culled from the sim.
+      clockEntries[3].tau = tauStar;
+      clockEntries[3].gone = !star.alive;
+      clockEntries[3].rate = star.alive ? 1 / bodyU(star, params.spin)[0] : 0;
+      nClocks = 4;
+    }
+    drawClocks(hudCtx, clockEntries, nClocks, canvas.clientWidth - 12, 12);
+  }
 
   if (dbgScan) {
     dbgReport("scene", sceneFbo);

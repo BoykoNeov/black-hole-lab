@@ -4,6 +4,7 @@
  * hud.ts, wiring in main.ts.
  */
 
+import { circUt, ksMetric } from "./kerr";
 import type { V3 } from "./kerr";
 import type { CameraBasis } from "./camera";
 
@@ -54,4 +55,29 @@ export function projectToScreen(
   // small margin past the edges so leader lines can anchor just off-screen
   o.visible = Math.abs(ndcX) <= 1.2 && Math.abs(ndcY) <= 1.2;
   return o;
+}
+
+/**
+ * dtau/dt of a static observer at p — the tick rate of a clock held at rest
+ * relative to infinity, as a fraction of the far-away rate. In Kerr–Schild
+ * this is sqrt(1 - f); it is the reciprocal of the u^t that
+ * buildStaticTetrad gives the camera, so this is the rendering camera's own
+ * clock. At a = 0, f = 2/r recovers the textbook sqrt(1 - 2/r).
+ *
+ * Returns 0 inside the ergosphere (1 - f <= 0), where no static observer
+ * exists: the function must stay total even though the camera never goes
+ * there.
+ */
+export function staticRate(p: V3, a: number): number {
+  return Math.sqrt(Math.max(1 - ksMetric(p, a).f, 0));
+}
+
+/**
+ * dtau/dt of a prograde circular equatorial orbiter at Boyer–Lindquist r.
+ * 1/u^t folds in BOTH dilations at once — gravitational (depth) and
+ * velocity (orbital speed) — so it always runs slower than a static clock
+ * at the same radius. At a = 0 this is sqrt(1 - 3/r).
+ */
+export function circRate(r: number, a: number): number {
+  return 1 / circUt(r, a);
 }

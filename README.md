@@ -115,9 +115,10 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   black blocks through the bloom pyramid)
 - `src/camera.ts` — orbit controls
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
-  matching the shader's ray construction (pure, tested)
+  matching the shader's ray construction, proper-time rates for the static
+  camera and circular orbiters (pure, tested)
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
-  shared HUD style; DOM-only, verified by eye)
+  shared HUD style, clock faces; DOM-only, verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -157,3 +158,4 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    labels, embedding diagram, orbit trails, shadow/photon-ring annotation,
    callout mode (detailed sub-slice plan in `PLAN-slice-6.md`)
    - 6a HUD infrastructure + knob provenance badges ✅
+   - 6b clocks — gravitational + velocity time dilation ✅
