@@ -142,10 +142,12 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static
   camera and circular orbiters, equatorial Kerr effective potential and
-  Bardeen photon-orbit radii (pure, tested)
+  Bardeen photon-orbit radii, and the equatorial embedding profile z(r) —
+  Flamm's paraboloid at a = 0, integrated with the rim's inverse-square-root
+  singularity split off in closed form (pure, tested)
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
-  shared HUD style, clock faces, effective-potential inset; DOM-only,
-  verified by eye)
+  shared HUD style, clock faces, effective-potential inset, embedding-diagram
+  funnel; DOM-only, verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -190,3 +192,4 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    - 6a HUD infrastructure + knob provenance badges ✅
    - 6b clocks — gravitational + velocity time dilation ✅
    - 6c effective-potential inset — barrier, ISCO minimum, live TDE energies ✅
+   - 6d embedding diagram — the funnel, with live matter riding it ✅

@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { cameraBasis } from "../src/camera";
-import { buildStaticTetrad, circEL, iscoRadius, ksRadius } from "../src/kerr";
+import {
+  buildStaticTetrad,
+  circEL,
+  horizonRadius,
+  iscoRadius,
+  ksRadius,
+} from "../src/kerr";
 import {
   circRate,
+  embeddingProfile,
+  embeddingZAt,
   photonOrbitRadius,
   projectToScreen,
   staticRate,
@@ -174,5 +182,87 @@ describe("photonOrbitRadius", () => {
   it("is dragged inward when prograde and outward when retrograde", () => {
     expect(photonOrbitRadius(0.5, true)).toBeLessThan(3);
     expect(photonOrbitRadius(0.5, false)).toBeGreaterThan(3);
+  });
+});
+
+/** z at the profile sample closest to a target radius. */
+function nearest(p: { r: Float64Array; z: Float64Array }, target: number): number {
+  let best = 0;
+  for (let i = 0; i < p.r.length; i++) {
+    if (Math.abs(p.r[i] - target) < Math.abs(p.r[best] - target)) best = i;
+  }
+  return p.z[best];
+}
+
+describe("embeddingProfile", () => {
+  it("reproduces Flamm's paraboloid at a = 0", () => {
+    const p = embeddingProfile(0, 20, 800);
+    // g(r) = sqrt(2) is constant at a = 0, so splitting the (r-r+)^(-1/2)
+    // factor off makes the quadrature exact — every sample, not just a spot
+    // check, must land on sqrt(8(r-2)).
+    for (let i = 0; i < p.r.length; i++) {
+      expect(p.z[i]).toBeCloseTo(Math.sqrt(8 * (p.r[i] - 2)), 10);
+    }
+    // spot checks on the plan's grid: what is left at 800 samples is where
+    // the sample sits (r = 4.005, not 4), not how well it is integrated
+    expect(Math.abs(nearest(p, 4) - 4)).toBeLessThan(0.01);
+    expect(Math.abs(nearest(p, 10) - 8)).toBeLessThan(0.01);
+  });
+
+  it("starts exactly at the rim", () => {
+    for (const a of [0, 0.5, 0.9, 0.998]) {
+      const p = embeddingProfile(a, 20, 400);
+      expect(p.r[0]).toBeCloseTo(horizonRadius(a), 12);
+      expect(p.z[0]).toBe(0);
+      expect(p.r[p.r.length - 1]).toBeCloseTo(20, 12);
+    }
+  });
+
+  it("rises strictly with r at every spin", () => {
+    for (const a of [0, 0.9]) {
+      const p = embeddingProfile(a, 20, 400);
+      for (let i = 1; i < p.z.length; i++) {
+        expect(p.z[i]).toBeGreaterThan(p.z[i - 1]);
+      }
+    }
+  });
+
+  it("makes the throat locally gentler but deeper as spin rises", () => {
+    // PLAN-slice-6.md's 6d prose has this backwards ("spin flattens the
+    // throat: z at r = 6 for a = 0.9 < z at r = 6 for a = 0"). It conflates
+    // slope with height. Both halves below are the same formula the plan
+    // gives, and they disagree with its conclusion: the wall at r = 6 does
+    // get shallower with spin, but r+ falls from 2 to 1.436, adding range
+    // exactly where the integrand diverges — so the funnel reaches deeper.
+    const slope = (r: number, a: number) =>
+      Math.sqrt((2 * r - a * a) / (r * r - 2 * r + a * a));
+    expect(slope(6, 0.9)).toBeLessThan(slope(6, 0));
+
+    const flat = embeddingProfile(0, 20, 800);
+    const spun = embeddingProfile(0.9, 20, 800);
+    expect(nearest(spun, 6)).toBeGreaterThan(nearest(flat, 6));
+  });
+});
+
+describe("embeddingZAt", () => {
+  const p = embeddingProfile(0, 20, 800);
+
+  it("hits the samples it interpolates between", () => {
+    for (const i of [0, 1, 400, 799]) {
+      expect(embeddingZAt(p, p.r[i])).toBeCloseTo(p.z[i], 9);
+    }
+  });
+
+  it("tracks the closed form between samples", () => {
+    // linear chords undershoot the sqrt curve, badly only in the first
+    // interval where it is vertical — away from the rim it is display-exact
+    for (const r of [4.011, 7.3, 12.77, 19.5]) {
+      expect(embeddingZAt(p, r)).toBeCloseTo(Math.sqrt(8 * (r - 2)), 3);
+    }
+  });
+
+  it("clamps outside the sampled range", () => {
+    expect(embeddingZAt(p, 1)).toBe(p.z[0]);
+    expect(embeddingZAt(p, 1e6)).toBe(p.z[p.z.length - 1]);
   });
 });

@@ -1,4 +1,4 @@
-import { buildStaticTetrad, ksRadius } from "./kerr";
+import { buildStaticTetrad, ksRadius, type V3 } from "./kerr";
 import { tempNorm } from "./disk";
 import {
   bandLabel,
@@ -22,15 +22,26 @@ import {
 } from "./tde";
 import { compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
 import {
+  EMBED_GAS,
+  EMBED_H,
+  EMBED_STARS,
+  EMBED_TDE,
+  EMBED_W,
   POTENTIAL_H,
   clearHud,
   drawClocks,
+  drawEmbedding,
   drawPotential,
   initHud,
   resizeHud,
   type ClockEntry,
 } from "./hud";
-import { circRate, staticRate } from "./edu";
+import {
+  circRate,
+  embeddingProfile,
+  staticRate,
+  type EmbeddingProfile,
+} from "./edu";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
 import {
@@ -191,6 +202,29 @@ const clockEntries: ClockEntry[] = [
 const POT_MARK_MAX = 4;
 const potMarkR = new Float64Array(POT_MARK_MAX);
 const potMarkE = new Float64Array(POT_MARK_MAX);
+
+// Matter riding the 6d funnel — every body that can be on screen at once.
+// Preallocated: the inset redraws every frame.
+const EMBED_DOT_MAX = STAR_COUNT + GAS_COUNT + TDE_MAX;
+const embedDotR = new Float64Array(EMBED_DOT_MAX);
+const embedDotAz = new Float64Array(EMBED_DOT_MAX);
+const embedDotGroup = new Uint8Array(EMBED_DOT_MAX);
+const embedScratch: V3 = [0, 0, 0];
+
+// The funnel's shape depends on nothing but (a, rMax), and integrating it is
+// ~400 steps of quadrature — so it is cached on exactly those two and rebuilt
+// only when the spin or disk-size slider actually moves.
+let embedProfile: EmbeddingProfile | null = null;
+let embedA = NaN;
+let embedRMax = NaN;
+function embeddingFor(a: number, rMax: number): EmbeddingProfile {
+  if (!embedProfile || a !== embedA || rMax !== embedRMax) {
+    embedProfile = embeddingProfile(a, rMax, 400);
+    embedA = a;
+    embedRMax = rMax;
+  }
+  return embedProfile;
+}
 
 const rng = mulberry32(0x5eed);
 const gasBlobs: GasBlob[] = [];
@@ -586,6 +620,52 @@ function render() {
       markE: potMarkE,
       markN: nMark,
     });
+  }
+
+  if (params.eduEmbed) {
+    // Only bodies the renderer is actually showing get a dot, so the funnel
+    // never disagrees with the frame behind it.
+    let nDots = 0;
+    const push = (r: number, az: number, group: number) => {
+      if (nDots >= EMBED_DOT_MAX) return;
+      embedDotR[nDots] = r;
+      embedDotAz[nDots] = az;
+      embedDotGroup[nDots] = group;
+      nDots++;
+    };
+    if (params.stars) {
+      for (let i = 0; i < STAR_COUNT; i++) {
+        // the funnel is indexed by BL radius, not the world distance
+        embedScratch[0] = starPosArr[i * 4];
+        embedScratch[1] = starPosArr[i * 4 + 1];
+        embedScratch[2] = starPosArr[i * 4 + 2];
+        push(
+          ksRadius(embedScratch, params.spin),
+          Math.atan2(embedScratch[2], embedScratch[0]),
+          EMBED_STARS
+        );
+      }
+    }
+    if (params.gas) {
+      for (const b of gasBlobs) push(b.r, b.az, EMBED_GAS);
+    }
+    for (const b of tdeBodies) {
+      push(ksRadius(b.p, params.spin), Math.atan2(b.p[2], b.p[0]), EMBED_TDE);
+    }
+    drawEmbedding(
+      hudCtx,
+      canvas.clientWidth - EMBED_W - 12,
+      canvas.clientHeight - EMBED_H - 12,
+      {
+        profile: embeddingFor(params.spin, params.diskOuter),
+        isco: spinCtx.isco,
+        yaw: camera.yaw,
+        dotR: embedDotR,
+        dotAz: embedDotAz,
+        dotGroup: embedDotGroup,
+        dotN: nDots,
+      }
+    );
   }
 
   if (dbgScan) {

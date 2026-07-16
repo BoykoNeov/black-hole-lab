@@ -4,7 +4,7 @@
  * hud.ts, wiring in main.ts.
  */
 
-import { circUt, ksMetric } from "./kerr";
+import { circUt, horizonRadius, ksMetric } from "./kerr";
 import type { V3 } from "./kerr";
 import type { CameraBasis } from "./camera";
 
@@ -121,4 +121,82 @@ export function vEff(r: number, L: number, a: number): number {
  */
 export function photonOrbitRadius(a: number, prograde: boolean): number {
   return 2 * (1 + Math.cos((2 / 3) * Math.acos(prograde ? -a : a)));
+}
+
+/** Uniformly spaced samples of the equatorial embedding surface, z(r[0]) = 0. */
+export interface EmbeddingProfile {
+  /** Boyer–Lindquist radius, r[0] = r+ and r[n-1] = rMax. */
+  r: Float64Array;
+  /** Height of the embedding surface above the rim, same units (M). */
+  z: Float64Array;
+}
+
+/**
+ * The funnel: the equatorial slice of Kerr lifted into flat 3-space as a
+ * surface of revolution. The slice's radial metric is g_rr = r^2/Delta with
+ * Delta = r^2 - 2r + a^2 = (r - r+)(r - r-), and a surface of revolution of
+ * radius r whose arc length matches it obeys
+ *
+ *     dz/dr = sqrt(g_rr - 1) = sqrt((2r - a^2) / Delta).
+ *
+ * At a = 0 that integrates in closed form to Flamm's paraboloid,
+ * z = sqrt(8(r - 2)).
+ *
+ * APPROXIMATION at a != 0: this takes r itself as the circumferential radius,
+ * while the true proper circumference of the Kerr equatorial circle is
+ * 2 pi sqrt(r^2 + a^2 + 2a^2/r). Using that instead is the stricter embedding,
+ * but it does not exist in Euclidean 3-space over parts of a fast-spinning
+ * throat. This is the standard picture; it is exact at a = 0 and everywhere
+ * shows the radial stretching honestly.
+ *
+ * The integrand diverges like (r - r+)^(-1/2) at the rim — integrable, but
+ * fatal for plain quadrature. Splitting the singular factor off exactly,
+ *
+ *     dz/dr = g(r) / sqrt(r - r+),   g(r) = sqrt((2r - a^2) / (r - r-)),
+ *
+ * leaves g smooth across the whole range (the spin slider caps at 0.998, so
+ * r+ - r- >= 0.126 and g never blows up). Each step then integrates the
+ * singularity in closed form and samples the smooth part only at the
+ * midpoint, which needs no special case for the first interval. At a = 0,
+ * g = sqrt(2) is constant and the result is exact to machine precision.
+ */
+export function embeddingProfile(
+  a: number,
+  rMax: number,
+  n: number
+): EmbeddingProfile {
+  const rPlus = horizonRadius(a);
+  const rMinus = 1 - Math.sqrt(Math.max(1 - a * a, 0));
+  const r = new Float64Array(n);
+  const z = new Float64Array(n);
+  const h = (rMax - rPlus) / (n - 1);
+  r[0] = rPlus;
+  z[0] = 0;
+  let sPrev = 0; // sqrt(r[i-1] - r+), exactly 0 at the rim
+  for (let i = 1; i < n; i++) {
+    const ri = rPlus + i * h;
+    const mid = ri - h / 2;
+    const g = Math.sqrt((2 * mid - a * a) / (mid - rMinus));
+    const s = Math.sqrt(ri - rPlus);
+    r[i] = ri;
+    z[i] = z[i - 1] + g * 2 * (s - sPrev); // ∫ dr/sqrt(r-r+) = 2 sqrt(r-r+)
+    sPrev = s;
+  }
+  return { r, z };
+}
+
+/**
+ * z at an arbitrary radius, by linear interpolation into a profile (whose
+ * samples are uniform in r) and clamped to its ends. Display-grade: near the
+ * rim the true z goes like sqrt(r - r+), so a chord across the first interval
+ * sits slightly low.
+ */
+export function embeddingZAt(p: EmbeddingProfile, r: number): number {
+  const n = p.r.length;
+  const dr = (p.r[n - 1] - p.r[0]) / (n - 1);
+  const t = (r - p.r[0]) / dr;
+  if (t <= 0) return p.z[0];
+  if (t >= n - 1) return p.z[n - 1];
+  const i = Math.floor(t);
+  return p.z[i] + (p.z[i + 1] - p.z[i]) * (t - i);
 }

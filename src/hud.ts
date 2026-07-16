@@ -5,7 +5,8 @@
  * pointer-events: none so camera drag/zoom pass straight through.
  */
 
-import { photonOrbitRadius, vEff } from "./edu";
+import { embeddingZAt, photonOrbitRadius, vEff } from "./edu";
+import type { EmbeddingProfile } from "./edu";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
@@ -381,5 +382,201 @@ export function drawPotential(
     x + 10,
     y + H - 14
   );
+  ctx.restore();
+}
+
+// ---------- embedding diagram, "the funnel" (6d) ----------
+
+export const EMBED_W = 260;
+export const EMBED_H = 200;
+
+/**
+ * Fixed viewing tilt, as a rigid rotation of the surface about the screen's
+ * horizontal axis (sin/cos of ~20.5°, hence sin^2 + cos^2 = 1 exactly). The
+ * funnel is therefore drawn at true 1:1 proportions — r and z are both in M
+ * and share one scale, with no vertical exaggeration to explain away. Only
+ * the overall fit-to-panel scale is a display choice.
+ */
+const EMB_SIN = 0.35;
+const EMB_COS = Math.sqrt(1 - EMB_SIN * EMB_SIN);
+const EMB_RINGS = 9;
+const EMB_AZ = 48;
+const EMB_SPOKES = 12;
+const EMB_SPOKE_PTS = 44;
+
+/** Ring radii: geometric from r+ to rMax, so samples crowd into the throat
+ * where the curvature is and thin out across the flat outskirts. */
+const embRing = new Float64Array(EMB_RINGS);
+
+/** Dot colors by group index — matches the trail colors slice 6e will use. */
+export const EMBED_STARS = 0;
+export const EMBED_GAS = 1;
+export const EMBED_TDE = 2;
+const EMBED_DOT_COLORS = ["#9fd0ff", "#ffb35c", "#ffffff"];
+
+export interface EmbedOpts {
+  profile: EmbeddingProfile;
+  isco: number;
+  /** Camera yaw: the funnel turns with the view (rings are symmetric, so only
+   * the spokes and the dots actually move). */
+  yaw: number;
+  /** Live matter: BL radius, world azimuth, and group index, first dotN used. */
+  dotR: Float64Array;
+  dotAz: Float64Array;
+  dotGroup: Uint8Array;
+  dotN: number;
+}
+
+const RIM_COLOR = "rgba(159,208,255,0.75)";
+const DISK_COLOR = "rgba(255,179,92,0.30)";
+const THROAT_COLOR = "rgba(205,214,244,0.28)";
+/** The ring alphas are tuned for a mesh of overlapping lines; text needs its
+ * own, or the legend reads as a smudge. */
+const DISK_LABEL = "rgba(255,179,92,0.85)";
+
+/**
+ * The equatorial slice as a surface of revolution, drawn as a wireframe from
+ * a fixed tilt with the camera's yaw. Geometry is entirely edu.ts's
+ * embeddingProfile (exact Flamm at a = 0; see its comment for the a != 0
+ * caveat). Drawn with its top-left at (x, y).
+ */
+export function drawEmbedding(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  o: EmbedOpts
+): void {
+  const p = o.profile;
+  const n = p.r.length;
+  const rHor = p.r[0];
+  const rMax = p.r[n - 1];
+
+  const ratio = Math.pow(rMax / rHor, 1 / (EMB_RINGS - 1));
+  for (let i = 0; i < EMB_RINGS; i++) embRing[i] = rHor * Math.pow(ratio, i);
+  embRing[EMB_RINGS - 1] = rMax; // no rounding drift at the outer edge
+
+  // Fit the surface to the panel from its own extents, so the inset reframes
+  // itself as spin deepens the throat and the disk-size slider moves rMax.
+  // Screen height of a ring runs z·cos ± r·sin (its back and front lips).
+  let vMin = 0;
+  let vMax = 0;
+  for (let i = 0; i < EMB_RINGS; i++) {
+    const h = embeddingZAt(p, embRing[i]) * EMB_COS;
+    const t = embRing[i] * EMB_SIN;
+    if (h + t > vMax) vMax = h + t;
+    if (h - t < vMin) vMin = h - t;
+  }
+  const boxX = x + 8;
+  const boxY = y + 8;
+  const boxW = EMBED_W - 16;
+  const boxH = EMBED_H - 8 - 34; // caption sits below
+  const s = Math.min(boxW / (2 * rMax), boxH / Math.max(vMax - vMin, 1e-6));
+  const cx = boxX + boxW / 2;
+  const cy = boxY + boxH / 2 + (s * (vMax + vMin)) / 2;
+
+  // The main view's right vector is (cos yaw, 0, -sin yaw), so a world point
+  // at azimuth az lands at screen-x ∝ r·cos(az + yaw) and approaches the
+  // camera as sin(az + yaw) grows — yaw is a plain azimuth offset here, and
+  // nearer matter correctly draws lower under the downward tilt.
+  const ex = (r: number, ang: number) => cx + s * r * Math.cos(ang);
+  const ey = (r: number, ang: number, z: number) =>
+    cy - s * (z * EMB_COS - r * Math.sin(ang) * EMB_SIN);
+
+  ctx.save();
+  ctx.fillStyle = HUD_STYLE.panelBg;
+  ctx.strokeStyle = HUD_STYLE.panelBorder;
+  ctx.lineWidth = 1;
+  panelPath(ctx, x, y, EMBED_W, EMBED_H, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x + 1, y + 1, EMBED_W - 2, EMBED_H - 2);
+  ctx.clip();
+
+  // Meridians: the funnel's profile, and the only lines that show the yaw.
+  for (let j = 0; j < EMB_SPOKES; j++) {
+    const ang = (j / EMB_SPOKES) * Math.PI * 2 + o.yaw;
+    ctx.strokeStyle = THROAT_COLOR;
+    ctx.beginPath();
+    for (let k = 0; k < EMB_SPOKE_PTS; k++) {
+      // geometric in r as well: the wall is near-vertical at the rim
+      const r = rHor * Math.pow(rMax / rHor, k / (EMB_SPOKE_PTS - 1));
+      ctx.lineTo(ex(r, ang), ey(r, ang, embeddingZAt(p, r)));
+    }
+    ctx.stroke();
+  }
+
+  // Rings. Warm inside the disk's span (isco → rMax), cool through the
+  // plunging region below it — the shading IS the disk extent.
+  for (let i = 0; i < EMB_RINGS; i++) {
+    const r = embRing[i];
+    const z = embeddingZAt(p, r);
+    ctx.strokeStyle = r >= o.isco ? DISK_COLOR : THROAT_COLOR;
+    ctx.beginPath();
+    for (let k = 0; k <= EMB_AZ; k++) {
+      const ang = (k / EMB_AZ) * Math.PI * 2;
+      ctx.lineTo(ex(r, ang), ey(r, ang, z));
+    }
+    ctx.stroke();
+  }
+
+  const ring = (r: number, color: string, width: number) => {
+    const z = embeddingZAt(p, r);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    for (let k = 0; k <= EMB_AZ; k++) {
+      const ang = (k / EMB_AZ) * Math.PI * 2;
+      ctx.lineTo(ex(r, ang), ey(r, ang, z));
+    }
+    ctx.stroke();
+    ctx.lineWidth = 1;
+  };
+  ring(rHor, RIM_COLOR, 1.5); // the horizon: the rim at the bottom
+  ring(o.isco, HUD_STYLE.accent, 1.5); // last stable orbit — the disk's inner edge
+
+  // Live matter riding the surface. Stars sit on inclined orbits, so plotting
+  // them at their (r, azimuth) drops their height out of the disk plane —
+  // they are shown where they are radially, not where they are vertically.
+  for (let i = 0; i < o.dotN; i++) {
+    const r = o.dotR[i];
+    if (r < rHor || r > rMax) continue; // off the diagram entirely
+    const ang = o.dotAz[i] + o.yaw;
+    ctx.fillStyle = EMBED_DOT_COLORS[o.dotGroup[i]];
+    ctx.beginPath();
+    ctx.arc(ex(r, ang), ey(r, ang, embeddingZAt(p, r)), 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore(); // un-clip
+
+  // Legend, in the bottom-left: the funnel narrows away from that corner.
+  const legend: Array<[string, string, string]> = [
+    ["horizon rim", RIM_COLOR, RIM_COLOR],
+    ["ISCO", HUD_STYLE.accent, HUD_STYLE.accent],
+    ["disk", DISK_COLOR, DISK_LABEL],
+  ];
+  ctx.font = HUD_STYLE.tiny;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i < legend.length; i++) {
+    const [text, lineColor, textColor] = legend[i];
+    const ly = boxY + boxH - 24 + i * 11;
+    ctx.strokeStyle = lineColor;
+    ctx.beginPath();
+    ctx.moveTo(boxX + 2, ly);
+    ctx.lineTo(boxX + 12, ly);
+    ctx.stroke();
+    ctx.fillStyle = textColor;
+    ctx.fillText(text, boxX + 16, ly);
+  }
+
+  ctx.font = HUD_STYLE.small;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.fillText("space on the disk plane, stretched for real and", x + 10, y + EMBED_H - 27);
+  ctx.fillText("drawn 1:1 — the horizon is the rim at the bottom.", x + 10, y + EMBED_H - 16);
   ctx.restore();
 }
