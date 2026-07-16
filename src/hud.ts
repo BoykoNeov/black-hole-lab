@@ -730,17 +730,24 @@ export const CALLOUT_COPY = {
     title: "…and under the bottom",
     body: ["the same far side, bent under —", "a second, fainter image"],
   },
-  // No beaming ratio in this copy on purpose. The shader's jet brightness is
-  // 6.8·min(g, 1.6)^3 on a per-pixel shift along the traced ray: the clamp and
-  // the metric make the on-screen contrast something no single number tracks,
-  // and the honest idealization (delta^3, ~12× nose-on) swings to 1× edge-on —
-  // a fixed figure for a quantity the pitch slider moves would contradict the
-  // picture exactly where someone bothered to check it.
+  // No beaming ratio in this copy on purpose, and no colour claim either.
+  //
+  // Brightness: the shader beams as 6.8·min(g, 1.6)^3 on a per-pixel shift
+  // along the traced ray, so no one number tracks what is on screen. The
+  // honest idealization is ~65× at 45° off the axis, 1× edge-on and ~1900×
+  // nose-on (where the clamp hauls it back to ~180×) — and the pitch slider
+  // sweeps that whole range, so a fixed figure would contradict the picture
+  // exactly where someone bothered to check it.
+  //
+  // Colour: "bluer" belongs to the disk, NOT here. diskSample evaluates the
+  // blackbody at g·T, so its approaching side really does blue-shift; jetEmit
+  // keys its colour to density alone (core + knots) and lets g multiply only
+  // the intensity. The beamed jet is brighter and no bluer at all.
   jet: {
     title: "jet — pointed near you",
     body: [
       "knots stream at 0.85c; beaming toward you",
-      "makes this one much brighter and bluer",
+      "makes this one much brighter than its twin",
     ],
   },
   counterJet: {
