@@ -65,13 +65,13 @@ half unbound); the bound tail loops out and falls back, feeding a flare
 that lifts ṁ (and, with coupling on, the disk temperature) on the classic
 Rees t^(-5/3) light curve. Above the Hills mass, r_t sits inside the
 horizon and the star is swallowed whole — no flare, it just redshifts away.
-The star and all 16 debris elements move on exact timelike Kerr geodesics
+The star and all 32 debris elements move on exact timelike Kerr geodesics
 integrated with the same Kerr–Schild Hamiltonian RK4 as the photons (only
 the mass shell differs: m·m = -1, with E = -m_t conserved exactly), so the
 stream's stretch, the relativistic capture of the deepest debris, and the
 horizon crossing all emerge from the integration. Two knobs are honestly
 artistic and documented in the code: the debris energy spread is widened
-so first fallback takes ~800 M instead of months, and the flare's display
+so first fallback takes ~1600 M instead of months, and the flare's display
 brightness is sqrt-compressed (the readout reports the physical ratio).
 
 Slice 3 adds matter in motion, all sampled **along the same per-pixel

@@ -84,7 +84,7 @@ const CLOCK_SLOT = 78; // horizontal pitch, wide enough for the rate caption
 /** One hand revolution per 60 M of proper time. */
 const CLOCK_PERIOD = 60;
 const CLOCK_CAPTION =
-  "× = rate vs the far-away observer · each clock ticks at its own proper time; deeper + faster = slower";
+  "× = tick rate vs a far-away clock · deeper gravity and faster motion both make a clock tick slower";
 
 /**
  * Row of clock faces anchored with its right edge at x, top at y. Draws the

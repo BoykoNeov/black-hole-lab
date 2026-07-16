@@ -40,7 +40,7 @@ import {
 } from "./kerr";
 import { tidalRadiusM } from "./astro";
 
-export const DEBRIS_COUNT = 16;
+export const DEBRIS_COUNT = 32;
 /** Size of the shader's TDE uniform arrays (the intact star uses slot 0). */
 export const TDE_MAX = DEBRIS_COUNT;
 /**
@@ -51,7 +51,7 @@ export const TDE_MAX = DEBRIS_COUNT;
  * (speed-scaling the debris also scales L, and the relativistic capture
  * threshold for marginally bound orbits sits at L = 4).
  */
-export const FALLBACK_T0 = 800;
+export const FALLBACK_T0 = 1600;
 const STAR_TEMP_K = 5800;
 
 export interface TdeBody {
