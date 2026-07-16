@@ -5,12 +5,37 @@
  * pointer-events: none so camera drag/zoom pass straight through.
  */
 
+import { photonOrbitRadius, vEff } from "./edu";
+
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
   font: '12px "Segoe UI", system-ui, sans-serif',
+  small: '10px "Segoe UI", system-ui, sans-serif',
+  tiny: '9px "Segoe UI", system-ui, sans-serif',
   stroke: "rgba(205,214,244,0.8)",
+  faint: "rgba(205,214,244,0.55)",
   accent: "#ffb35c",
+  panelBg: "rgba(10,12,20,0.78)",
+  panelBorder: "rgba(120,140,200,0.25)",
 } as const;
+
+/** roundRect isn't in every TS DOM lib we build against — trace it by hand. */
+function panelPath(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+): void {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
 
 export function initHud(): CanvasRenderingContext2D {
   const canvas = document.getElementById("hud") as HTMLCanvasElement;
@@ -117,5 +142,244 @@ export function drawClocks(
   ctx.textAlign = "right";
   ctx.fillStyle = "rgba(205,214,244,0.55)";
   ctx.fillText(CLOCK_CAPTION, x, cy + CLOCK_R + 44);
+  ctx.restore();
+}
+
+// ---------- effective-potential inset (6c) ----------
+
+export const POTENTIAL_W = 300;
+export const POTENTIAL_H = 182;
+/** r window of the plot. 0 (not r+) so the horizon band is visible. */
+const POT_RMAX = 20;
+/** V_eff window — fixed, so sliding L visibly raises and lowers the curve. */
+const POT_VMIN = 0.88;
+const POT_VMAX = 1.08;
+const POT_N = 140;
+/** Sampled once per frame while the inset is on; never reallocated. */
+const potV = new Float32Array(POT_N);
+
+export interface PotentialOpts {
+  a: number;
+  /** Test-particle angular momentum (params.eduL). */
+  L: number;
+  rHor: number;
+  isco: number;
+  /** Live TDE bodies: BL radius and conserved E of the first markN entries. */
+  markR: Float64Array;
+  markE: Float64Array;
+  markN: number;
+}
+
+/**
+ * The "why is there an innermost stable orbit" picture: V_eff(r) for one test
+ * particle's L, with the horizon, photon orbit, ISCO and any live TDE bodies
+ * marked. Everything plotted is exact Kerr (edu.ts vEff / photonOrbitRadius);
+ * only the fixed axis window is a display choice. Drawn with its top-left at
+ * (x, y).
+ */
+export function drawPotential(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  o: PotentialOpts
+): void {
+  const W = POTENTIAL_W;
+  const H = POTENTIAL_H;
+  // plot box inside the panel
+  const px = x + 34;
+  const py = y + 12;
+  const pw = W - 34 - 10;
+  const ph = 100;
+  const rx = (r: number) => px + (r / POT_RMAX) * pw;
+  const vy = (v: number) => py + ph - ((v - POT_VMIN) / (POT_VMAX - POT_VMIN)) * ph;
+  const clampY = (v: number) => Math.min(Math.max(vy(v), py), py + ph);
+
+  ctx.save();
+  ctx.fillStyle = HUD_STYLE.panelBg;
+  ctx.strokeStyle = HUD_STYLE.panelBorder;
+  ctx.lineWidth = 1;
+  panelPath(ctx, x, y, W, H, 10);
+  ctx.fill();
+  ctx.stroke();
+
+  // clip the curve and markers to the plot box; the axes/labels draw after
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(px, py, pw, ph);
+  ctx.clip();
+
+  // region inside the horizon: no orbits, no V_eff — it moves in as a rises
+  ctx.fillStyle = "rgba(120,140,200,0.14)";
+  ctx.fillRect(px, py, rx(o.rHor) - px, ph);
+
+  // E = 1 — above this a particle is unbound and can escape to infinity
+  ctx.strokeStyle = "rgba(205,214,244,0.35)";
+  ctx.setLineDash([3, 3]);
+  ctx.beginPath();
+  ctx.moveTo(px, vy(1));
+  ctx.lineTo(px + pw, vy(1));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // V_eff is only defined outside the horizon, so sample [r+, POT_RMAX]
+  const r0 = o.rHor;
+  const dr = (POT_RMAX - r0) / (POT_N - 1);
+  for (let i = 0; i < POT_N; i++) potV[i] = vEff(r0 + i * dr, o.L, o.a);
+  ctx.strokeStyle = HUD_STYLE.accent;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (let i = 0; i < POT_N; i++) ctx.lineTo(rx(r0 + i * dr), clampY(potV[i]));
+  ctx.stroke();
+  ctx.lineWidth = 1;
+
+  // Local extrema straight off the sampled curve: the barrier peak and the
+  // stable-orbit trough. Both vanish below L_isco — that IS the lesson, so
+  // find them by slope sign changes rather than assuming they exist.
+  let minR = -1;
+  let minV = 0;
+  let maxR = -1;
+  let maxV = 0;
+  for (let i = 1; i < POT_N - 1; i++) {
+    const before = potV[i] - potV[i - 1];
+    const after = potV[i + 1] - potV[i];
+    if (before < 0 && after > 0) {
+      minR = r0 + i * dr;
+      minV = potV[i];
+    } else if (before > 0 && after < 0) {
+      maxR = r0 + i * dr;
+      maxV = potV[i];
+    }
+  }
+  if (maxR > 0) {
+    ctx.strokeStyle = HUD_STYLE.accent;
+    ctx.beginPath();
+    ctx.arc(rx(maxR), clampY(maxV), 2.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+  if (minR > 0) {
+    const my = clampY(minV);
+    ctx.fillStyle = HUD_STYLE.accent;
+    ctx.beginPath();
+    ctx.arc(rx(minR), my, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.font = HUD_STYLE.tiny;
+    ctx.textAlign = "center";
+    // The trough wanders with L: near the floor at low L, out against the
+    // right edge at high L. Flip/slide the label so the clip rect never eats
+    // it, while the dot itself stays exactly on the minimum.
+    const below = my + 15 < py + ph;
+    ctx.textBaseline = below ? "top" : "bottom";
+    const label = "stable orbit";
+    const half = ctx.measureText(label).width / 2 + 2;
+    const lx = Math.min(Math.max(rx(minR), px + half), px + pw - half);
+    ctx.fillText(label, lx, my + (below ? 6 : -6));
+  }
+
+  // Live TDE bodies. r changes, E is exactly conserved (E = -m_t, integrated
+  // by tde.ts), so each dot may only slide horizontally.
+  ctx.fillStyle = "#ffffff";
+  let shown = 0;
+  for (let i = 0; i < o.markN; i++) {
+    const r = o.markR[i];
+    if (r > POT_RMAX) continue; // still outside the plot window
+    shown++;
+    ctx.beginPath();
+    ctx.arc(rx(r), clampY(o.markE[i]), 2.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore(); // un-clip
+
+  // axes
+  ctx.strokeStyle = "rgba(205,214,244,0.4)";
+  ctx.beginPath();
+  ctx.moveTo(px, py);
+  ctx.lineTo(px, py + ph);
+  ctx.lineTo(px + pw, py + ph);
+  ctx.stroke();
+
+  ctx.font = HUD_STYLE.tiny;
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillText(POT_VMAX.toFixed(2), px - 4, py);
+  ctx.fillText("E = 1", px - 4, vy(1));
+  ctx.fillText(POT_VMIN.toFixed(2), px - 4, py + ph);
+  ctx.textAlign = "center";
+  ctx.textBaseline = "top";
+  for (const r of [0, 5, 10, 15, 20]) ctx.fillText(`${r}`, rx(r), py + ph + 3);
+  ctx.fillText("r (M)", px + pw / 2, py + ph + 14);
+
+  // Vertical markers. At high spin the photon orbit and the ISCO close to
+  // within a few px of each other and both ride up against the steep inner
+  // wall of the curve, so the lines are keyed to a legend in the empty
+  // top-right of the plot rather than labelled where they stand.
+  const rPh = photonOrbitRadius(o.a, true);
+  const phColor = "rgba(205,214,244,0.5)";
+  const iscoColor = "rgba(159,208,255,0.8)";
+  ctx.strokeStyle = phColor;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(rx(rPh), py);
+  ctx.lineTo(rx(rPh), py + ph);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = iscoColor;
+  ctx.beginPath();
+  ctx.moveTo(rx(o.isco), py);
+  ctx.lineTo(rx(o.isco), py + ph);
+  ctx.stroke();
+
+  const legend: Array<[string, string, boolean]> = [
+    [`photon orbit  r = ${rPh.toFixed(2)}`, phColor, true],
+    [`ISCO  r = ${o.isco.toFixed(2)}`, iscoColor, false],
+  ];
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i < legend.length; i++) {
+    const [text, color, dashed] = legend[i];
+    const ly = py + 6 + i * 11;
+    ctx.fillStyle = color;
+    ctx.fillText(text, px + pw - 4, ly);
+    ctx.strokeStyle = color;
+    if (dashed) ctx.setLineDash([3, 2]);
+    ctx.beginPath();
+    ctx.moveTo(px + pw - 4 - ctx.measureText(text).width - 12, ly);
+    ctx.lineTo(px + pw - 4 - ctx.measureText(text).width - 2, ly);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.fillText("unbound above", px + pw - 4, vy(1) - 6);
+
+  ctx.save();
+  ctx.translate(px + 6, py + ph - 4);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = "left";
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.fillText("inside horizon", 0, 0);
+  ctx.restore();
+
+  ctx.font = HUD_STYLE.small;
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.fillText(
+    "orbits oscillate where E < V_eff walls; below the ISCO the",
+    x + 10,
+    y + H - 36
+  );
+  ctx.fillText(
+    "minimum flattens away — nothing left to hold you up.",
+    x + 10,
+    y + H - 25
+  );
+  ctx.fillText(
+    shown > 0
+      ? "energy is conserved: the dot moves only sideways."
+      : "throw a star in to watch a real body move on this curve.",
+    x + 10,
+    y + H - 14
+  );
   ctx.restore();
 }

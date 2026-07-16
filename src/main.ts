@@ -20,7 +20,15 @@ import {
   type TdeState,
 } from "./tde";
 import { compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
-import { clearHud, drawClocks, initHud, resizeHud, type ClockEntry } from "./hud";
+import {
+  POTENTIAL_H,
+  clearHud,
+  drawClocks,
+  drawPotential,
+  initHud,
+  resizeHud,
+  type ClockEntry,
+} from "./hud";
 import { circRate, staticRate } from "./edu";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
@@ -130,6 +138,7 @@ const params = {
   eduClocks: false,
   eduPotential: false,
   eduEmbed: false,
+  eduL: 3.4641, // test-particle L for the potential inset (Schwarzschild ISCO: 2√3)
 };
 
 // ---------- matter state ----------
@@ -150,6 +159,12 @@ const clockEntries: ClockEntry[] = [
   { label: "ISCO", tau: 0, rate: 1, gone: false },
   { label: "the star", tau: 0, rate: 1, gone: false },
 ];
+
+// TDE bodies plotted on the 6c potential inset — capped at 4 so the curve
+// stays readable. Preallocated: the inset redraws every frame.
+const POT_MARK_MAX = 4;
+const potMarkR = new Float64Array(POT_MARK_MAX);
+const potMarkE = new Float64Array(POT_MARK_MAX);
 
 const rng = mulberry32(0x5eed);
 const gasBlobs: GasBlob[] = [];
@@ -192,6 +207,7 @@ bindSlider("diskbright", (v) => (params.diskBright = v));
 bindSlider("disksize", (v) => (params.diskOuter = v));
 bindSlider("timespeed", (v) => (params.timeSpeed = v));
 bindSlider("jetpower", (v) => (params.jetPower = v));
+bindSlider("edul", (v) => (params.eduL = v), (v) => v.toFixed(2));
 bindSlider("spin", (v) => {
   params.spin = v;
   spinCtx = makeSpinCtx(v);
@@ -448,6 +464,27 @@ function render() {
       nClocks = 4;
     }
     drawClocks(hudCtx, clockEntries, nClocks, canvas.clientWidth - 12, 12);
+  }
+
+  if (params.eduPotential) {
+    // E = -m_t is the conserved energy the geodesic integrator carries, so
+    // the dots are exact — they can only slide along r.
+    const nMark = Math.min(tdeBodies.length, POT_MARK_MAX);
+    for (let i = 0; i < nMark; i++) {
+      potMarkR[i] = ksRadius(tdeBodies[i].p, params.spin);
+      potMarkE[i] = -tdeBodies[i].mt;
+    }
+    // left-anchored clear of the control panel column rather than flush to
+    // the corner: #panel is opaque and sits above the HUD
+    drawPotential(hudCtx, 280, canvas.clientHeight - POTENTIAL_H - 12, {
+      a: params.spin,
+      L: params.eduL,
+      rHor: spinCtx.rHor,
+      isco: spinCtx.isco,
+      markR: potMarkR,
+      markE: potMarkE,
+      markN: nMark,
+    });
   }
 
   if (dbgScan) {

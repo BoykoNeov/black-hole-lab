@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { cameraBasis } from "../src/camera";
-import { buildStaticTetrad, iscoRadius, ksRadius } from "../src/kerr";
-import { circRate, projectToScreen, staticRate } from "../src/edu";
+import { buildStaticTetrad, circEL, iscoRadius, ksRadius } from "../src/kerr";
+import {
+  circRate,
+  photonOrbitRadius,
+  projectToScreen,
+  staticRate,
+  vEff,
+} from "../src/edu";
 import type { V3 } from "../src/edu";
 
 const T = Math.tan((60 * Math.PI) / 360); // tan(fov/2) at fov = 60°
@@ -117,5 +123,56 @@ describe("circRate", () => {
       expect(rate).toBeGreaterThan(0);
       expect(rate).toBeLessThan(1);
     }
+  });
+});
+
+describe("vEff", () => {
+  it("reduces to the textbook Schwarzschild potential at a = 0", () => {
+    for (const r of [4, 6, 10, 20]) {
+      for (const L of [2, 3.4641, 4.5]) {
+        expect(vEff(r, L, 0)).toBeCloseTo(
+          Math.sqrt((1 - 2 / r) * (1 + (L * L) / (r * r))),
+          12
+        );
+      }
+    }
+  });
+
+  it("puts a circular orbit at a stationary point with its own E and L", () => {
+    // the oracle test: circEL is the independent closed form, so agreement
+    // pins both the potential's value and its shape at every spin
+    const h = 1e-5;
+    for (const a of [0, 0.7, 0.9]) {
+      for (const rc of [iscoRadius(a), 8, 12]) {
+        const { E, L } = circEL(rc, a);
+        expect(vEff(rc, L, a)).toBeCloseTo(E, 8);
+        const slope = (vEff(rc + h, L, a) - vEff(rc - h, L, a)) / (2 * h);
+        expect(slope).toBeCloseTo(0, 5);
+      }
+    }
+  });
+
+  it("makes the Schwarzschild ISCO marginally stable", () => {
+    const L = 2 * Math.sqrt(3); // Schwarzschild ISCO angular momentum
+    expect(vEff(6, L, 0)).toBeCloseTo(Math.sqrt(8 / 9), 9);
+    // the minimum and maximum merge at r = 6: V'' = 0 as well as V' = 0
+    const h = 1e-3;
+    const d2 = (vEff(6 + h, L, 0) - 2 * vEff(6, L, 0) + vEff(6 - h, L, 0)) / (h * h);
+    expect(d2).toBeCloseTo(0, 6);
+  });
+});
+
+describe("photonOrbitRadius", () => {
+  it("matches the known closed-form values", () => {
+    expect(photonOrbitRadius(0, true)).toBeCloseTo(3, 12);
+    expect(photonOrbitRadius(0, false)).toBeCloseTo(3, 12);
+    expect(photonOrbitRadius(1, true)).toBeCloseTo(1, 12);
+    expect(photonOrbitRadius(1, false)).toBeCloseTo(4, 12);
+    expect(photonOrbitRadius(0.9, true)).toBeCloseTo(1.5578, 3);
+  });
+
+  it("is dragged inward when prograde and outward when retrograde", () => {
+    expect(photonOrbitRadius(0.5, true)).toBeLessThan(3);
+    expect(photonOrbitRadius(0.5, false)).toBeGreaterThan(3);
   });
 });

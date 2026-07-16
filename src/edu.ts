@@ -81,3 +81,44 @@ export function staticRate(p: V3, a: number): number {
 export function circRate(r: number, a: number): number {
   return 1 / circUt(r, a);
 }
+
+/**
+ * Equatorial Kerr effective potential: the energy E (per unit rest mass) at
+ * which a particle of angular momentum L has a radial turning point at r.
+ * The radial equation for equatorial timelike geodesics (M = 1) is
+ *
+ *     (dr/dtau)^2 = E^2 alpha(r) - E beta(r) - gamma(r),
+ *     alpha = 1 + a^2/r^2 + 2 a^2/r^3,
+ *     beta  = 4 a L / r^3,
+ *     gamma = 1 - 2/r + (L^2 + a^2)/r^2 - 2 L^2/r^3,
+ *
+ * so V_eff is the positive root of alpha E^2 - beta E - gamma = 0. Frame
+ * dragging makes it E-linear (beta), which is why this is a quadratic rather
+ * than the textbook square root. At a = 0, beta = 0 and gamma factors, giving
+ * back sqrt((1 - 2/r)(1 + L^2/r^2)).
+ *
+ * NOTE: PLAN-slice-6.md's 6c prose drops the a^2/r^2 term from gamma. That
+ * version disagrees with the circEL oracle by ~1% at a = 0.9; the form above
+ * reproduces circEL's E exactly (see test/edu.test.ts).
+ */
+export function vEff(r: number, L: number, a: number): number {
+  const r2 = r * r;
+  const r3 = r2 * r;
+  const a2 = a * a;
+  const alpha = 1 + a2 / r2 + (2 * a2) / r3;
+  const beta = (4 * a * L) / r3;
+  const gamma = 1 - 2 / r + (L * L + a2) / r2 - (2 * L * L) / r3;
+  // the discriminant can dip a few ulps below zero near the horizon
+  const disc = Math.max(beta * beta + 4 * alpha * gamma, 0);
+  return (beta + Math.sqrt(disc)) / (2 * alpha);
+}
+
+/**
+ * Radius of the unstable circular photon orbit in the equatorial plane
+ * (Bardeen): r_ph = 2(1 + cos(2/3 arccos(-+a))), the minus sign prograde.
+ * a = 0 gives 3 either way; at a = 1 the prograde orbit sits at r = 1 and the
+ * retrograde one at r = 4.
+ */
+export function photonOrbitRadius(a: number, prograde: boolean): number {
+  return 2 * (1 + Math.cos((2 / 3) * Math.acos(prograde ? -a : a)));
+}

@@ -116,9 +116,11 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `src/camera.ts` — orbit controls
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static
-  camera and circular orbiters (pure, tested)
+  camera and circular orbiters, equatorial Kerr effective potential and
+  Bardeen photon-orbit radii (pure, tested)
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
-  shared HUD style, clock faces; DOM-only, verified by eye)
+  shared HUD style, clock faces, effective-potential inset; DOM-only,
+  verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -135,7 +137,10 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   horizon), T ∝ ṁ^(1/4) M^(-1/4) scalings, tidal-radius values and the
   ~1.1e8 M☉ Hills mass, flare rise/peak/t^(-5/3) decay
 - `test/edu.test.ts` — screen projection against hand-built frustum points
-  (center, top edge with y flip, behind-camera cull, aspect scaling)
+  (center, top edge with y flip, behind-camera cull, aspect scaling), clock
+  rates tied to the rendering tetrad's u^t, effective potential cross-checked
+  against the circEL oracle (V_eff(r_c) = E with zero slope at every spin),
+  Schwarzschild ISCO marginal stability, Bardeen photon-orbit radii
 - `test/tde.test.ts` — timelike stepper holds a circular orbit at its exact
   period (norm conserved), raise∘lower = id, disruption at r_t with a
   bound/unbound energy spread, bound debris loops out and falls back while
@@ -159,3 +164,4 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    callout mode (detailed sub-slice plan in `PLAN-slice-6.md`)
    - 6a HUD infrastructure + knob provenance badges ✅
    - 6b clocks — gravitational + velocity time dilation ✅
+   - 6c effective-potential inset — barrier, ISCO minimum, live TDE energies ✅
