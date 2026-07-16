@@ -4,7 +4,7 @@
  * hud.ts, wiring in main.ts.
  */
 
-import { circUt, horizonRadius, ksMetric, traceRayKerr } from "./kerr";
+import { circUt, horizonRadius, ksMetric, traceRayKerr, uCircCart } from "./kerr";
 import type { Tetrad, V3, V4 } from "./kerr";
 import type { CameraBasis } from "./camera";
 
@@ -388,6 +388,161 @@ export function* findShadowEdgeIncremental(
     pts[2 * k + 1] = s * sn;
   }
   return { pts, valid: true };
+}
+
+/** The outline's extreme points, in NDC — the anchors the callouts hang off. */
+export interface ShadowExtremes {
+  leftX: number;
+  leftY: number;
+  rightX: number;
+  rightY: number;
+  topX: number;
+  topY: number;
+  bottomX: number;
+  bottomY: number;
+}
+
+/**
+ * The four screen extremes of a shadow outline: the points of least/greatest
+ * ndcX and ndcY. Labels anchor to these rather than to a fitted circle,
+ * because at high spin with an edge-on camera the shadow is D-shaped and the
+ * flattened side is exactly what a label about it should point at. Returns
+ * outline samples verbatim — no interpolation, so an anchor always lands on
+ * the drawn dashes.
+ *
+ * The outline is built as s(psi)·(cos psi, sin psi) from NDC (0, 0), so that
+ * origin is the shadow's own centre by construction: callers wanting a point
+ * just outside the edge can scale an extreme's ndc directly.
+ */
+export function shadowExtremes(edge: ShadowEdge, out?: ShadowExtremes): ShadowExtremes {
+  const o =
+    out ??
+    { leftX: 0, leftY: 0, rightX: 0, rightY: 0, topX: 0, topY: 0, bottomX: 0, bottomY: 0 };
+  const n = edge.pts.length / 2;
+  if (n === 0) return o;
+  let iL = 0;
+  let iR = 0;
+  let iT = 0;
+  let iB = 0;
+  for (let k = 1; k < n; k++) {
+    if (edge.pts[k * 2] < edge.pts[iL * 2]) iL = k;
+    if (edge.pts[k * 2] > edge.pts[iR * 2]) iR = k;
+    if (edge.pts[k * 2 + 1] > edge.pts[iT * 2 + 1]) iT = k;
+    if (edge.pts[k * 2 + 1] < edge.pts[iB * 2 + 1]) iB = k;
+  }
+  o.leftX = edge.pts[iL * 2];
+  o.leftY = edge.pts[iL * 2 + 1];
+  o.rightX = edge.pts[iR * 2];
+  o.rightY = edge.pts[iR * 2 + 1];
+  o.topX = edge.pts[iT * 2];
+  o.topY = edge.pts[iT * 2 + 1];
+  o.bottomX = edge.pts[iB * 2];
+  o.bottomY = edge.pts[iB * 2 + 1];
+  return o;
+}
+
+// ---------- "what am I looking at?" callout geometry (6g) ----------
+
+/**
+ * Where the Doppler callouts sample the disk. Inside it at every setting of
+ * the size slider (which bottoms out at 8) and outside every ISCO (which tops
+ * out at 6), and deep enough that the orbital speed really is the ~0.4-0.5c
+ * the copy claims. The approaching SIDE doesn't depend on this choice —
+ * prograde is prograde at every radius — so it only fixes where the anchor
+ * dot lands.
+ */
+export const DOPPLER_R = 8;
+
+/**
+ * World point of equatorial matter at Boyer–Lindquist radius r and world
+ * azimuth az. In Kerr–Schild the equatorial BL circle of radius r sits at
+ * Cartesian radius sqrt(r^2 + a^2) — the same map matter.ts's gasPosXZ and
+ * kerr.ts's uCircCart use — so a marker placed here sits where the renderer
+ * really put that matter (lensing then moves its IMAGE elsewhere).
+ */
+export function equatorialPoint(r: number, az: number, a: number, out?: V3): V3 {
+  const q = out ?? ([0, 0, 0] as V3);
+  const R = Math.sqrt(r * r + a * a);
+  q[0] = R * Math.cos(az);
+  q[1] = 0;
+  q[2] = R * Math.sin(az);
+  return q;
+}
+
+/**
+ * +1 when the disk matter on the camera's right-hand side is moving toward the
+ * camera — i.e. the beamed, brighter lobe is on the right of the screen; -1
+ * when the right side is the receding one.
+ *
+ * Built from uCircCart, the same prograde circular 4-velocity the scene
+ * shader's disk shift encodes (both run world azimuth *decreasing*, see
+ * kerr.ts and FS_SCENE's diskG/diskTurb). That shared convention is what makes
+ * the label land on the lobe the renderer actually brightens, so it must not
+ * drift from the shader's.
+ *
+ * Returns 0 only for a camera exactly on the spin axis, where the disk sweeps
+ * across the line of sight and genuinely no side approaches. The pitch clamp
+ * keeps the camera off the axis, so this never fires in the app.
+ */
+export function approachingSign(camPos: V3, right: V3, a: number): number {
+  // the camera's right vector, projected into the disk plane, as a world
+  // azimuth (atan2 is scale-free, so no need to normalize first)
+  const az = Math.atan2(right[2], right[0]);
+  const q = equatorialPoint(DOPPLER_R, az, a);
+  const u = uCircCart(DOPPLER_R, az, a);
+  const dx = camPos[0] - q[0];
+  const dy = camPos[1] - q[1];
+  const dz = camPos[2] - q[2];
+  // u^t > 0 scales all three spatial components alike, so it cannot flip this
+  return Math.sign(u[1] * dx + u[2] * dy + u[3] * dz);
+}
+
+/** How well a star lines up with the hole, as seen from the camera. */
+export interface Alignment {
+  /** Angle at the camera between the hole and the star (radians). */
+  angle: number;
+  /** True when the star is on the far side of the hole. */
+  behind: boolean;
+}
+
+/**
+ * Below this misalignment, a star behind the hole is called an Einstein ring.
+ *
+ * `angle` is the source's unlensed angular offset — beta in the thin-lens
+ * picture — and a ring is complete only at beta = 0, degrading into two
+ * unequal images as beta grows past the Einstein radius. For a star at r = 10
+ * seen from the default 25 M, theta_E = sqrt(4 M D_ls / (D_l D_s)) ~ 0.21 rad,
+ * so 0.06 fires only around a quarter of the way out: a genuinely strong,
+ * near-complete ring rather than every mild arc. (Thin-lens is a guide here,
+ * not the truth — the render's rays are traced exactly.)
+ */
+export const EINSTEIN_ANGLE = 0.06;
+
+/**
+ * A star's angular miss from the exact anti-camera axis, plus whether it is
+ * the far side of the hole at all. Both together are the ring condition: light
+ * from a source directly behind the lens reaches the camera around every side
+ * at once. A star in FRONT can be perfectly aligned on screen and does nothing.
+ */
+export function alignmentAngle(camPos: V3, starPos: V3, out?: Alignment): Alignment {
+  const o = out ?? { angle: 0, behind: false };
+  const d = Math.hypot(camPos[0], camPos[1], camPos[2]);
+  // the half-space beyond the hole, split by the plane through it normal to
+  // the view axis: dot(starPos, camera->hole direction) > 0
+  o.behind =
+    -(starPos[0] * camPos[0] + starPos[1] * camPos[1] + starPos[2] * camPos[2]) > 0;
+  const sx = starPos[0] - camPos[0];
+  const sy = starPos[1] - camPos[1];
+  const sz = starPos[2] - camPos[2];
+  const ls = Math.hypot(sx, sy, sz);
+  if (d === 0 || ls === 0) {
+    o.angle = 0;
+    return o;
+  }
+  // angle at the camera between (camera -> hole) and (camera -> star)
+  const c = -(camPos[0] * sx + camPos[1] * sy + camPos[2] * sz) / (d * ls);
+  o.angle = Math.acos(Math.min(Math.max(c, -1), 1));
+  return o;
 }
 
 /** One-shot edge finder: drains the incremental generator to completion. */

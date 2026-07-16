@@ -6,21 +6,27 @@ import {
   horizonRadius,
   iscoRadius,
   ksRadius,
+  uCircCart,
 } from "../src/kerr";
 import {
+  DOPPLER_R,
   TRAIL_MIN_DT,
   Trail,
+  alignmentAngle,
+  approachingSign,
   circRate,
   embeddingProfile,
   embeddingZAt,
+  equatorialPoint,
   findShadowEdge,
   findShadowEdgeIncremental,
   photonOrbitRadius,
   projectToScreen,
+  shadowExtremes,
   staticRate,
   vEff,
 } from "../src/edu";
-import type { V3 } from "../src/edu";
+import type { ShadowEdge, V3 } from "../src/edu";
 
 const T = Math.tan((60 * Math.PI) / 360); // tan(fov/2) at fov = 60°
 
@@ -430,5 +436,156 @@ describe("Trail", () => {
     expect(tr.newestT - tr.oldestT).toBe(0);
     tr.push([1, 0, 0], 4);
     expect(tr.newestT - tr.oldestT).toBe(1);
+  });
+});
+
+describe("equatorialPoint", () => {
+  it("lands where the renderer puts equatorial matter of that BL radius", () => {
+    // the oracle: ksRadius is what the shader and every overlay index matter
+    // by, so the map r -> world point must invert it exactly
+    for (const a of [0, 0.5, 0.998]) {
+      for (const r of [2.5, 8, 19]) {
+        for (const az of [0, 1.3, -2.2, Math.PI]) {
+          expect(ksRadius(equatorialPoint(r, az, a), a)).toBeCloseTo(r, 10);
+        }
+      }
+    }
+  });
+
+  it("puts the BL circle at Cartesian radius sqrt(r^2 + a^2), in the disk plane", () => {
+    const q = equatorialPoint(8, 0.4, 0.9);
+    expect(Math.hypot(q[0], q[1], q[2])).toBeCloseTo(Math.sqrt(64 + 0.81), 12);
+    expect(q[1]).toBe(0);
+    expect(Math.atan2(q[2], q[0])).toBeCloseTo(0.4, 12);
+  });
+
+  it("writes through the out param without allocating", () => {
+    const out: V3 = [9, 9, 9];
+    expect(equatorialPoint(6, 0, 0, out)).toBe(out);
+    expect(out[0]).toBeCloseTo(6, 12);
+  });
+});
+
+describe("approachingSign", () => {
+  /** The expected sign, re-derived from the same oracle at another radius:
+   *  the sense of rotation is a property of the spacetime, not of where you
+   *  sample it. */
+  const fromOracle = (camPos: V3, right: V3, a: number, r: number): number => {
+    const az = Math.atan2(right[2], right[0]);
+    const q = equatorialPoint(r, az, a);
+    const u = uCircCart(r, az, a);
+    return Math.sign(
+      u[1] * (camPos[0] - q[0]) + u[2] * (camPos[1] - q[1]) + u[3] * (camPos[2] - q[2])
+    );
+  };
+
+  it("agrees with the oracle sampled at a different radius", () => {
+    for (const a of [0, 0.7, 0.998]) {
+      for (const yaw of [0, 0.6, 2.5, 4.9]) {
+        const b = cameraBasis({ yaw, pitch: 0.15, dist: 25, fovDeg: 60 });
+        expect(approachingSign(b.pos, b.right, a)).toBe(fromOracle(b.pos, b.right, a, 10));
+        expect(DOPPLER_R).not.toBe(10); // or the check above is vacuous
+      }
+    }
+  });
+
+  it("says the screen's right-hand side recedes, at every camera the app allows", () => {
+    // Hand-derived at the canonical camera: at [0,0,25] the basis gives
+    // right = +x, and uCircCart runs world azimuth DECREASING, so matter at
+    // +x moves toward -z — away from a camera sitting at +z. The bright,
+    // beamed lobe is therefore on the LEFT of the screen.
+    //
+    // That holds for the whole orbit camera, which is the surprise worth
+    // pinning: cameraBasis builds right = cross(fwd, +y), giving
+    // right = (cos yaw, 0, -sin yaw) at ANY pitch, and the dot product then
+    // collapses to -dist·cos(pitch)·u^t·Omega·R < 0. Orbiting to the far side
+    // moves camPos and right together, so the two cancel; crossing under the
+    // disk re-points `up` instead. (PLAN-slice-6.md's 6g expects a flip at
+    // yaw + pi — it does not happen, and physically must not: walking around
+    // a carousel never reverses its sense while your head stays aligned with
+    // its axis.)
+    for (const a of [0, 0.3, 0.9, 0.998]) {
+      for (const yaw of [0, 0.6, Math.PI / 2, Math.PI, 3.7, 5.9]) {
+        for (const pitch of [0, 0.15, -0.5, 1.2, -1.2]) {
+          const b = cameraBasis({ yaw, pitch, dist: 25, fovDeg: 60 });
+          expect(approachingSign(b.pos, b.right, a)).toBe(-1);
+        }
+      }
+    }
+  });
+
+  it("flips for the opposite side of the disk, and is never 0 in between", () => {
+    // The two sides must disagree — mirroring `right` asks about the far one.
+    for (const a of [0, 0.9]) {
+      const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
+      const mirrored: V3 = [-b.right[0], -b.right[1], -b.right[2]];
+      const s = approachingSign(b.pos, b.right, a);
+      expect(Math.abs(s)).toBe(1);
+      expect(approachingSign(b.pos, mirrored, a)).toBe(-s);
+    }
+  });
+});
+
+describe("alignmentAngle", () => {
+  const cam: V3 = [0, 0, 25];
+
+  it("sees a star dead behind the hole as perfectly aligned", () => {
+    const al = alignmentAngle(cam, [0, 0, -10]);
+    expect(al.behind).toBe(true);
+    expect(al.angle).toBeCloseTo(0, 12);
+  });
+
+  it("does not count a star between the camera and the hole", () => {
+    // same axis, perfect on-screen alignment, but it lenses nothing
+    expect(alignmentAngle(cam, [0, 0, 10]).behind).toBe(false);
+  });
+
+  it("measures the miss angle at the camera", () => {
+    const al = alignmentAngle(cam, [5, 0, -10]);
+    expect(al.behind).toBe(true);
+    expect(al.angle).toBeCloseTo(Math.atan(5 / 35), 6);
+  });
+
+  it("stays under the ring threshold only while the star is nearly behind", () => {
+    // EINSTEIN_ANGLE is 0.06 rad: at 35 M away that is a ~2.1 M miss
+    expect(alignmentAngle(cam, [2, 0, -10]).angle).toBeLessThan(0.06);
+    expect(alignmentAngle(cam, [2.5, 0, -10]).angle).toBeGreaterThan(0.06);
+  });
+
+  it("writes through the out param", () => {
+    const out = { angle: 9, behind: false };
+    expect(alignmentAngle(cam, [0, 0, -10], out)).toBe(out);
+    expect(out.behind).toBe(true);
+  });
+});
+
+describe("shadowExtremes", () => {
+  it("picks out the four extreme samples verbatim", () => {
+    const edge: ShadowEdge = {
+      pts: Float64Array.from([0.3, 0.1, 0.05, 0.2, -0.5, -0.02, 0.01, -0.4]),
+      valid: true,
+    };
+    const e = shadowExtremes(edge);
+    expect([e.leftX, e.leftY]).toEqual([-0.5, -0.02]);
+    expect([e.rightX, e.rightY]).toEqual([0.3, 0.1]);
+    expect([e.topX, e.topY]).toEqual([0.05, 0.2]);
+    expect([e.bottomX, e.bottomY]).toEqual([0.01, -0.4]);
+  });
+
+  it("is symmetric on a Schwarzschild outline", () => {
+    const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
+    const tet = buildStaticTetrad(b.pos, 0, b.right, b.up, b.fwd);
+    const e = shadowExtremes(findShadowEdge(b.pos, tet, 0, T, 1, 8));
+    // no spin, no D-shape: the extremes sit on a circle about ndc (0,0), the
+    // centre the callouts scale their anchors out from
+    expect(-e.leftX).toBeCloseTo(e.rightX, 6);
+    expect(-e.bottomY).toBeCloseTo(e.topY, 6);
+    expect(e.rightX).toBeCloseTo(e.topY, 6);
+  });
+
+  it("survives an empty outline rather than reading off the end", () => {
+    const e = shadowExtremes({ pts: new Float64Array(0), valid: false });
+    expect(e.leftX).toBe(0);
+    expect(e.topY).toBe(0);
   });
 });

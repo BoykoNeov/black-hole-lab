@@ -702,7 +702,87 @@ export const CALLOUT_COPY = {
       "converging on this edge",
     ],
   },
+  approaching: {
+    title: "approaching side",
+    body: [
+      "matter here comes at you at ~half light",
+      "speed — relativistic beaming makes it",
+      "brighter and bluer",
+    ],
+  },
+  receding: {
+    title: "receding side",
+    body: ["same disk, moving away — beamed out of", "your view, dimmer and redder"],
+  },
+  hollywood: {
+    title: "Hollywood mode",
+    body: ["true brightness asymmetry hidden — this", "is the symmetric movie look"],
+  },
+  doubledTop: {
+    title: "the far side, seen over the top",
+    body: [
+      "light from disk behind the hole is bent",
+      "over the pole and reaches you — the disk",
+      "wraps its own image around the shadow",
+    ],
+  },
+  doubledBottom: {
+    title: "…and under the bottom",
+    body: ["the same far side, bent under —", "a second, fainter image"],
+  },
+  // No beaming ratio in this copy on purpose. The shader's jet brightness is
+  // 6.8·min(g, 1.6)^3 on a per-pixel shift along the traced ray: the clamp and
+  // the metric make the on-screen contrast something no single number tracks,
+  // and the honest idealization (delta^3, ~12× nose-on) swings to 1× edge-on —
+  // a fixed figure for a quantity the pitch slider moves would contradict the
+  // picture exactly where someone bothered to check it.
+  jet: {
+    title: "jet — pointed near you",
+    body: [
+      "knots stream at 0.85c; beaming toward you",
+      "makes this one much brighter and bluer",
+    ],
+  },
+  counterJet: {
+    title: "counter-jet",
+    body: [
+      "identical, but beamed away — for real it",
+      "would be all but invisible; the render",
+      "caps the contrast to keep it on screen",
+    ],
+  },
+  // The shader gates the jet's beaming on the same uDoppler as the disk's, so
+  // with it off the two jets really are drawn alike and the pair above would
+  // be describing an asymmetry that is not on screen.
+  jetSymmetric: {
+    title: "jet",
+    body: [
+      "knots stream at 0.85c — but with Doppler",
+      "off, both jets are drawn alike; the real",
+      "pair is wildly lopsided",
+    ],
+  },
+  isco: {
+    title: "inner edge — the ISCO",
+    body: [
+      "inside the innermost stable circular orbit",
+      "there are no orbits to shine from; matter",
+      "plunges in a few laps. Spin the hole up",
+      "and watch this edge chase the shadow.",
+      "(marker approximate — unlensed)",
+    ],
+  },
+  einstein: {
+    title: "Einstein ring!",
+    body: [
+      "a star is passing almost exactly behind",
+      "the hole — its light reaches you around",
+      "every side at once, smearing it to a ring",
+    ],
+  },
 } as const;
+
+export type CalloutKey = keyof typeof CALLOUT_COPY;
 
 /**
  * Leader-line label: a dot on the subject, a line out to a title + body text
@@ -735,25 +815,37 @@ export function drawCallout(
   ctx.textAlign = rightward ? "left" : "right";
   ctx.textBaseline = "middle";
   const ox = rightward ? 5 : -5;
+  // Unlike the insets, a callout floats straight over the scene — and the
+  // things worth labelling are exactly the bright ones, where pale text on
+  // a near-white disk disappears. Halo each line rather than box it in, so
+  // the label stays legible without hiding what it points at. (A stroked
+  // halo, not shadowBlur: same result, no per-glyph blur every frame.)
+  ctx.lineJoin = "round";
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = "rgba(0,0,0,0.72)";
   ctx.font = HUD_STYLE.font;
+  ctx.strokeText(title, tx + ox, ty);
   ctx.fillText(title, tx + ox, ty);
   ctx.font = HUD_STYLE.small;
   ctx.fillStyle = HUD_STYLE.stroke;
   for (let i = 0; i < body.length; i++) {
+    ctx.strokeText(body[i], tx + ox, ty + 14 + i * 12);
     ctx.fillText(body[i], tx + ox, ty + 14 + i * 12);
   }
   ctx.restore();
 }
 
 /**
- * The 6f outline with its two labels. The outline is edu.ts's bisected
- * capture boundary, so it hugs the rendered black disk exactly; the labels
- * anchor to the outline's own computed extremes rather than to a fitted
- * circle, so at high spin they follow the flattened side of the D-shape.
+ * The 6f outline: edu.ts's bisected capture boundary, so it hugs the rendered
+ * black disk exactly. Its two labels are emitted by main.ts into the shared
+ * callout layer below rather than drawn here, so that they take part in the
+ * same layout pass as 6g's — with the disk annotated too, the shadow-edge
+ * label and the near Doppler label land on top of each other otherwise.
+ *
  * alpha < 1 marks a stale outline: the view moved and a replacement is being
  * traced a few azimuths per frame.
  */
-export function drawShadowEdge(
+export function drawShadowOutline(
   ctx: CanvasRenderingContext2D,
   edge: ShadowEdge,
   w: number,
@@ -776,24 +868,107 @@ export function drawShadowEdge(
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.lineWidth = 1;
+  ctx.restore();
+}
 
-  let iLeft = 0; // min ndcX — the outline's leftmost point
-  let iTop = 0; // max ndcY — its top
-  for (let k = 1; k < n; k++) {
-    if (edge.pts[k * 2] < edge.pts[iLeft * 2]) iLeft = k;
-    if (edge.pts[k * 2 + 1] > edge.pts[iTop * 2 + 1]) iTop = k;
+// ---------- the callout layer (6g) ----------
+
+export interface CalloutItem {
+  key: CalloutKey;
+  /** Anchor: the thing on screen being labelled, in CSS px. */
+  ax: number;
+  ay: number;
+  /** Preferred offset of the text block from the anchor. The layout slides it
+   *  to keep the block on screen and off the control panel, stretching the
+   *  leader line rather than moving the anchor. */
+  dx: number;
+  dy: number;
+  /** Fades a callout hanging off a stale anchor (6f's outline mid-retrace). */
+  alpha: number;
+}
+
+/** The control panel is opaque, sits above the HUD and is 240 px wide at
+ *  left: 12 — text may not slide under it. */
+const CALLOUT_SAFE_X = 270;
+const CALLOUT_EDGE_PAD = 8;
+/** Breathing room left between two blocks the push-down has separated. */
+const CALLOUT_GAP = 6;
+/** Ceiling on one frame's callouts; main.ts can emit at most ten. */
+const CALLOUT_MAX_ITEMS = 12;
+
+// Bounds of the blocks placed so far this frame, for the overlap check.
+// Preallocated: the layout runs every frame the overlay is on.
+const laidL = new Float64Array(CALLOUT_MAX_ITEMS);
+const laidR = new Float64Array(CALLOUT_MAX_ITEMS);
+const laidT = new Float64Array(CALLOUT_MAX_ITEMS);
+const laidB = new Float64Array(CALLOUT_MAX_ITEMS);
+
+/**
+ * Width of a callout's widest line, measured once per key and kept. The copy
+ * is fixed and so are the fonts, so measuring per frame would do nothing but
+ * drop a TextMetrics object per label in front of the render loop.
+ */
+const calloutW = new Map<CalloutKey, number>();
+function calloutWidth(ctx: CanvasRenderingContext2D, key: CalloutKey): number {
+  const memo = calloutW.get(key);
+  if (memo !== undefined) return memo;
+  const c = CALLOUT_COPY[key];
+  ctx.font = HUD_STYLE.font;
+  let w = ctx.measureText(c.title).width;
+  ctx.font = HUD_STYLE.small;
+  for (const line of c.body) w = Math.max(w, ctx.measureText(line).width);
+  calloutW.set(key, w);
+  return w;
+}
+
+/**
+ * The callout layer: leader-line labels laid out to stay on screen, clear of
+ * the control panel, and off each other. Blocks only ever move DOWN to resolve
+ * an overlap, so `items` is a priority order — emit the labels that most need
+ * their natural position first.
+ */
+export function drawCallouts(
+  ctx: CanvasRenderingContext2D,
+  items: CalloutItem[],
+  n: number,
+  w: number,
+  h: number
+): void {
+  ctx.save();
+  let placed = 0;
+  for (let i = 0; i < n && placed < CALLOUT_MAX_ITEMS; i++) {
+    const it = items[i];
+    const c = CALLOUT_COPY[it.key];
+    const bw = calloutWidth(ctx, it.key);
+    // drawCallout centres the title on ty and stacks the body 12 px apart below
+    const bh = 14 + 12 * (c.body.length - 1);
+
+    // Slide the text horizontally into the free strip. The bounds allow for
+    // the block hanging off either side of tx, because drawCallout picks the
+    // side back off tx vs ax and the slide itself can cross the anchor.
+    const lo = CALLOUT_SAFE_X + bw + 5;
+    const hi = w - CALLOUT_EDGE_PAD - bw - 5;
+    const tx = Math.min(Math.max(it.ax + it.dx, lo), Math.max(hi, lo));
+    const bl = tx >= it.ax ? tx + 5 : tx - 5 - bw;
+
+    let ty = Math.min(
+      Math.max(it.ay + it.dy, 14),
+      Math.max(h - bh - CALLOUT_EDGE_PAD, 14)
+    );
+    for (let j = 0; j < placed; j++) {
+      if (bl >= laidR[j] || bl + bw <= laidL[j]) continue; // no horizontal overlap
+      if (ty - 7 < laidB[j] && ty + bh + 6 > laidT[j]) ty = laidB[j] + CALLOUT_GAP + 7;
+    }
+
+    laidL[placed] = bl;
+    laidR[placed] = bl + bw;
+    laidT[placed] = ty - 7;
+    laidB[placed] = ty + bh + 6;
+    placed++;
+
+    ctx.globalAlpha = it.alpha;
+    drawCallout(ctx, it.ax, it.ay, tx, ty, c.title, c.body);
   }
-  const lx = ((edge.pts[iLeft * 2] + 1) / 2) * w;
-  const ly = ((1 - edge.pts[iLeft * 2 + 1]) / 2) * h;
-  drawCallout(ctx, lx, ly, lx - 30, ly + 46, CALLOUT_COPY.shadow.title, CALLOUT_COPY.shadow.body);
-
-  // The photon ring converges onto the shadow edge from OUTSIDE (the last
-  // subring is the boundary itself), so its anchor sits just off the outline.
-  const px = ((edge.pts[iTop * 2] + 1) / 2) * w;
-  const py = ((1 - edge.pts[iTop * 2 + 1]) / 2) * h - 5;
-  drawCallout(ctx, px, py, px + 48, py - 46, CALLOUT_COPY.photonRing.title, CALLOUT_COPY.photonRing.body);
   ctx.restore();
 }
 

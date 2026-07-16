@@ -29,27 +29,40 @@ import {
   EMBED_W,
   POTENTIAL_H,
   clearHud,
+  drawCallouts,
   drawClocks,
   drawEmbedding,
   drawPotential,
-  drawShadowEdge,
+  drawShadowOutline,
   drawTrails,
   initHud,
   resizeHud,
+  type CalloutItem,
+  type CalloutKey,
   type ClockEntry,
   type TrailGroup,
 } from "./hud";
 import {
+  DOPPLER_R,
+  EINSTEIN_ANGLE,
   TRAIL_CAP_GAS,
   TRAIL_CAP_STAR,
   TRAIL_CAP_TDE,
   Trail,
+  alignmentAngle,
+  approachingSign,
   circRate,
   embeddingProfile,
+  equatorialPoint,
   findShadowEdgeIncremental,
+  projectToScreen,
+  shadowExtremes,
   staticRate,
+  type Alignment,
   type EmbeddingProfile,
+  type Projected,
   type ShadowEdge,
+  type ShadowExtremes,
 } from "./edu";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
@@ -287,6 +300,32 @@ const SHADOW_DEBOUNCE_MS = 250;
 const SHADOW_MS_FLOOR = 3;
 const SHADOW_MS_CAP = 30;
 const SHADOW_FRAME_FRACTION = 0.15;
+
+// Callout mode (6g). Every anchor here is a straight-line projection of where
+// a thing IS; the lensed image the label names sits near it, not on it (the
+// checkbox tooltip and the ISCO copy both say so). All of it is cheap math
+// recomputed per frame, except the shadow-derived anchors, which ride 6f's
+// debounced outline and fade with it while it is stale.
+const CALLOUT_MAX = 10;
+const calloutItems: CalloutItem[] = [];
+for (let i = 0; i < CALLOUT_MAX; i++)
+  calloutItems.push({ key: "shadow", ax: 0, ay: 0, dx: 0, dy: 0, alpha: 1 });
+const calloutExt: ShadowExtremes = {
+  leftX: 0, leftY: 0, rightX: 0, rightY: 0, topX: 0, topY: 0, bottomX: 0, bottomY: 0,
+};
+const calloutProj: Projected = { x: 0, y: 0, z: 0, visible: false };
+const calloutAlign: Alignment = { angle: 0, behind: false };
+const calloutQ: V3 = [0, 0, 0];
+/** Height at which the jet labels tap the beam: past the shader's fade-in at
+ *  |y| = 2.6 and well short of its fade-out at 46. */
+const JET_MARK_Y = 14;
+/** Beyond this pitch the disk is open enough that its far side no longer
+ *  arcs over the pole, and the doubled-image labels would name nothing. */
+const DOUBLED_MAX_PITCH = 0.45;
+/** How far outside the shadow's edge the doubled image is marked. The outline
+ *  is centred on ndc (0,0) by construction, so scaling an extreme's ndc walks
+ *  straight out along that radius. */
+const DOUBLED_NDC_SCALE = 1.35;
 
 const rng = mulberry32(0x5eed);
 const gasBlobs: GasBlob[] = [];
@@ -750,18 +789,165 @@ function render() {
     );
   }
 
-  if (shadowOn && shadowEdge && shadowEdge.valid) {
-    // Faded while stale: the view moved on and the replacement outline is
-    // still being traced. valid=false (camera not aimed at the hole — can't
-    // happen with the current orbit camera) degrades to drawing nothing.
-    drawShadowEdge(
-      hudCtx,
-      shadowEdge,
-      canvas.clientWidth,
-      canvas.clientHeight,
-      shadowFresh ? 1 : 0.35
+  // ---- shadow outline (6f) + the callout layer (6f labels + 6g) ----
+  const cw = canvas.clientWidth;
+  const ch = canvas.clientHeight;
+  let nCallouts = 0;
+  const emit = (
+    key: CalloutKey,
+    ax: number,
+    ay: number,
+    dx: number,
+    dy: number,
+    alpha: number
+  ) => {
+    if (nCallouts >= CALLOUT_MAX) return;
+    const it = calloutItems[nCallouts++];
+    it.key = key;
+    it.ax = ax;
+    it.ay = ay;
+    it.dx = dx;
+    it.dy = dy;
+    it.alpha = alpha;
+  };
+  // ndc -> CSS px, the same map drawShadowOutline strokes the outline with
+  const ndcPxX = (x: number) => ((x + 1) / 2) * cw;
+  const ndcPxY = (y: number) => ((1 - y) / 2) * ch;
+
+  const haveEdge = shadowOn && shadowEdge !== null && shadowEdge.valid;
+  // Faded while stale: the view moved on and the replacement outline is still
+  // being traced, so every anchor taken off it is a moment out of date.
+  const edgeAlpha = shadowFresh ? 1 : 0.35;
+  if (haveEdge) {
+    // valid=false (camera not aimed at the hole — unreachable with the orbit
+    // camera) degrades to drawing nothing.
+    drawShadowOutline(hudCtx, shadowEdge!, cw, ch, edgeAlpha);
+    shadowExtremes(shadowEdge!, calloutExt);
+    // Emitted first, so that with only the 6f overlay on they keep the exact
+    // positions they had before 6g gave them neighbours to make room for.
+    emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, edgeAlpha);
+    // The photon ring converges onto the shadow edge from OUTSIDE (its last
+    // subring IS the boundary), so its anchor sits just off the outline.
+    emit(
+      "photonRing",
+      ndcPxX(calloutExt.topX),
+      ndcPxY(calloutExt.topY) - 5,
+      48,
+      -46,
+      edgeAlpha
     );
   }
+
+  if (params.eduCallouts) {
+    // Which way round the disk's beaming runs, from the same prograde
+    // convention the scene shader's disk shift is built on.
+    const azRight = Math.atan2(basis.right[2], basis.right[0]);
+    const azApproach =
+      approachingSign(basis.pos, basis.right, params.spin) > 0
+        ? azRight
+        : azRight + Math.PI;
+    const projEq = (r: number, az: number) =>
+      projectToScreen(
+        equatorialPoint(r, az, params.spin, calloutQ),
+        basis,
+        tanHalfFov,
+        cw,
+        ch,
+        calloutProj
+      );
+    // labels lean away from the busy middle of the frame
+    const outward = (x: number) => (x < cw / 2 ? -46 : 46);
+
+    if (params.disk) {
+      // projEq hands back the one shared Projected, so read it out before the
+      // next call overwrites it
+      const app = projEq(DOPPLER_R, azApproach);
+      const appX = app.x;
+      const appY = app.y;
+      const appVis = app.visible;
+      if (params.doppler) {
+        if (appVis) emit("approaching", appX, appY, outward(appX), -40, 1);
+        const rec = projEq(DOPPLER_R, azApproach + Math.PI);
+        if (rec.visible) emit("receding", rec.x, rec.y, outward(rec.x), -40, 1);
+      } else if (appVis) {
+        // With Doppler off the two sides are identical, so one label about the
+        // missing asymmetry replaces the pair naming it.
+        emit("hollywood", appX, appY, outward(appX), -40, 1);
+      }
+    }
+
+    if (params.disk && haveEdge && Math.abs(camera.pitch) < DOUBLED_MAX_PITCH) {
+      emit(
+        "doubledTop",
+        ndcPxX(calloutExt.topX * DOUBLED_NDC_SCALE),
+        ndcPxY(calloutExt.topY * DOUBLED_NDC_SCALE),
+        44,
+        -34,
+        edgeAlpha
+      );
+      emit(
+        "doubledBottom",
+        ndcPxX(calloutExt.bottomX * DOUBLED_NDC_SCALE),
+        ndcPxY(calloutExt.bottomY * DOUBLED_NDC_SCALE),
+        44,
+        34,
+        edgeAlpha
+      );
+    }
+
+    if (params.jets) {
+      // The jet streaming toward the camera is the one on the camera's own
+      // side of the disk plane; since the camera always looks at the origin,
+      // that is also the one that projects nearer.
+      const nearY = basis.pos[1] >= 0 ? JET_MARK_Y : -JET_MARK_Y;
+      calloutQ[0] = 0;
+      calloutQ[2] = 0;
+      calloutQ[1] = nearY;
+      const near = projectToScreen(calloutQ, basis, tanHalfFov, cw, ch, calloutProj);
+      const nearX = near.x;
+      const nearYPx = near.y;
+      const nearVis = near.visible;
+      calloutQ[1] = -nearY;
+      const far = projectToScreen(calloutQ, basis, tanHalfFov, cw, ch, calloutProj);
+      if (params.doppler) {
+        if (nearVis) emit("jet", nearX, nearYPx, 54, 0, 1);
+        if (far.visible) emit("counterJet", far.x, far.y, 54, 0, 1);
+      } else if (nearVis) {
+        // Doppler off takes the jet's beaming with it (the shader gates both
+        // on uDoppler), so the twins are identical and only one gets named.
+        emit("jetSymmetric", nearX, nearYPx, 54, 0, 1);
+      }
+    }
+
+    if (params.disk) {
+      // marked on the approaching side, the one beamed toward you
+      const p = projEq(spinCtx.isco, azApproach);
+      if (p.visible) emit("isco", p.x, p.y, outward(p.x), 54, 1);
+    }
+
+    if (params.stars && haveEdge) {
+      for (let i = 0; i < STAR_COUNT; i++) {
+        calloutQ[0] = starPosArr[i * 4];
+        calloutQ[1] = starPosArr[i * 4 + 1];
+        calloutQ[2] = starPosArr[i * 4 + 2];
+        alignmentAngle(basis.pos, calloutQ, calloutAlign);
+        if (calloutAlign.behind && calloutAlign.angle < EINSTEIN_ANGLE) {
+          // the ring wraps the shadow, so shout from its right edge
+          emit(
+            "einstein",
+            ndcPxX(calloutExt.rightX),
+            ndcPxY(calloutExt.rightY),
+            44,
+            -50,
+            edgeAlpha
+          );
+          break; // one ring at a time is enough
+        }
+      }
+    }
+  }
+
+  if (nCallouts > 0) drawCallouts(hudCtx, calloutItems, nCallouts, cw, ch);
 
   if (params.eduClocks) {
     clockEntries[0].tau = simT;

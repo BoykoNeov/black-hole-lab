@@ -108,8 +108,13 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   zero at the horizon.
 - **Relativistic jets** — a bipolar volumetric emission cone integrated
   along each march step, with knots streaming outward at 0.85c and
-  relativistic beaming (clamped for sanity; the jet aimed toward the camera
-  really is ~16× brighter at 45°).
+  relativistic beaming: emission scales as g³ on the exact local shift, so a
+  jet seen 45° off its axis really is ~65× its receding twin (~15× at 60°).
+  The shift is clamped to g ≤ 1.6 before cubing — an artistic knob: nose-on
+  the true ratio is ~1900×, which would white the frame out, and the clamp
+  holds the drawn contrast near ~180×. The 6g jet callouts therefore describe
+  the asymmetry in words rather than quoting a ratio: no single number tracks
+  a clamped, per-pixel quantity that the pitch slider swings from 1× to ~180×.
 - **Time controls** — simulation time runs in coordinate-time units of M
   (pause button + speed slider, 0–120 M per real second); disk turbulence,
   stars, gas, and jet knots all advance on the same clock.
@@ -149,11 +154,14 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   shadow-edge finder: the on-screen capture boundary, located by bisecting
   CPU rays launched exactly as the shader launches them, exposed as a
   generator yielding per trace so the render loop can drain it against a
-  time budget (pure, tested)
+  time budget, plus the callout geometry: which disk lobe is beamed toward
+  the camera (from the same prograde `uCircCart` the shader's disk shift is
+  built on) and how nearly a star sits behind the hole (pure, tested)
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
-  funnel, orbit trails, dashed shadow outline with leader-line callouts and
-  all callout copy in one `CALLOUT_COPY` table; DOM-only, verified by eye)
+  funnel, orbit trails, dashed shadow outline, and the callout layer —
+  leader-line labels laid out to stay clear of the control panel and of each
+  other, with all copy in one `CALLOUT_COPY` table; DOM-only, verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -212,3 +220,8 @@ an Einstein ring; the far-side jet base wraps around the shadow):
      boundary (bisected CPU geodesics launched as the shader launches them,
      debounced and time-sliced across frames), labelled at its own computed
      extremes so the D-shape carries its labels with it ✅
+   - 6g "what am I looking at?" callout mode — one toggle that names the
+     frame from its real geometry: shadow and photon ring (6f's outline),
+     the beamed and receding disk lobes, the far side wrapped over the pole,
+     the jets, the ISCO edge, and an Einstein-ring detector that fires when a
+     star passes nearly behind the hole ✅
