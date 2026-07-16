@@ -41,13 +41,25 @@ export function cameraBasis(s: CameraState): CameraBasis {
   return { pos, right, up, fwd };
 }
 
-/** Attach pointer + wheel handlers that mutate `state` in place. */
-export function attachControls(canvas: HTMLCanvasElement, state: CameraState): void {
+/**
+ * Attach pointer + wheel handlers that mutate `state` in place.
+ *
+ * `claimed` lets an overlay take a pointerdown before the camera sees it: the
+ * HUD canvas is pointer-events:none (so camera drags pass straight through to
+ * here), which also means its own hit regions never receive the event. Without
+ * this hook, dragging a HUD handle would spin the camera underneath it.
+ */
+export function attachControls(
+  canvas: HTMLCanvasElement,
+  state: CameraState,
+  claimed?: (e: PointerEvent) => boolean
+): void {
   let dragging = false;
   let lastX = 0;
   let lastY = 0;
 
   canvas.addEventListener("pointerdown", (e) => {
+    if (claimed?.(e)) return;
     dragging = true;
     lastX = e.clientX;
     lastY = e.clientY;

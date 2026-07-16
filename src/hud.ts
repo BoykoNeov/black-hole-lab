@@ -155,6 +155,49 @@ export function drawClocks(
   ctx.restore();
 }
 
+// ---------- resizable insets ----------
+
+/**
+ * Uniform scale bounds for the draggable insets. The floor is where the 9px
+ * axis labels stop being readable; the ceiling is roughly a third of a 1080p
+ * height, past which an inset stops being an inset.
+ */
+export const INSET_SCALE_MIN = 0.6;
+export const INSET_SCALE_MAX = 2.4;
+/** Side of the corner grip's hit box, in CSS px. */
+export const GRIP_SIZE = 15;
+
+/**
+ * Corner grip for a resizable inset, at (cx, cy). Drawn in screen space at a
+ * constant size rather than inside the panel's scale transform: a grab target
+ * that shrank along with the panel would be hardest to hit exactly when you
+ * most wanted the panel back.
+ *
+ * inX/inY are the signs pointing from the grip corner into the panel body, so
+ * each inset can grip whichever corner faces the middle of the screen.
+ */
+export function drawResizeGrip(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  inX: number,
+  inY: number,
+  hot: boolean
+): void {
+  ctx.save();
+  ctx.strokeStyle = hot ? HUD_STYLE.accent : HUD_STYLE.faint;
+  ctx.lineWidth = hot ? 1.6 : 1.2;
+  ctx.lineCap = "round";
+  for (let i = 1; i <= 3; i++) {
+    const d = i * 3.6 + 1;
+    ctx.beginPath();
+    ctx.moveTo(cx + inX * d, cy);
+    ctx.lineTo(cx, cy + inY * d);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
 // ---------- effective-potential inset (6c) ----------
 
 export const POTENTIAL_W = 300;
@@ -185,9 +228,28 @@ export interface PotentialOpts {
  * particle's L, with the horizon, photon orbit, ISCO and any live TDE bodies
  * marked. Everything plotted is exact Kerr (edu.ts vEff / photonOrbitRadius);
  * only the fixed axis window is a display choice. Drawn with its top-left at
- * (x, y).
+ * (x, y), uniformly scaled by `scale`.
+ *
+ * The resize goes through one ctx.scale rather than a reflowed layout, so the
+ * plot, its fonts and its line widths stay in the proportions they were tuned
+ * at — the panel is vector art, and the only thing a bigger box should buy is
+ * a bigger view of the same picture.
  */
 export function drawPotential(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  o: PotentialOpts,
+  scale = 1
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  drawPotentialBody(ctx, 0, 0, o);
+  ctx.restore();
+}
+
+function drawPotentialBody(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
@@ -448,9 +510,28 @@ const DISK_LABEL = "rgba(255,179,92,0.85)";
  * The equatorial slice as a surface of revolution, drawn as a wireframe from
  * a fixed tilt with the camera's yaw. Geometry is entirely edu.ts's
  * embeddingProfile (exact Flamm at a = 0; see its comment for the a != 0
- * caveat). Drawn with its top-left at (x, y).
+ * caveat). Drawn with its top-left at (x, y), uniformly scaled by `scale`
+ * (see drawPotential on why the resize is a transform, not a reflow).
+ *
+ * The funnel already fits itself to the panel from its own extents, so the
+ * scale here buys resolution on that fit rather than changing it: the surface
+ * stays 1:1 in r and z at every handle position.
  */
 export function drawEmbedding(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  o: EmbedOpts,
+  scale = 1
+): void {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(scale, scale);
+  drawEmbeddingBody(ctx, 0, 0, o);
+  ctx.restore();
+}
+
+function drawEmbeddingBody(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,

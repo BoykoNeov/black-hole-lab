@@ -148,7 +148,8 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   a half-res scene. Only the low preset touches the march itself (shorter
   step budget, coarser arc length — a softer photon ring for a linear
   saving). The default preset is byte-identical to the pre-cap renderer.
-- `src/camera.ts` — orbit controls
+- `src/camera.ts` — orbit controls (plus the `claimed` hook that lets a HUD
+  handle take a pointerdown before it becomes an orbit drag)
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static
   camera and circular orbiters, equatorial Kerr effective potential and
@@ -166,7 +167,14 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
   funnel, orbit trails, dashed shadow outline, and the callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
-  other, with all copy in one `CALLOUT_COPY` table; DOM-only, verified by eye)
+  other, with all copy in one `CALLOUT_COPY` table; DOM-only, verified by eye).
+  The potential and embedding insets are drag-resizable from the corner facing
+  the scene: the resize is one `ctx.scale` around the whole panel rather than a
+  reflow, so the plots keep the proportions they were tuned at and only the
+  grip itself is drawn at constant screen size. The HUD canvas is
+  `pointer-events: none` so camera drags reach the GL canvas, which means the
+  grips can never receive a pointer event themselves — main.ts hit-tests them
+  and claims the pointerdown through `attachControls`' `claimed` hook
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture

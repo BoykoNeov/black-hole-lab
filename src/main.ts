@@ -27,12 +27,17 @@ import {
   EMBED_STARS,
   EMBED_TDE,
   EMBED_W,
+  GRIP_SIZE,
+  INSET_SCALE_MAX,
+  INSET_SCALE_MIN,
   POTENTIAL_H,
+  POTENTIAL_W,
   clearHud,
   drawCallouts,
   drawClocks,
   drawEmbedding,
   drawPotential,
+  drawResizeGrip,
   drawShadowOutline,
   drawTrails,
   initHud,
@@ -167,7 +172,9 @@ window.addEventListener("resize", resize);
 
 // ---------- UI ----------
 const camera: CameraState = { yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 };
-attachControls(canvas, camera);
+// insetClaim is a hoisted declaration below: it has to lose the race to the
+// camera's own pointerdown, so it is wired in here at construction.
+attachControls(canvas, camera, insetClaim);
 
 const params = {
   lensing: true,
@@ -200,7 +207,107 @@ const params = {
   eduPotential: false,
   eduEmbed: false,
   eduL: 3.4641, // test-particle L for the potential inset (Schwarzschild ISCO: 2√3)
+  // Uniform scale of each draggable inset (1 = the size it was designed at).
+  potScale: 1,
+  embedScale: 1,
 };
+
+// ---------- resizable insets ----------
+// The HUD canvas is pointer-events:none so that camera drags pass straight
+// through it to #view — which also means the insets' own grips never receive a
+// pointer event. So the hit-testing lives here, on the GL canvas, and claims
+// the pointerdown before the camera turns it into an orbit drag.
+
+const INSET_MARGIN = 12;
+/** Left edge of the potential inset: clear of the opaque #panel column. */
+const POT_X = 280;
+/** Grab forgiveness outside the grip's corner, in CSS px. */
+const GRIP_HALO = 5;
+
+type InsetId = "pot" | "embed";
+interface InsetSpec {
+  /** Size at scale 1. */
+  W: number;
+  H: number;
+  /** Signs pointing from the grip corner into the panel body. Both insets are
+   *  bottom-anchored and grip the top corner facing the middle of the screen,
+   *  so both grow up-and-inward. */
+  inX: number;
+  inY: number;
+  cursor: string;
+}
+const INSET_SPEC: Record<InsetId, InsetSpec> = {
+  pot: { W: POTENTIAL_W, H: POTENTIAL_H, inX: -1, inY: 1, cursor: "nesw-resize" },
+  embed: { W: EMBED_W, H: EMBED_H, inX: 1, inY: 1, cursor: "nwse-resize" },
+};
+
+const insetScale = (id: InsetId) => (id === "pot" ? params.potScale : params.embedScale);
+
+/** Top-left of an inset and the corner its grip sits on, in CSS px. */
+function insetBox(id: InsetId): { x: number; y: number; gx: number; gy: number } {
+  const s = INSET_SPEC[id];
+  const w = s.W * insetScale(id);
+  const h = s.H * insetScale(id);
+  const x = id === "pot" ? POT_X : canvas.clientWidth - w - INSET_MARGIN;
+  const y = canvas.clientHeight - h - INSET_MARGIN;
+  return { x, y, gx: id === "pot" ? x + w : x, gy: y };
+}
+
+function insetShown(id: InsetId): boolean {
+  return id === "pot" ? params.eduPotential : params.eduEmbed;
+}
+
+/** Which grip is under (px, py), if any. Embedding first: it is drawn last. */
+function gripUnder(px: number, py: number): InsetId | null {
+  for (const id of ["embed", "pot"] as InsetId[]) {
+    if (!insetShown(id)) continue;
+    const b = insetBox(id);
+    const s = INSET_SPEC[id];
+    const dx = (px - b.gx) * s.inX;
+    const dy = (py - b.gy) * s.inY;
+    if (dx >= -GRIP_HALO && dx <= GRIP_SIZE && dy >= -GRIP_HALO && dy <= GRIP_SIZE) {
+      return id;
+    }
+  }
+  return null;
+}
+
+let insetDrag: { id: InsetId; startScale: number; x0: number; y0: number } | null = null;
+let gripHot: InsetId | null = null;
+
+function insetClaim(e: PointerEvent): boolean {
+  const id = gripUnder(e.clientX, e.clientY);
+  if (!id) return false;
+  insetDrag = { id, startScale: insetScale(id), x0: e.clientX, y0: e.clientY };
+  canvas.setPointerCapture(e.pointerId);
+  return true;
+}
+
+canvas.addEventListener("pointermove", (e) => {
+  if (!insetDrag) {
+    gripHot = gripUnder(e.clientX, e.clientY);
+    canvas.style.cursor = gripHot ? INSET_SPEC[gripHot].cursor : "";
+    return;
+  }
+  const s = INSET_SPEC[insetDrag.id];
+  // Away from the panel body along both axes grows it; average the two so the
+  // aspect stays locked and the grip tracks the cursor's diagonal.
+  const ds =
+    0.5 *
+    ((-s.inX * (e.clientX - insetDrag.x0)) / s.W +
+      (-s.inY * (e.clientY - insetDrag.y0)) / s.H);
+  const v = Math.min(INSET_SCALE_MAX, Math.max(INSET_SCALE_MIN, insetDrag.startScale + ds));
+  if (insetDrag.id === "pot") params.potScale = v;
+  else params.embedScale = v;
+});
+
+canvas.addEventListener("pointerup", (e) => {
+  if (!insetDrag) return;
+  insetDrag = null;
+  // The camera's own pointerup runs first and releases the capture we took,
+  // so this would otherwise throw on an already-released pointer.
+  if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+});
 
 // ---------- matter state ----------
 let simT = 0; // simulation (coordinate) time in M
@@ -984,17 +1091,24 @@ function render() {
       potMarkR[i] = ksRadius(tdeBodies[i].p, params.spin);
       potMarkE[i] = -tdeBodies[i].mt;
     }
-    // left-anchored clear of the control panel column rather than flush to
-    // the corner: #panel is opaque and sits above the HUD
-    drawPotential(hudCtx, 280, canvas.clientHeight - POTENTIAL_H - 12, {
-      a: params.spin,
-      L: params.eduL,
-      rHor: spinCtx.rHor,
-      isco: spinCtx.isco,
-      markR: potMarkR,
-      markE: potMarkE,
-      markN: nMark,
-    });
+    const box = insetBox("pot");
+    drawPotential(
+      hudCtx,
+      box.x,
+      box.y,
+      {
+        a: params.spin,
+        L: params.eduL,
+        rHor: spinCtx.rHor,
+        isco: spinCtx.isco,
+        markR: potMarkR,
+        markE: potMarkE,
+        markN: nMark,
+      },
+      params.potScale
+    );
+    const spec = INSET_SPEC.pot;
+    drawResizeGrip(hudCtx, box.gx, box.gy, spec.inX, spec.inY, gripHot === "pot");
   }
 
   if (params.eduEmbed) {
@@ -1027,10 +1141,11 @@ function render() {
     for (const b of tdeBodies) {
       push(ksRadius(b.p, params.spin), Math.atan2(b.p[2], b.p[0]), EMBED_TDE);
     }
+    const box = insetBox("embed");
     drawEmbedding(
       hudCtx,
-      canvas.clientWidth - EMBED_W - 12,
-      canvas.clientHeight - EMBED_H - 12,
+      box.x,
+      box.y,
       {
         profile: embeddingFor(params.spin, params.diskOuter),
         isco: spinCtx.isco,
@@ -1039,8 +1154,11 @@ function render() {
         dotAz: embedDotAz,
         dotGroup: embedDotGroup,
         dotN: nDots,
-      }
+      },
+      params.embedScale
     );
+    const spec = INSET_SPEC.embed;
+    drawResizeGrip(hudCtx, box.gx, box.gy, spec.inX, spec.inY, gripHot === "embed");
   }
 
   if (dbgScan) {
