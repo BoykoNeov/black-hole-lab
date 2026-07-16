@@ -204,6 +204,34 @@ describe("tidal disruption event", () => {
     expect(aliveBodies(st).length).toBe(0);
   });
 
+  it("the swallowed-whole star is still taken at every spin, and swings first", () => {
+    // Once r_t drops inside the horizon, "aim to graze r_t" stops meaning
+    // anything and, taken literally, drops the star radially down the throat
+    // (L = 0.2 at the top of the mass slider) — which reads as a bug, not as
+    // the Hills-mass story. The aim is floored instead (SWALLOW_RP, L = 1.73).
+    //
+    // That floor MUST stay inside the marginally-bound capture threshold at
+    // every spin — the threshold falls from L = 4 at a = 0 to ~2 for a
+    // prograde orbit at extremal spin — or the star would swing past and
+    // leave, silently breaking "swallowed whole, no flare" at high spin.
+    for (const a of [0, 0.5, 0.9, 0.998]) {
+      const st = launchTde(1e11, a); // r_t = 0.022 M: inside any horizon
+      expect(st.rt).toBeLessThan(horizonRadius(a));
+
+      const az0 = Math.atan2(st.bodies[0].p[2], st.bodies[0].p[0]);
+      let az1 = az0;
+      runUntil(st, a, 1, 3000, (s) => {
+        if (s.bodies[0].alive) az1 = Math.atan2(s.bodies[0].p[2], s.bodies[0].p[0]);
+        return s.phase !== "infall";
+      });
+
+      expect(st.phase).toBe("swallowed"); // taken, never released
+      expect(st.tDisrupt).toBeNull(); // and never shredded: no flare
+      // ...and it got there on a visibly curved track, not a dead drop
+      expect(Math.abs(az1 - az0)).toBeGreaterThan(0.4);
+    }
+  });
+
   it("a star spawned inside its own tidal radius is disrupted immediately", () => {
     const a = 0;
     const st = launchTde(1e5, a); // r_t = 218 M >> the 30 M spawn radius

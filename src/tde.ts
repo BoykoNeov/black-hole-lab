@@ -102,6 +102,20 @@ const UNBOUND_S_MIN = 0.35;
 const LEAVING_R = 58;
 const LEAVING_FADE_T = 50;
 const STAR_TEMP_K = 5800;
+/**
+ * Pericenter to aim at once r_t has sunk inside the horizon (above the Hills
+ * mass). There, "graze r_t" stops meaning anything — you cannot skim a radius
+ * you can only cross once — and taken literally it aims the star at 0.9 r_t,
+ * which at the top of the mass slider is 0.02 M: straight down the throat,
+ * L = 0.2, a dead radial drop indistinguishable from a bug.
+ *
+ * L = sqrt(2 rp) = 1.7 here, comfortably inside the marginally-bound capture
+ * threshold at every spin (that threshold runs from 4 at a = 0 down to ~2 for
+ * a prograde orbit at extremal spin), so the star is still certain to be
+ * taken — it just visibly swings first. The Hills-mass outcome is untouched:
+ * it turns on r_t < r+, not on where we aim.
+ */
+const SWALLOW_RP = 1.5;
 
 export interface TdeBody {
   p: V3;
@@ -177,7 +191,12 @@ export function launchTde(
   inc = 0.35
 ): TdeState {
   const rt = tidalRadiusM(massMsun);
-  const rp = Math.min(0.9 * rt, 0.55 * r0);
+  // Above the Hills mass the star cannot be disrupted at all, so the aim is
+  // free to be legible rather than literal — see SWALLOW_RP.
+  const rp =
+    rt < horizonRadius(a)
+      ? Math.max(Math.min(0.9 * rt, 0.55 * r0), SWALLOW_RP)
+      : Math.min(0.9 * rt, 0.55 * r0);
   const v = Math.sqrt(2 / r0);
   const vt = Math.sqrt(2 * rp) / r0; // from L = sqrt(2 rp)
   const vr = -Math.sqrt(Math.max(v * v - vt * vt, 0));

@@ -65,6 +65,17 @@ half unbound); the bound tail loops out and falls back, feeding a flare
 that lifts ṁ (and, with coupling on, the disk temperature) on the classic
 Rees t^(-5/3) light curve. Above the Hills mass, r_t sits inside the
 horizon and the star is swallowed whole — no flare, it just redshifts away.
+The aim is floored once that happens: "graze r_t" stops meaning anything when
+r_t is inside the horizon (you cannot skim a radius you can only cross once),
+and taken literally it aims the star at 0.02 M at the top of the slider — a
+dead radial drop that reads as a bug rather than as the Hills-mass story. It
+is aimed at a pericenter well inside the capture threshold instead (L = 1.73,
+against a threshold running from 4 at a = 0 to ~2 prograde-extremal, so the
+star is still certain to be taken at every spin — tested), which buys a
+visibly curved approach and changes no outcome: capture turns on r_t < r+,
+not on where it was aimed. Note that a TDE star never *orbits*: it is on a
+marginally bound (parabolic) one-pass orbit by construction, so the arc to
+watch is approach → shred → the debris tail's loop, not a closed orbit.
 The star and all 32 debris elements move on exact timelike Kerr geodesics
 integrated with the same Kerr–Schild Hamiltonian RK4 as the photons (only
 the mass shell differs: m·m = -1, with E = -m_t conserved exactly), so the
