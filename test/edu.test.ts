@@ -8,6 +8,8 @@ import {
   ksRadius,
 } from "../src/kerr";
 import {
+  TRAIL_MIN_DT,
+  Trail,
   circRate,
   embeddingProfile,
   embeddingZAt,
@@ -264,5 +266,69 @@ describe("embeddingZAt", () => {
   it("clamps outside the sampled range", () => {
     expect(embeddingZAt(p, 1)).toBe(p.z[0]);
     expect(embeddingZAt(p, 1e6)).toBe(p.z[p.z.length - 1]);
+  });
+});
+
+describe("Trail", () => {
+  const out: V3 = [0, 0, 0];
+  /** Every sample's t, oldest first. */
+  const times = (tr: Trail): number[] => {
+    const ts: number[] = [];
+    for (let i = 0; i < tr.length; i++) ts.push(tr.at(i, out));
+    return ts;
+  };
+
+  it("keeps the newest samples and drops the oldest when full", () => {
+    const tr = new Trail(4);
+    for (let t = 0; t < 6; t++) tr.push([t, 2 * t, 3 * t], t);
+    expect(tr.length).toBe(4);
+    expect(times(tr)).toEqual([2, 3, 4, 5]);
+    // and the positions ride along with their times, in the same order
+    expect(tr.at(0, out)).toBe(2);
+    expect([...out]).toEqual([2, 4, 6]);
+    expect(tr.at(3, out)).toBe(5);
+    expect([...out]).toEqual([5, 10, 15]);
+    expect(tr.oldestT).toBe(2);
+    expect(tr.newestT).toBe(5);
+  });
+
+  it("thins samples that arrive closer together than TRAIL_MIN_DT", () => {
+    const tr = new Trail(8);
+    for (const t of [0, 0.2, 0.4, 0.6]) tr.push([t, 0, 0], t);
+    expect(TRAIL_MIN_DT).toBe(0.5);
+    expect(times(tr)).toEqual([0, 0.6]);
+  });
+
+  it("forgets everything on clear, and takes the next push whenever it comes", () => {
+    const tr = new Trail(4);
+    for (let t = 0; t < 3; t++) tr.push([t, 0, 0], t);
+    tr.clear();
+    expect(tr.length).toBe(0);
+    expect(tr.newestT).toBe(-Infinity);
+    // the thinning clock resets too: a respawned blob's first sample must not
+    // be swallowed just because the body it replaced was pushed a moment ago
+    tr.push([9, 0, 0], 2.1);
+    expect(tr.length).toBe(1);
+    expect(tr.at(0, out)).toBe(2.1);
+    expect(out[0]).toBe(9);
+  });
+
+  it("holds at capacity under sustained pushing", () => {
+    const tr = new Trail(128);
+    for (let i = 0; i < 10_000; i++) tr.push([i, 0, 0], i);
+    expect(tr.length).toBe(128);
+    expect(tr.newestT).toBe(9999);
+    expect(tr.oldestT).toBe(9999 - 127);
+  });
+
+  it("has no span to fade over until it holds two samples", () => {
+    // drawTrails normalizes sample age by this span, so an empty or
+    // single-sample trail must be recognizable rather than divide by zero
+    const tr = new Trail(4);
+    expect(tr.newestT - tr.oldestT).toBeNaN(); // -Inf - -Inf, empty
+    tr.push([0, 0, 0], 3);
+    expect(tr.newestT - tr.oldestT).toBe(0);
+    tr.push([1, 0, 0], 4);
+    expect(tr.newestT - tr.oldestT).toBe(1);
   });
 });

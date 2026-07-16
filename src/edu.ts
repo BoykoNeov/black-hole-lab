@@ -186,6 +186,90 @@ export function embeddingProfile(
 }
 
 /**
+ * Sample spacing of the orbit trails (6e), in coordinate time. It only bites
+ * at the slow end of the time-speed slider: past ~30 M/s a frame already
+ * advances more than this, so every frame lands a sample and the real spacing
+ * is the frame's own dt. That makes a buffer's time span a property of the
+ * time speed, not a constant — which is why drawTrails fades by each trail's
+ * own span rather than a fixed window.
+ */
+export const TRAIL_MIN_DT = 0.5;
+
+/**
+ * Trail lengths, in samples. Gas is short (its spiral is slow and local),
+ * TDE debris long enough to hold a whole fallback loop. Kept here beside
+ * Trail so main.ts (which owns the buffers) and hud.ts (which sizes its
+ * projection scratch off the largest) agree without either importing the
+ * other.
+ */
+export const TRAIL_CAP_STAR = 128;
+export const TRAIL_CAP_GAS = 96;
+export const TRAIL_CAP_TDE = 192;
+
+/**
+ * Where one body has been: a ring buffer of (x, y, z, t) samples thinned to
+ * TRAIL_MIN_DT spacing, oldest dropped when full. Allocates once, in the
+ * constructor — main.ts pushes into ~50 of these every frame and hud.ts walks
+ * them all again to draw, so nothing here may touch the heap afterwards.
+ */
+export class Trail {
+  private readonly buf: Float64Array;
+  private readonly cap: number;
+  /** Ring index of the oldest live sample. */
+  private head = 0;
+  private n = 0;
+  private lastT = -Infinity;
+
+  constructor(capacity: number) {
+    this.cap = capacity;
+    this.buf = new Float64Array(capacity * 4);
+  }
+
+  get length(): number {
+    return this.n;
+  }
+
+  /** Coordinate time of the oldest sample; -Infinity when empty. */
+  get oldestT(): number {
+    return this.n === 0 ? -Infinity : this.buf[this.head * 4 + 3];
+  }
+
+  /** Coordinate time of the newest sample; -Infinity when empty. */
+  get newestT(): number {
+    return this.n === 0 ? -Infinity : this.buf[(((this.head + this.n - 1) % this.cap) * 4) + 3];
+  }
+
+  /** Append p at time t, or ignore it if the last sample is too recent. */
+  push(p: V3, t: number): void {
+    if (t - this.lastT < TRAIL_MIN_DT) return;
+    this.lastT = t;
+    const o = ((this.head + this.n) % this.cap) * 4;
+    this.buf[o] = p[0];
+    this.buf[o + 1] = p[1];
+    this.buf[o + 2] = p[2];
+    this.buf[o + 3] = t;
+    if (this.n < this.cap) this.n++;
+    else this.head = (this.head + 1) % this.cap;
+  }
+
+  /** Forget the history — the body it belonged to is gone or has jumped. */
+  clear(): void {
+    this.head = 0;
+    this.n = 0;
+    this.lastT = -Infinity; // so the next push lands whatever the clock says
+  }
+
+  /** Sample i counted oldest (0) to newest, written into out; returns its t. */
+  at(i: number, out: V3): number {
+    const o = ((this.head + i) % this.cap) * 4;
+    out[0] = this.buf[o];
+    out[1] = this.buf[o + 1];
+    out[2] = this.buf[o + 2];
+    return this.buf[o + 3];
+  }
+}
+
+/**
  * z at an arbitrary radius, by linear interpolation into a profile (whose
  * samples are uniform in r) and clamped to its ends. Display-grade: near the
  * rim the true z goes like sqrt(r - r+), so a chord across the first interval

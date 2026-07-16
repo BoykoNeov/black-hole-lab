@@ -144,10 +144,11 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   camera and circular orbiters, equatorial Kerr effective potential and
   Bardeen photon-orbit radii, and the equatorial embedding profile z(r) —
   Flamm's paraboloid at a = 0, integrated with the rim's inverse-square-root
-  singularity split off in closed form (pure, tested)
+  singularity split off in closed form — and `Trail`, the fixed-size ring
+  buffer of (position, time) samples behind the orbit trails (pure, tested)
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
-  funnel; DOM-only, verified by eye)
+  funnel, orbit trails; DOM-only, verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -167,7 +168,8 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   (center, top edge with y flip, behind-camera cull, aspect scaling), clock
   rates tied to the rendering tetrad's u^t, effective potential cross-checked
   against the circEL oracle (V_eff(r_c) = E with zero slope at every spin),
-  Schwarzschild ISCO marginal stability, Bardeen photon-orbit radii
+  Schwarzschild ISCO marginal stability, Bardeen photon-orbit radii, trail
+  ring-buffer overflow/thinning/clear
 - `test/tde.test.ts` — timelike stepper holds a circular orbit at its exact
   period (norm conserved), raise∘lower = id, disruption at r_t with a
   bound/unbound energy spread, bound debris loops out and falls back while
@@ -193,3 +195,5 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    - 6b clocks — gravitational + velocity time dilation ✅
    - 6c effective-potential inset — barrier, ISCO minimum, live TDE energies ✅
    - 6d embedding diagram — the funnel, with live matter riding it ✅
+   - 6e orbit trails — star rings that fail to close (Lense–Thirring), gas
+     spirals, the TDE stream and its fallback loops ✅

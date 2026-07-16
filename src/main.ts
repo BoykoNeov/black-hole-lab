@@ -32,11 +32,17 @@ import {
   drawClocks,
   drawEmbedding,
   drawPotential,
+  drawTrails,
   initHud,
   resizeHud,
   type ClockEntry,
+  type TrailGroup,
 } from "./hud";
 import {
+  TRAIL_CAP_GAS,
+  TRAIL_CAP_STAR,
+  TRAIL_CAP_TDE,
+  Trail,
   circRate,
   embeddingProfile,
   staticRate,
@@ -226,6 +232,23 @@ function embeddingFor(a: number, rMax: number): EmbeddingProfile {
   return embedProfile;
 }
 
+// Orbit trails (6e). Filled every frame whether or not the overlay is on — a
+// few comparisons per body, and the history is already there the moment the
+// user ticks the box. Declared above the bindSlider block below: binding the
+// spin slider runs its callback immediately, and that callback clears these.
+const starTrails: Trail[] = [];
+for (let i = 0; i < STAR_COUNT; i++) starTrails.push(new Trail(TRAIL_CAP_STAR));
+const gasTrails: Trail[] = [];
+for (let i = 0; i < GAS_COUNT; i++) gasTrails.push(new Trail(TRAIL_CAP_GAS));
+const tdeTrails: Trail[] = [];
+for (let i = 0; i < TDE_MAX; i++) tdeTrails.push(new Trail(TRAIL_CAP_TDE));
+const trailGroups: TrailGroup[] = [
+  { trails: starTrails, group: EMBED_STARS, on: true },
+  { trails: gasTrails, group: EMBED_GAS, on: true },
+  { trails: tdeTrails, group: EMBED_TDE, on: true },
+];
+const trailScratch: V3 = [0, 0, 0];
+
 const rng = mulberry32(0x5eed);
 const gasBlobs: GasBlob[] = [];
 for (let i = 0; i < GAS_COUNT; i++) gasBlobs.push(spawnGasBlob(rng, params.diskOuter));
@@ -294,6 +317,11 @@ bindSlider("edul", (v) => (params.eduL = v), (v) => v.toFixed(2));
 bindSlider("spin", (v) => {
   params.spin = v;
   spinCtx = makeSpinCtx(v);
+  // starState is a closed form in (t, a), so a new spin teleports every star
+  // onto its new orbit — the old samples are a path through a spacetime that
+  // no longer exists, and joining them to the new ones would draw a jump.
+  // Gas and debris carry their own state and move continuously instead.
+  for (const t of starTrails) t.clear();
 });
 const fmtSci = (x: number) => {
   const e = Math.floor(Math.log10(x));
@@ -335,6 +363,7 @@ const tdeBtn = document.getElementById("tde") as HTMLButtonElement;
 tdeBtn.addEventListener("click", () => {
   tde = launchTde(10 ** params.massExp, params.spin);
   tauStar = 0;
+  for (const t of tdeTrails) t.clear();
 });
 
 const distReadout = document.getElementById("dist-readout")!;
@@ -375,22 +404,47 @@ function render() {
     return;
   }
   const basis = cameraBasis(camera);
+  const tanHalfFov = Math.tan((camera.fovDeg * Math.PI) / 360);
 
   // advance simulation time and the gas blobs
   const now0 = performance.now();
   const dtReal = Math.min((now0 - lastFrameT) * 0.001, 0.1);
   lastFrameT = now0;
+  // gates the trail pushes below, which happen in the loops that build the
+  // uniforms — those run every frame, but a frozen clock has no path to record
+  let stepped = false;
   if (!paused && params.timeSpeed > 0) {
     const dtSim = dtReal * params.timeSpeed;
     simT += dtSim;
+    stepped = true;
     // Clock rates are re-evaluated every frame rather than cached: the
     // camera's depth changes as it orbits and the ISCO moves with spin.
     tauCam += dtSim * staticRate(basis.pos, params.spin);
     tauIsco += dtSim * circRate(spinCtx.isco, params.spin);
     const star = tde ? tde.bodies[0] : null;
     if (star && star.alive) tauStar += dtSim / bodyU(star, params.spin)[0];
-    for (const b of gasBlobs) stepGasBlob(b, dtSim, params.diskOuter, rng, spinCtx);
-    if (tde) stepTde(tde, dtSim, params.spin, simT, rng);
+    for (let i = 0; i < GAS_COUNT; i++) {
+      const b = gasBlobs[i];
+      const rWas = b.r;
+      stepGasBlob(b, dtSim, params.diskOuter, rng, spinCtx);
+      // Blobs only ever drift inward, so a radius that jumped outward means
+      // stepGasBlob re-randomized this one at the disk's edge: the trail
+      // belongs to a blob that has been eaten.
+      if (b.r > rWas + 2) gasTrails[i].clear();
+    }
+    if (tde) {
+      stepTde(tde, dtSim, params.spin, simT, rng);
+      // Indexed by slot in tde.bodies, NOT by the aliveBodies() ordering the
+      // uniforms use — that array is filtered, so its indices shift as debris
+      // is eaten and surviving strands would inherit a neighbour's history.
+      // Slot 0 deliberately carries straight through disruption: spawnDebris
+      // starts every element at the star's position, so element 0's path
+      // really does continue the star's.
+      for (let i = 0; i < tde.bodies.length && i < TDE_MAX; i++) {
+        const b = tde.bodies[i];
+        if (b.alive) tdeTrails[i].push(b.p, simT);
+      }
+    }
   }
 
   // ---- mass -> temperature coupling and the TDE flare ----
@@ -417,6 +471,7 @@ function render() {
     starPosArr[i * 4 + 3] = STAR_ORBITS[i].radius;
     starUArr.set(s.u, i * 4);
     starTempArr[i] = STAR_ORBITS[i].tempK;
+    if (stepped) starTrails[i].push(s.pos, simT);
   }
   for (let i = 0; i < GAS_COUNT; i++) {
     const b = gasBlobs[i];
@@ -426,6 +481,13 @@ function render() {
     gasArr[i * 4 + 2] = b.size;
     gasArr[i * 4 + 3] = b.bright;
     gasUArr.set(gasU(b, spinCtx), i * 4);
+    if (stepped) {
+      // the blobs live in the disk plane; Trail copies, so one scratch does
+      trailScratch[0] = gx;
+      trailScratch[1] = 0;
+      trailScratch[2] = gz;
+      gasTrails[i].push(trailScratch, simT);
+    }
   }
 
   // TDE star / debris uniforms (exact geodesic positions + 4-velocities).
@@ -474,7 +536,7 @@ function render() {
   gl.uniform3fv(U(progScene, "uCamRight"), basis.right);
   gl.uniform3fv(U(progScene, "uCamUp"), basis.up);
   gl.uniform3fv(U(progScene, "uCamFwd"), basis.fwd);
-  gl.uniform1f(U(progScene, "uTanHalfFov"), Math.tan((camera.fovDeg * Math.PI) / 360));
+  gl.uniform1f(U(progScene, "uTanHalfFov"), tanHalfFov);
   gl.uniform1f(U(progScene, "uLensing"), params.lensing ? 1 : 0);
   gl.uniform1f(U(progScene, "uStarDensity"), params.starDensity);
   gl.uniform1f(U(progScene, "uSimT"), simT);
@@ -579,8 +641,27 @@ function render() {
   drawQuad();
   gl.activeTexture(gl.TEXTURE0);
 
-  // HUD overlay (2D canvas above the GL frame; more overlays arrive in 6c–6g)
+  // HUD overlay (2D canvas above the GL frame; more overlays arrive in 6f–6g)
   clearHud(hudCtx, canvas.clientWidth, canvas.clientHeight);
+
+  if (params.eduTrails) {
+    // Drawn first: the insets below are opaque panels and should cover them.
+    // A group's trails go away with its matter, so the overlay never shows a
+    // path for something the frame behind it isn't drawing.
+    trailGroups[0].on = params.stars;
+    trailGroups[1].on = params.gas;
+    trailGroups[2].on = tde !== null;
+    drawTrails(
+      hudCtx,
+      trailGroups,
+      basis,
+      tanHalfFov,
+      canvas.clientWidth,
+      canvas.clientHeight,
+      simT
+    );
+  }
+
   if (params.eduClocks) {
     clockEntries[0].tau = simT;
     clockEntries[1].tau = tauCam;

@@ -5,8 +5,17 @@
  * pointer-events: none so camera drag/zoom pass straight through.
  */
 
-import { embeddingZAt, photonOrbitRadius, vEff } from "./edu";
-import type { EmbeddingProfile } from "./edu";
+import {
+  TRAIL_CAP_GAS,
+  TRAIL_CAP_STAR,
+  TRAIL_CAP_TDE,
+  embeddingZAt,
+  photonOrbitRadius,
+  projectToScreen,
+  vEff,
+} from "./edu";
+import type { EmbeddingProfile, Projected, Trail, V3 } from "./edu";
+import type { CameraBasis } from "./camera";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
@@ -408,11 +417,12 @@ const EMB_SPOKE_PTS = 44;
  * where the curvature is and thin out across the flat outskirts. */
 const embRing = new Float64Array(EMB_RINGS);
 
-/** Dot colors by group index — matches the trail colors slice 6e will use. */
+/** Matter group index — shared by the funnel's dots and 6e's trails, so a
+ * body reads as the same thing in both overlays. */
 export const EMBED_STARS = 0;
 export const EMBED_GAS = 1;
 export const EMBED_TDE = 2;
-const EMBED_DOT_COLORS = ["#9fd0ff", "#ffb35c", "#ffffff"];
+const MATTER_COLORS = ["#9fd0ff", "#ffb35c", "#ffffff"];
 
 export interface EmbedOpts {
   profile: EmbeddingProfile;
@@ -544,7 +554,7 @@ export function drawEmbedding(
     const r = o.dotR[i];
     if (r < rHor || r > rMax) continue; // off the diagram entirely
     const ang = o.dotAz[i] + o.yaw;
-    ctx.fillStyle = EMBED_DOT_COLORS[o.dotGroup[i]];
+    ctx.fillStyle = MATTER_COLORS[o.dotGroup[i]];
     ctx.beginPath();
     ctx.arc(ex(r, ang), ey(r, ang, embeddingZAt(p, r)), 2, 0, Math.PI * 2);
     ctx.fill();
@@ -578,5 +588,116 @@ export function drawEmbedding(
   ctx.fillStyle = HUD_STYLE.faint;
   ctx.fillText("space on the disk plane, stretched for real and", x + 10, y + EMBED_H - 27);
   ctx.fillText("drawn 1:1 — the horizon is the rim at the bottom.", x + 10, y + EMBED_H - 16);
+  ctx.restore();
+}
+
+// ---------- orbit trails (6e) ----------
+
+export interface TrailGroup {
+  trails: Trail[];
+  /** EMBED_STARS / EMBED_GAS / EMBED_TDE — indexes MATTER_COLORS. */
+  group: number;
+  /** False when the matter itself isn't drawn: its trails go with it. */
+  on: boolean;
+}
+
+/** Alpha ramp along a trail, oldest to newest. */
+const TRAIL_ALPHA_OLD = 0.05;
+const TRAIL_ALPHA_NEW = 0.55;
+/** Alpha steps per trail. One stroke() each — per-segment strokes would put
+ *  ~8000 draw calls a frame in front of the render loop. */
+const TRAIL_BUCKETS = 6;
+
+/** Projected once per trail per frame, then stroked TRAIL_BUCKETS times from
+ *  here. Sized to the longest trail there can be; never reallocated. */
+const TRAIL_MAX = Math.max(TRAIL_CAP_STAR, TRAIL_CAP_GAS, TRAIL_CAP_TDE);
+const trailPx = new Float32Array(TRAIL_MAX * 2);
+const trailVis = new Uint8Array(TRAIL_MAX);
+/** Sample age as a fraction of the trail's own span: 0 newest, 1 oldest. */
+const trailAge = new Float64Array(TRAIL_MAX);
+const trailP: V3 = [0, 0, 0];
+const trailProj: Projected = { x: 0, y: 0, z: 0, visible: false };
+
+function drawOneTrail(
+  ctx: CanvasRenderingContext2D,
+  tr: Trail,
+  basis: CameraBasis,
+  tanHalfFov: number,
+  w: number,
+  h: number,
+  simT: number
+): void {
+  const n = tr.length;
+  if (n < 2) return;
+  // Age is measured against the trail's own span rather than a fixed window,
+  // because the sample spacing is the frame's dt once the time-speed slider is
+  // past ~30 M/s — a constant window would fade most of the buffer away at
+  // exactly the speeds where a precessing ring becomes visible. It also
+  // retires abandoned trails for free: a body that stops being pushed (eaten
+  // debris) has all its samples slide to the faint end within one span.
+  const span = tr.newestT - tr.oldestT;
+  if (!(span > 0)) return;
+
+  for (let i = 0; i < n; i++) {
+    const t = tr.at(i, trailP);
+    projectToScreen(trailP, basis, tanHalfFov, w, h, trailProj);
+    trailPx[i * 2] = trailProj.x;
+    trailPx[i * 2 + 1] = trailProj.y;
+    trailVis[i] = trailProj.visible ? 1 : 0;
+    trailAge[i] = (simT - t) / span;
+  }
+
+  for (let k = 0; k < TRAIL_BUCKETS; k++) {
+    const i0 = Math.floor((k * (n - 1)) / TRAIL_BUCKETS);
+    const i1 = Math.floor(((k + 1) * (n - 1)) / TRAIL_BUCKETS);
+    if (i1 <= i0) continue; // fewer samples than buckets: some hold no segment
+    const age = Math.min(Math.max(trailAge[(i0 + i1) >> 1], 0), 1);
+    ctx.globalAlpha = TRAIL_ALPHA_NEW + (TRAIL_ALPHA_OLD - TRAIL_ALPHA_NEW) * age;
+    ctx.beginPath();
+    // Buckets share their end samples, so the polyline stays continuous
+    // across the alpha steps; a sample behind the camera breaks the chain.
+    let pen = false;
+    for (let i = i0; i <= i1; i++) {
+      if (!trailVis[i]) {
+        pen = false;
+        continue;
+      }
+      if (pen) ctx.lineTo(trailPx[i * 2], trailPx[i * 2 + 1]);
+      else {
+        ctx.moveTo(trailPx[i * 2], trailPx[i * 2 + 1]);
+        pen = true;
+      }
+    }
+    ctx.stroke();
+  }
+}
+
+/**
+ * Where the matter has actually been. These are TRUE SPATIAL PATHS drawn with
+ * a straight-ray projection (edu.ts projectToScreen), not lensed images: a
+ * trail marks where its body is, while the glow the renderer puts on screen
+ * for it arrived along a bent geodesic and can sit somewhere else entirely —
+ * on the far side of the shadow, or doubled. The UI copy says so too.
+ */
+export function drawTrails(
+  ctx: CanvasRenderingContext2D,
+  groups: TrailGroup[],
+  basis: CameraBasis,
+  tanHalfFov: number,
+  w: number,
+  h: number,
+  simT: number
+): void {
+  ctx.save();
+  ctx.lineWidth = 1.25;
+  ctx.lineJoin = "round";
+  for (let g = 0; g < groups.length; g++) {
+    const grp = groups[g];
+    if (!grp.on) continue;
+    ctx.strokeStyle = MATTER_COLORS[grp.group];
+    for (let i = 0; i < grp.trails.length; i++) {
+      drawOneTrail(ctx, grp.trails[i], basis, tanHalfFov, w, h, simT);
+    }
+  }
   ctx.restore();
 }
