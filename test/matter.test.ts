@@ -7,6 +7,7 @@ import {
   type GasBlob,
   gasDrift,
   gasPosXZ,
+  gasRates,
   gasU,
   makeSpinCtx,
   mulberry32,
@@ -207,6 +208,37 @@ describe("infalling gas", () => {
     const ctx = makeSpinCtx(0.998);
     expect(ctx.isco).toBeCloseTo(iscoRadius(0.998), 12);
     expect(ctx.rHor).toBeCloseTo(1 + Math.sqrt(1 - 0.998 ** 2), 12);
+  });
+
+  it("gasRates are the derivative of the path stepGasBlob actually walks", () => {
+    // The renderer draws each blob's trail by sweeping BACKWARD along these
+    // rates, so if they ever drifted from the stepper's own branches the arc
+    // would not lie on the path the blob came in on. Check both regimes
+    // against a finite difference of the stepper itself.
+    const ctx = makeSpinCtx(0.7);
+    const rand = mulberry32(7);
+    const h = 0.02;
+    for (const r of [17, 10, ctx.isco + 0.4, ctx.isco - 0.25]) {
+      const b: GasBlob = { r, az: 1.1, size: 0.5, bright: 1 };
+      const rates = gasRates(b, ctx);
+      const after: GasBlob = { ...b };
+      stepGasBlob(after, h, 19, rand, ctx);
+
+      const R = (x: number) => Math.sqrt(x * x + ctx.a * ctx.a);
+      expect(wrap(after.az - b.az) / h).toBeCloseTo(rates.dazdt, 4);
+      expect((R(after.r) - R(b.r)) / h).toBeCloseTo(rates.dRdt, 4);
+    }
+  });
+
+  it("gas sweeps in the disk's sense and always drifts inward", () => {
+    // The shader relies on both signs: it wraps time backward as -daz/dazdt
+    // and expects the tail to sit at larger radius than the head.
+    const ctx = makeSpinCtx(0.5);
+    for (const r of [18, 8, ctx.isco - 0.2]) {
+      const { dazdt, dRdt } = gasRates({ r, az: 0, size: 0.4, bright: 1 }, ctx);
+      expect(dazdt).toBeLessThan(0); // world azimuth decreasing
+      expect(dRdt).toBeLessThan(0); // never orbits back outward
+    }
   });
 });
 

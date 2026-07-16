@@ -196,6 +196,32 @@ export function gasPosXZ(b: GasBlob, ctx: SpinCtx): [number, number] {
   return [R * Math.cos(b.az), R * Math.sin(b.az)];
 }
 
+/**
+ * The blob's coordinate rates: d(azimuth)/dt and d(draw radius)/dt, taking the
+ * same two branches stepGasBlob integrates (circular + viscous drift outside
+ * the ISCO, the exact geodesic plunge inside). The renderer sweeps each blob
+ * backward along these to draw the arc it has just been shorn into, so they
+ * have to agree with the stepper exactly or the trail would not lie on the
+ * path the blob actually took.
+ *
+ * dRdt is in the DRAWN cylindrical radius R = sqrt(r^2 + a^2), not BL r, since
+ * that is the radius the shader measures its trail against.
+ */
+export function gasRates(b: GasBlob, ctx: SpinCtx): { dazdt: number; dRdt: number } {
+  let dazdt: number;
+  let drdt: number;
+  if (b.r <= ctx.isco) {
+    const p = plungeRates(b.r, ctx.a, ctx.E, ctx.L);
+    dazdt = p.dazdt;
+    drdt = Math.min(p.drdt, gasDrift(b.r, ctx.isco));
+  } else {
+    dazdt = -omegaCirc(b.r, ctx.a);
+    drdt = gasDrift(b.r, ctx.isco);
+  }
+  const R = Math.sqrt(b.r * b.r + ctx.a * ctx.a);
+  return { dazdt, dRdt: (b.r / Math.max(R, 1e-9)) * drdt };
+}
+
 /** Exact 4-velocity of a blob: circular outside the ISCO, plunge inside. */
 export function gasU(b: GasBlob, ctx: SpinCtx): V4 {
   return b.r <= ctx.isco

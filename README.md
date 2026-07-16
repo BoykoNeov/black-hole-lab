@@ -106,11 +106,26 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   Keplerian dφ/dt = r^(-3/2), blackbody colors, and per-star Doppler +
   gravitational shift. Integrated per march segment (point-to-segment
   distance), so no image-position solve is ever needed.
-- **Infalling gas** — bright blobs advected on the CPU (Keplerian azimuth +
-  viscous inward drift steepening into a plunge inside the ISCO, respawning
-  at the outer edge), shaded at the same analytic equatorial crossings as
-  the disk, so they get the doubled image too. Their shift factor fades to
-  zero at the horizon.
+- **Infalling gas** — advected on the CPU (Keplerian azimuth + viscous inward
+  drift steepening into a plunge inside the ISCO, respawning at the outer
+  edge), shaded at the same analytic equatorial crossings as the disk, so it
+  gets the doubled image too. Its shift factor fades to zero at the horizon.
+  Each parcel is drawn not as a round blob but as the **arc it has been shorn
+  into**: the shader sweeps it backward over a fixed window of coordinate time
+  along the very rates matter.ts integrates it forward with (`gasRates`,
+  finite-difference-checked against the stepper), and draws that track as a
+  capsule with round caps. Fixing the window in *time* rather than angle is
+  the point — the orbital rate runs from ~r^(-3/2) at the rim to a fast plunge
+  at the ISCO, so one window smears an inner parcel across radians while an
+  outer one barely moves. That spread is the differential rotation itself, and
+  it is what shears real accretion flows into filaments. Kerr's axisymmetry
+  earns the shading: rotating the parcel's uploaded 4-velocity about the spin
+  axis gives *exactly* the 4-velocity of the same orbit further along the arc,
+  so one uniform shades the whole tail with the far end correctly receding
+  where the head approaches. The tail dims as 1/length (mass conservation,
+  taken literally here rather than sqrt-softened as the TDE stream is — the
+  TDE's returning tail needed the help, whereas gas smeared down a ~7 M arc
+  at the old blob normalization bloomed into a solid white band).
 - **Relativistic jets** — a bipolar volumetric emission cone integrated
   along each march step, with knots streaming outward at 0.85c and
   relativistic beaming: emission scales as g³ on the exact local shift, so a
@@ -136,7 +151,9 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   (pure, tested)
 - `src/lens.ts` — Schwarzschild CPU integrator (pure, tested a = 0 reference)
 - `src/disk.ts` — disk physics helpers mirrored by the shader (pure, tested)
-- `src/matter.ts` — star orbits + gas inspiral/plunge state (pure, tested)
+- `src/matter.ts` — star orbits + gas inspiral/plunge state, and `gasRates`,
+  the (daz/dt, dR/dt) the shader sweeps backward to draw the sheared gas arcs
+  (pure, tested)
 - `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
@@ -189,7 +206,10 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `test/matter.test.ts` — checks star orbits (radius/period/plane/4-velocity
   normalization, Lense–Thirring precession rate and plane, co-rotation with
   the disk pattern) and gas (Kerr circular rate, rate continuity across the
-  ISCO, plunge + respawn cycle at a = 0 and 0.9, unit 4-velocities)
+  ISCO, plunge + respawn cycle at a = 0 and 0.9, unit 4-velocities, and
+  `gasRates` finite-difference-matched to the path stepGasBlob actually walks
+  in both regimes — the trail is drawn from those rates, so a drift between
+  them would hang each arc off the path its parcel never took)
 - `test/astro.test.ts` — unit conversions against known values (Sgr A*
   horizon), T ∝ ṁ^(1/4) M^(-1/4) scalings, tidal-radius values and the
   ~1.1e8 M☉ Hills mass, flare rise/peak/t^(-5/3) decay

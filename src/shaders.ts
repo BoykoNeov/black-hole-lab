@@ -66,6 +66,7 @@ uniform vec4 uStarU[${STAR_COUNT}];    // contravariant 4-velocity (t, x, y, z)
 uniform float uStarTemp[${STAR_COUNT}];
 uniform vec4 uGas[${GAS_COUNT}];       // xy disk-plane position, z size, w brightness
 uniform vec4 uGasU[${GAS_COUNT}];      // contravariant 4-velocity (t, x, y, z)
+uniform vec4 uGasArc[${GAS_COUNT}];    // x azimuth, y daz/dt, z dR/dt (matter.ts gasRates), w draw radius
 uniform int uTdeN;                     // live TDE bodies (0 = no event)
 uniform vec4 uTdePos[${TDE_MAX}];      // xyz world position, w gaussian radius
 uniform vec4 uTdeU[${TDE_MAX}];        // contravariant 4-velocity (t, x, y, z)
@@ -282,19 +283,76 @@ vec4 diskSample(float rc, vec3 pc, float g) {
 
 // ---------- matter: gas blobs, stars, jet ----------
 
-// Additive emission of the gas blobs at an equatorial crossing, each blob
-// shifted with its own exact 4-velocity (true plunge inside the ISCO).
+// How far back along its own track a blob is drawn, in coordinate time M.
+// Fixed in TIME, not in angle, which is the whole point: the orbital rate runs
+// from ~1/(r^1.5) at the rim to a fast plunge at the ISCO, so one fixed window
+// smears an inner blob across radians while an outer one barely moves. That
+// spread IS the differential rotation, and it is what shears real accretion
+// flows into filaments instead of leaving them as tidy round clumps.
+const float GAS_TAIL_T = 26.0;
+// ...but a blob deep in the plunge would otherwise wrap the arc into a closed
+// ring and read as a solid annulus, so cap the swept angle. Artistic.
+const float GAS_TAIL_MAX_AZ = 1.6;
+// Arc length at which a tail still draws at full brightness. Past it the same
+// gas is spread thinner and dims as 1/length — mass conservation, taken
+// literally rather than sqrt-softened the way the TDE stream is (tde.ts
+// segIntensity). The TDE needed softening because its returning tail went
+// invisible; the gas has the opposite problem, since a blob smeared down a
+// ~7 M arc at the old normalization pushes several times its own light into
+// the frame and blooms into a solid white band.
+const float GAS_STRETCH_REF = 2.0;
+
+// Rotate a 4-velocity about the spin axis. Kerr is axisymmetric, so this is
+// EXACTLY the 4-velocity of the same orbit at a shifted azimuth — which is
+// what lets one uploaded u shade the whole arc: the far end of a tail is
+// receding where the head approaches, and that is most of the Doppler swing
+// across it. Only the tail's slow radial drift is left unmodelled.
+vec4 rotAz(vec4 u, float c, float s) {
+  return vec4(u.x, u.y * c - u.w * s, u.z, u.w * c + u.y * s);
+}
+
+// Additive emission of the gas at an equatorial crossing. Each blob is drawn
+// as the arc it has just been sheared into — swept backward along the exact
+// rates matter.ts integrates it forward with — with a round cap at each end,
+// shaded with the true 4-velocity at each point of the arc.
 vec3 gasEmit(float rc, vec3 pc, float mt, vec3 mv) {
   vec3 e = vec3(0.0);
   float outer = smoothstep(uDiskOuter, uDiskOuter * 0.8, rc);
   if (outer <= 0.0) return e;
+  float rp = length(pc.xz);
+  float azp = atan(pc.z, pc.x);
   for (int i = 0; i < ${GAS_COUNT}; i++) {
-    vec2 q = pc.xz - uGas[i].xy;
-    float d2 = dot(q, q) / (uGas[i].z * uGas[i].z);
+    float size = uGas[i].z;
+    float rb = uGasArc[i].w;
+    float om = uGasArc[i].y;      // daz/dt, negative: the disk's sense
+    float dRdt = uGasArc[i].z;
+    float aom = max(abs(om), 1e-5);
+    float tailT = min(GAS_TAIL_T, GAS_TAIL_MAX_AZ / aom);
+
+    // The arc only ever drifts outward from the head, so it lives in a thin
+    // radial band. Reject on that first: it costs a subtract and saves the
+    // azimuth wrap for the 15 of 16 blobs a given pixel is nowhere near.
+    if (abs(rp - rb) > 3.2 * size + abs(dRdt) * tailT) continue;
+
+    // Azimuth of the sample point behind the blob, wrapped to (-pi, pi].
+    float daz = azp - uGasArc[i].x;
+    daz -= 2.0 * PI * floor((daz + PI) / (2.0 * PI));
+    // tau > 0 is time BEHIND the blob: where it was, hence where its tail is.
+    float tau = -daz / om;
+    float along = clamp(tau, 0.0, tailT);
+    // Past the arc's ends, close it off with round caps rather than a cut.
+    float over = (tau - along) * rb * aom;
+    float dR = rp - (rb - dRdt * along);
+    float d2 = (dR * dR + over * over) / (size * size);
     if (d2 < 10.0) {
-      float g = uDoppler > 0.5 ? uShift(mt, mv, uGasU[i]) : 1.0;
+      float dazArc = -om * along;
+      vec4 u = rotAz(uGasU[i], cos(dazArc), sin(dazArc));
+      float g = uDoppler > 0.5 ? uShift(mt, mv, u) : 1.0;
       float g2 = g * g;
-      e += bbColor(15000.0 * g) * (uGas[i].w * exp(-d2) * g2 * g2 * 6.0 * outer);
+      float stretch = min(1.0, GAS_STRETCH_REF * size / max(rb * aom * tailT, 1e-4));
+      float taper = 1.0 - 0.7 * (along / tailT); // brightest at the head
+      e += bbColor(15000.0 * g)
+         * (uGas[i].w * exp(-d2) * g2 * g2 * 6.0 * outer * stretch * taper);
     }
   }
   return e;

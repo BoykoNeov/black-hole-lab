@@ -77,6 +77,7 @@ import {
   STAR_ORBITS,
   type GasBlob,
   gasPosXZ,
+  gasRates,
   gasU,
   makeSpinCtx,
   mulberry32,
@@ -446,6 +447,7 @@ const starUArr = new Float32Array(STAR_COUNT * 4);
 const starTempArr = new Float32Array(STAR_COUNT);
 const gasArr = new Float32Array(GAS_COUNT * 4);
 const gasUArr = new Float32Array(GAS_COUNT * 4);
+const gasArcArr = new Float32Array(GAS_COUNT * 4);
 const tdePosArr = new Float32Array(TDE_MAX * 4);
 const tdeUArr = new Float32Array(TDE_MAX * 4);
 const tdeInfoArr = new Float32Array(TDE_MAX * 4);
@@ -673,6 +675,12 @@ function render() {
     gasArr[i * 4 + 2] = b.size;
     gasArr[i * 4 + 3] = b.bright;
     gasUArr.set(gasU(b, spinCtx), i * 4);
+    // the shader sweeps each blob backward along these to draw its sheared arc
+    const rates = gasRates(b, spinCtx);
+    gasArcArr[i * 4] = b.az;
+    gasArcArr[i * 4 + 1] = rates.dazdt;
+    gasArcArr[i * 4 + 2] = rates.dRdt;
+    gasArcArr[i * 4 + 3] = Math.hypot(gx, gz); // draw radius, for its radial reject
     if (stepped) {
       // the blobs live in the disk plane; Trail copies, so one scratch does
       trailScratch[0] = gx;
@@ -805,6 +813,7 @@ function render() {
   gl.uniform1fv(U(progScene, "uStarTemp"), starTempArr);
   gl.uniform4fv(U(progScene, "uGas"), gasArr);
   gl.uniform4fv(U(progScene, "uGasU"), gasUArr);
+  gl.uniform4fv(U(progScene, "uGasArc"), gasArcArr);
   gl.uniform1i(U(progScene, "uTdeN"), tdeN);
   gl.uniform4fv(U(progScene, "uTdePos"), tdePosArr);
   gl.uniform4fv(U(progScene, "uTdeU"), tdeUArr);
