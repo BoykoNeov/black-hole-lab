@@ -130,7 +130,14 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
-  black blocks through the bloom pyramid)
+  black blocks through the bloom pyramid). Also the frame-rate cap and the
+  quality presets: the scene shader integrates a geodesic per pixel of the
+  HDR target, so **render scale** is the whole lever — cost falls with its
+  square while the pixels that are drawn stay exactly as physical. The GL
+  target scales; the HUD canvas keeps true DPR, so overlays stay sharp over
+  a half-res scene. Only the low preset touches the march itself (shorter
+  step budget, coarser arc length — a softer photon ring for a linear
+  saving). The default preset is byte-identical to the pre-cap renderer.
 - `src/camera.ts` — orbit controls
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static

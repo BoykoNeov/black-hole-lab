@@ -33,6 +33,19 @@
     #panel label { display: flex; justify-content: space-between; margin-top: 8px; font-size: 12px; }
     #panel input[type="range"] { width: 100%; accent-color: #ffb35c; }
     #panel .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; }
+    #panel select {
+      width: 100%; margin-top: 2px; padding: 3px 4px;
+      background: rgba(20, 24, 38, 0.9); color: #cdd6f4;
+      border: 1px solid rgba(120, 140, 200, 0.35); border-radius: 4px;
+      font: 12px "Segoe UI", system-ui, sans-serif; cursor: pointer;
+    }
+    #panel input[type="number"] {
+      width: 54px; padding: 0 4px;
+      background: rgba(20, 24, 38, 0.9); color: #cdd6f4;
+      border: 1px solid rgba(120, 140, 200, 0.35); border-radius: 4px;
+      font: 12px "Segoe UI", system-ui, sans-serif;
+      font-variant-numeric: tabular-nums; text-align: right;
+    }
     #panel .readout { margin-top: 10px; font-size: 11px; color: #9aa5c8; font-variant-numeric: tabular-nums; }
     #panel .hint { margin-top: 8px; font-size: 11px; color: #6b7394; }
     #panel .badge { font-size: 9px; padding: 0 5px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; }
@@ -124,6 +137,20 @@
       <input id="jets-on" type="checkbox" checked />
       <label for="jets-on" style="margin:0" title="Content on/off.">Relativistic jets <span class="badge disp">display</span></label>
     </div>
+
+    <div class="sub" style="margin-top:12px">Performance</div>
+
+    <label title="Renders the per-pixel geodesic march at a fraction of screen resolution — cost falls with the square of the scale, and the pixels that are drawn stay fully integrated. Overlays and text stay sharp at any setting. Low additionally shortens the march budget, which softens the photon ring slightly: it is the only setting that trades physical fidelity for speed."><span>Quality <span class="badge disp">display</span></span></label>
+    <select id="quality">
+      <option value="low">Low — half resolution</option>
+      <option value="medium">Medium — 72% resolution</option>
+      <option value="high" selected>High — full resolution</option>
+    </select>
+    <div class="hint">Scales the geodesic march with the square of resolution; overlays stay sharp. Low also shortens the march — the only setting that trades physical accuracy (a slightly softer photon ring) for speed.</div>
+
+    <label title="Caps how often the frame is redrawn. Simulation time is measured from the real clock, so the physics runs at the same speed at any limit — only the GPU does less work."><span>Frame rate limit <span class="badge disp">display</span></span><span><input id="fpslimit-num" type="number" min="15" max="240" step="1" value="240" /> fps</span></label>
+    <input id="fpslimit" type="range" min="15" max="240" step="1" value="240" />
+    <div class="hint">Any limit at or above your display's refresh rate does nothing — the browser already caps frames to vsync.</div>
 
     <div class="sub" style="margin-top:12px">Learn</div>
 

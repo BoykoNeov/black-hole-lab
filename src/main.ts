@@ -50,6 +50,25 @@ import {
 const BLOOM_LEVELS = 5;
 const MAX_DPR = 1.5;
 
+// Quality presets. Render scale is the real lever: the scene shader integrates
+// a whole geodesic per pixel of the HDR target, so cost falls with the square
+// of the scale while every pixel that IS drawn stays exactly as physical as
+// before. Only "low" touches the march itself — a shorter step budget and a
+// coarser adaptive arc length trade photon-ring sharpness for a linear saving,
+// which is worth it only when halving the resolution wasn't enough. The bloom
+// pyramid is left alone at every tier: it runs on quarter-res and down, so it
+// is not where the time goes.
+type Quality = "low" | "medium" | "high";
+const QUALITY: Record<Quality, { scale: number; maxSteps: number; stepScale: number }> = {
+  low: { scale: 0.5, maxSteps: 160, stepScale: 1.6 },
+  medium: { scale: 0.72, maxSteps: 320, stepScale: 1.0 },
+  high: { scale: 1.0, maxSteps: 320, stepScale: 1.0 },
+};
+
+// rAF is already vsync-capped, so a limit at or above the refresh rate is a
+// no-op; the top of the slider means "don't limit" without a magic sentinel.
+const FPS_UNLIMITED = 240;
+
 const canvas = document.getElementById("view") as HTMLCanvasElement;
 const overlay = document.getElementById("overlay") as HTMLDivElement;
 const overlayText = document.getElementById("overlay-text") as HTMLDivElement;
@@ -98,8 +117,12 @@ function allocateTargets(w: number, h: number) {
 
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
-  const w = Math.floor(canvas.clientWidth * dpr);
-  const h = Math.floor(canvas.clientHeight * dpr);
+  // The render scale applies to the GL target only; CSS stretches it back to
+  // full size. The HUD is its own canvas and keeps the true DPR, so overlay
+  // text stays sharp even when the scene behind it is rendered at half res.
+  const glScale = dpr * QUALITY[params.quality].scale;
+  const w = Math.floor(canvas.clientWidth * glScale);
+  const h = Math.floor(canvas.clientHeight * glScale);
   if (w > 0 && h > 0 && (canvas.width !== w || canvas.height !== h)) {
     canvas.width = w;
     canvas.height = h;
@@ -133,6 +156,8 @@ const params = {
   massExp: 6.5, // log10 of the hole mass in solar masses
   mdotExp: -1, // log10 of the accretion rate in Eddington units
   coupleT: true, // disk temperature/brightness follow mass & mdot
+  quality: "high" as Quality, // must match the selected <option> in index.html
+  fpsLimit: FPS_UNLIMITED, // redraw cap; FPS_UNLIMITED = don't limit
   // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
   eduCallouts: false,
   eduTrails: false,
@@ -198,6 +223,29 @@ function bindCheckbox(id: string, apply: (v: boolean) => void) {
   el.addEventListener("change", () => apply(el.checked));
   apply(el.checked);
 }
+/**
+ * Slider + number field as two views of one value, each writing the other
+ * back. The field is never rewritten while it is the one being typed in —
+ * clamping "1" to the minimum mid-keystroke would make "150" untypable — so
+ * it re-clamps on commit (blur/Enter) instead.
+ */
+function bindNumField(id: string, apply: (v: number) => void) {
+  const range = document.getElementById(id) as HTMLInputElement;
+  const num = document.getElementById(id + "-num") as HTMLInputElement;
+  const lo = parseFloat(range.min);
+  const hi = parseFloat(range.max);
+  const push = (raw: number, typing: boolean) => {
+    if (!Number.isFinite(raw)) return; // empty/partial field: keep the last value
+    const v = Math.min(hi, Math.max(lo, raw));
+    range.value = String(v);
+    if (!typing) num.value = String(v);
+    apply(v);
+  };
+  range.addEventListener("input", () => push(parseFloat(range.value), false));
+  num.addEventListener("input", () => push(parseFloat(num.value), true));
+  num.addEventListener("change", () => push(parseFloat(num.value), false));
+  push(parseFloat(range.value), false);
+}
 
 bindSlider("fov", (v) => (camera.fovDeg = v));
 bindSlider("exposure", (v) => (params.exposure = v));
@@ -235,6 +283,14 @@ bindCheckbox("edu-clocks", (v) => (params.eduClocks = v));
 bindCheckbox("edu-potential", (v) => (params.eduPotential = v));
 bindCheckbox("edu-embed", (v) => (params.eduEmbed = v));
 
+bindNumField("fpslimit", (v) => (params.fpsLimit = v));
+// No reallocation needed here: resize() runs at the top of every frame and
+// picks the new render scale up on its own.
+const qualitySel = document.getElementById("quality") as HTMLSelectElement;
+const applyQuality = () => (params.quality = qualitySel.value as Quality);
+qualitySel.addEventListener("change", applyQuality);
+applyQuality();
+
 const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 pauseBtn.addEventListener("click", () => {
   paused = !paused;
@@ -257,8 +313,28 @@ let frames = 0;
 let fpsT0 = performance.now();
 let firstFrame = true;
 let lastFrameT = performance.now();
+let nextFrameT = performance.now();
 
 function render() {
+  // Frame-rate gate. Skipped frames return before the simulation advance and
+  // leave lastFrameT alone, so dt simply accumulates into the next drawn frame
+  // and sim time stays tied to the real clock at any limit.
+  const nowGate = performance.now();
+  if (params.fpsLimit < FPS_UNLIMITED) {
+    // 1 ms of slack: without it, vsync jitter halves a cap set near the
+    // display's own refresh rate.
+    if (nowGate < nextFrameT - 1) {
+      requestAnimationFrame(render);
+      return;
+    }
+    // Advance on the ideal cadence so the average rate is exact, but snap
+    // forward when we are already slower than the cap — otherwise a stall
+    // banks missed frames and pays them back as a burst.
+    nextFrameT = Math.max(nextFrameT + 1000 / params.fpsLimit, nowGate);
+  } else {
+    nextFrameT = nowGate; // keep it fresh so re-enabling the limit starts clean
+  }
+
   resize();
   if (!sceneFbo) {
     requestAnimationFrame(render);
@@ -377,6 +453,8 @@ function render() {
   gl.uniform1f(U(progScene, "uGasOn"), params.gas ? 1 : 0);
   gl.uniform1f(U(progScene, "uJetsOn"), params.jets ? 1 : 0);
   gl.uniform1f(U(progScene, "uJetPower"), params.jetPower);
+  gl.uniform1i(U(progScene, "uMaxSteps"), QUALITY[params.quality].maxSteps);
+  gl.uniform1f(U(progScene, "uStepScale"), QUALITY[params.quality].stepScale);
   gl.uniform1f(U(progScene, "uSpin"), params.spin);
   gl.uniform1f(U(progScene, "uHorizon"), spinCtx.rHor);
   gl.uniform1f(U(progScene, "uIsco"), spinCtx.isco);

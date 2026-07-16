@@ -50,6 +50,8 @@ uniform float uStarsOn;      // 1 = draw orbiting stars
 uniform float uGasOn;        // 1 = draw infalling gas blobs
 uniform float uJetsOn;       // 1 = draw the bipolar jet
 uniform float uJetPower;     // ~0 .. 2
+uniform int uMaxSteps;       // march step budget; < 320 only on the low preset
+uniform float uStepScale;    // > 1 coarsens the adaptive arc length (low preset)
 uniform float uSpin;         // Kerr a in [0, 0.998]
 uniform float uHorizon;      // r+ = 1 + sqrt(1 - a^2)
 uniform float uIsco;         // prograde ISCO radius for the current spin
@@ -498,11 +500,12 @@ void main() {
     bool escaped = false;
     haveSky = false;
     for (int i = 0; i < 320; i++) {
+      if (i >= uMaxSteps) break; // budget spent = winding: falls through as captured
       float r = ksRadius(p);
       vec3 dp1, dm1;
       geoDeriv(p, mv, mt, dp1, dm1);
       // adaptive arc length: fine near the photon shell, coarse far away
-      float ds = clamp(0.16 * r * r / (r + 14.0), 0.02, 12.0);
+      float ds = clamp(0.16 * uStepScale * r * r / (r + 14.0), 0.02, 12.0);
       float h = ds / max(length(dp1), 1e-9);
 
       vec3 dp2, dm2, dp3, dm3, dp4, dm4;
