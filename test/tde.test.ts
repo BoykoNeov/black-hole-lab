@@ -142,6 +142,24 @@ describe("tidal disruption event", () => {
     expect(Math.abs(frac - BOUND_FRAC)).toBeLessThan(0.12);
   });
 
+  it("the whole bound tail comes back to be eaten, not just the most-bound few", () => {
+    // Spreading the bound elements by fallback period (rather than uniformly
+    // in energy, where apocenter ~ 1/(1-E) strands most of them on ~1e3 M
+    // orbits) is the only reason these return inside the watch window. A
+    // uniform-energy spread scored 5/32 here, and read on screen as the whole
+    // stream flying away and never being eaten.
+    const a = 0.7;
+    const st = launchTde(10 ** 6.5, a);
+    const eaten = new Set<number>();
+    runUntil(st, a, 1, 4 * FALLBACK_T0, () => {
+      st.bodies.forEach((b, i) => {
+        if (b.alive && b.wentOut && -b.mt < 1 && ksRadius(b.p, a) < st.rt) eaten.add(i);
+      });
+      return false;
+    });
+    expect(eaten.size).toBeGreaterThanOrEqual(0.85 * BOUND_FRAC * DEBRIS_COUNT);
+  });
+
   it("bound debris loops out and falls back while unbound debris escapes", () => {
     // moderate mass: r_t = 22.6 M, an encounter comfortably clear of the
     // relativistic capture threshold, so the bound tail must come back

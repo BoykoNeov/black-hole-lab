@@ -54,11 +54,12 @@ export const TDE_MAX = DEBRIS_COUNT;
  * threshold for marginally bound orbits sits at L = 4).
  *
  * Kepler ties this to how far the stream flies: period T0 means semi-major
- * axis (T0/2pi)^(2/3), so the most-bound element's apocenter grows with it.
- * At 600 the bound tail tops out near 29 M — just past the default camera's
- * ~26 M framing, so the fallback stays watchable instead of leaving the
- * scene. Slowing the flare down means widening that loop; use the time-speed
- * slider to watch it in slow motion instead, which leaves the orbit alone.
+ * axis (T0/2pi)^(2/3), so every element's apocenter grows with it. At 600 the
+ * most-bound element loops to ~29 M against the default camera's ~26 M
+ * framing, and the fallback is watchable instead of leaving the scene; at
+ * 1600 it topped 65 M and the whole stream read as gone. Slowing the flare
+ * down means widening that loop — use the time-speed slider to watch it in
+ * slow motion instead, which leaves the orbit alone.
  */
 export const FALLBACK_T0 = 600;
 /**
@@ -67,6 +68,39 @@ export const FALLBACK_T0 = 600;
  * fallback — the part actually worth watching — stays populated. Artistic.
  */
 export const BOUND_FRAC = 0.7;
+/**
+ * Bound elements are spread by fallback PERIOD, over [FALLBACK_T0,
+ * BOUND_T_SPREAD * FALLBACK_T0], rather than uniformly in energy.
+ *
+ * The physical spread is uniform in energy — which is precisely why real
+ * fallback is a t^(-5/3) tail: apocenter goes like 1/(1 - E), so only the
+ * elements within a hair of the most-bound end have small orbits, and the
+ * rest of the "bound" tail sits on ~1e3 M orbits. Drawn that way only 5 of
+ * 32 blobs ever came back; the other 27 coasted out of frame and never
+ * visibly returned, which is what made the stream read as "it all flew away
+ * and nothing was eaten". Spreading by period keeps every blob's loop inside
+ * the watch window. The flare's light curve is integrated analytically
+ * (astro.ts flareMdotEdd) and still carries the true t^(-5/3) shape — this
+ * knob only decides where the drawn blobs go.
+ */
+const BOUND_T_SPREAD = 1.6;
+/** Slowest escaper, in units of dE, so the unbound half clears out instead
+ *  of hovering at the frame edge on a barely-unbound crawl. */
+const UNBOUND_S_MIN = 0.35;
+/**
+ * Where debris stops being worth drawing, and how fast it fades out there.
+ * Set above the widest returning loop: the Newtonian 2*aMB bound says ~42 M,
+ * but relativistic apocenters run wider — cutting at 45 killed 5 of the 22
+ * returning blobs at apocenter, so this is measured, not derived. Past it a
+ * body is unbound, or on a straggler orbit that only returns on a t^(-5/3)
+ * tail nobody watches. Keying this on E >= 1 missed exactly those
+ * stragglers: they coasted to r ~ 200 still lit, and since the frustum
+ * widens with distance they stayed near frame centre ~800 M — outlasting the
+ * whole fallback loop and reading as "it all flew away and nothing came
+ * back". Radius, not energy, is the honest test here.
+ */
+const LEAVING_R = 58;
+const LEAVING_FADE_T = 50;
 const STAR_TEMP_K = 5800;
 
 export interface TdeBody {
@@ -213,12 +247,17 @@ export function spawnDebris(
   const dE = 1 / (2 * aMB); // most-bound element: E = 1 - dE
   const out: TdeBody[] = [];
   for (let i = 0; i < DEBRIS_COUNT; i++) {
-    // s in [-1, 1] straddles E = 1, but piecewise so BOUND_FRAC of the
-    // elements land on the bound side. Both ends still reach |s| = 1, which
-    // keeps the most-bound element's period exactly FALLBACK_T0.
+    // s scales the speed kick in units of dE: negative binds, positive frees.
+    // BOUND_FRAC of the elements take the bound branch, where s is set from
+    // the element's intended fallback period (s = -1 is exactly FALLBACK_T0).
     const f = i / (DEBRIS_COUNT - 1);
-    const s =
-      f < BOUND_FRAC ? (f - BOUND_FRAC) / BOUND_FRAC : (f - BOUND_FRAC) / (1 - BOUND_FRAC);
+    let s: number;
+    if (f < BOUND_FRAC) {
+      const T = FALLBACK_T0 * (1 + (BOUND_T_SPREAD - 1) * (f / BOUND_FRAC));
+      s = -aMB / Math.pow(T / (2 * Math.PI), 2 / 3);
+    } else {
+      s = UNBOUND_S_MIN + (1 - UNBOUND_S_MIN) * ((f - BOUND_FRAC) / (1 - BOUND_FRAC));
+    }
     const scale = 1 + (s * dE) / v2; // dE_newt = v dv
     const vi: V3 = [
       v[0] * scale + 0.012 * (rand() - 0.5),
@@ -286,8 +325,8 @@ export function stepTde(
     if (b.wentOut && E < 1 && r < st.rt) {
       // fallen back inside the disruption site: eaten by the disk
       b.bright *= Math.exp(-dt / 80);
-    } else if (E >= 1 && r > 45) {
-      b.bright *= Math.exp(-dt / 150); // unbound: leaves the scene
+    } else if (r > LEAVING_R) {
+      b.bright *= Math.exp(-dt / LEAVING_FADE_T); // gone for good: leaves the scene
     }
     if (b.bright < 0.02) b.alive = false;
     b.size = Math.min(b.size + 0.0006 * dt, 0.55); // the stream spreads

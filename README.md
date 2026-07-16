@@ -69,15 +69,23 @@ The star and all 32 debris elements move on exact timelike Kerr geodesics
 integrated with the same Kerr–Schild Hamiltonian RK4 as the photons (only
 the mass shell differs: m·m = -1, with E = -m_t conserved exactly), so the
 stream's stretch, the relativistic capture of the deepest debris, and the
-horizon crossing all emerge from the integration. Three knobs are honestly
-artistic and documented in the code: the debris energy spread is widened so
-first fallback takes ~600 M instead of months (Kepler ties that period to
-how far the tail loops out, so it also keeps the stream in frame), the split
-is biased ~70/30 toward bound rather than the physical 50/50 so the fallback
-stays populated, and the flare's display brightness is sqrt-compressed (the
-readout reports the physical ratio). The bound tail loops out and fades as
-the disk eats it — it never plunges the horizon; only the Hills-mass
-swallowed-whole case crosses.
+horizon crossing all emerge from the integration. The drawn stream carries
+the artistic knobs, all documented in the code. The energy spread is widened
+so first fallback takes ~600 M instead of months — Kepler ties that period to
+how far the tail loops, so it also decides whether the stream stays in frame.
+The split is biased ~70/30 toward bound rather than the physical 50/50, and
+the bound elements are spread by fallback *period* rather than uniformly in
+energy: the physical spread is what makes real fallback a t^(-5/3) tail, and
+drawn literally it put 27 of 32 blobs on ~1e3 M orbits that coast out of
+frame and never visibly return. The flare's light curve is integrated
+analytically and keeps the true t^(-5/3) shape regardless. Its display
+brightness is sqrt-compressed (the readout reports the physical ratio).
+
+What the debris does is the integrator's business, not ours: at the default
+mass the bound tail loops out and fades as the disk eats it near r_t, while
+at ~1e7.5 M☉ and low spin — r_t only a couple of M outside the horizon —
+every element is captured and crosses. Spin the hole up at that mass and the
+smaller horizon lets the same stream survive and loop instead.
 
 Slice 3 adds matter in motion, all sampled **along the same per-pixel
 geodesics** rather than as unlensed billboards, so every piece of matter is
