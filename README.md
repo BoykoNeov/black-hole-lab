@@ -114,6 +114,10 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
   black blocks through the bloom pyramid)
 - `src/camera.ts` — orbit controls
+- `src/edu.ts` — educational-overlay math: unlensed world→screen projection
+  matching the shader's ray construction (pure, tested)
+- `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
+  shared HUD style; DOM-only, verified by eye)
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -129,6 +133,8 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `test/astro.test.ts` — unit conversions against known values (Sgr A*
   horizon), T ∝ ṁ^(1/4) M^(-1/4) scalings, tidal-radius values and the
   ~1.1e8 M☉ Hills mass, flare rise/peak/t^(-5/3) decay
+- `test/edu.test.ts` — screen projection against hand-built frustum points
+  (center, top edge with y flip, behind-camera cull, aspect scaling)
 - `test/tde.test.ts` — timelike stepper holds a circular orbit at its exact
   period (norm conserved), raise∘lower = id, disruption at r_t with a
   bound/unbound energy spread, bound debris loops out and falls back while
@@ -150,3 +156,4 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 6. Educational overlays — clocks, potentials, physical-vs-artistic knob
    labels, embedding diagram, orbit trails, shadow/photon-ring annotation,
    callout mode (detailed sub-slice plan in `PLAN-slice-6.md`)
+   - 6a HUD infrastructure + knob provenance badges ✅

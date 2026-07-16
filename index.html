@@ -10,6 +10,7 @@
     html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
     #view { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
     #view:active { cursor: grabbing; }
+    #hud { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
     #panel {
       position: fixed; top: 12px; left: 12px; width: 240px;
       max-height: calc(100vh - 24px); overflow-y: auto;
@@ -18,6 +19,7 @@
       padding: 14px 16px; color: #cdd6f4;
       font: 13px/1.5 "Segoe UI", system-ui, sans-serif;
       user-select: none;
+      z-index: 6;
     }
     #panel button {
       margin-top: 10px; width: 100%; padding: 5px 0;
@@ -33,6 +35,10 @@
     #panel .check { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12px; }
     #panel .readout { margin-top: 10px; font-size: 11px; color: #9aa5c8; font-variant-numeric: tabular-nums; }
     #panel .hint { margin-top: 8px; font-size: 11px; color: #6b7394; }
+    #panel .badge { font-size: 9px; padding: 0 5px; border-radius: 4px; margin-left: 6px; vertical-align: 1px; }
+    .badge.phys { background: rgba(80,160,110,0.25); color: #9fdcb8; border: 1px solid rgba(120,200,150,0.35); }
+    .badge.disp { background: rgba(90,110,170,0.25); color: #aebcf0; border: 1px solid rgba(120,140,200,0.35); }
+    .badge.art  { background: rgba(190,120,70,0.25); color: #f0c39e; border: 1px solid rgba(220,150,90,0.4); }
     #overlay {
       position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
       background: #000; color: #aeb8dd; font: 14px "Segoe UI", system-ui, sans-serif;
@@ -42,83 +48,111 @@
 </head>
 <body>
   <canvas id="view"></canvas>
+  <canvas id="hud"></canvas>
 
   <div id="panel">
     <h1>Black Hole Lab</h1>
-    <div class="sub">Slice 5 — mass, temperature &amp; tidal disruption</div>
+    <div class="sub">Slice 6 — educational overlays</div>
 
-    <label>Black hole spin a <span id="spin-val"></span></label>
+    <label title="Kerr spin parameter a. The shadow shape, frame dragging, ISCO and horizon all follow exactly."><span>Black hole spin a <span class="badge phys">physics</span></span><span id="spin-val"></span></label>
     <input id="spin" type="range" min="0" max="0.998" step="0.002" value="0.7" />
 
-    <label>Black hole mass <span id="mass-val"></span> M☉</label>
+    <label title="Sets the physical scale: km per M, seconds per M, disk temperature via T ∝ M^(-1/4)."><span>Black hole mass <span class="badge phys">physics</span></span><span><span id="mass-val"></span> M☉</span></label>
     <input id="mass" type="range" min="5" max="11" step="0.05" value="6.5" />
 
-    <label>Accretion rate <span id="mdot-val"></span> Edd</label>
+    <label title="Eddington-relative accretion rate; disk temperature follows T ∝ ṁ^(1/4)."><span>Accretion rate <span class="badge phys">physics</span></span><span><span id="mdot-val"></span> Edd</span></label>
     <input id="mdot" type="range" min="-3" max="0" step="0.05" value="-1" />
 
     <div class="check">
       <input id="couple" type="checkbox" checked />
-      <label for="couple" style="margin:0">Disk T from mass &amp; ṁ (physical)</label>
+      <label for="couple" style="margin:0" title="On: disk temperature computed from mass &amp; ṁ (Shakura–Sunyaev). Off: you set the temperature by hand.">Disk T from mass &amp; ṁ <span class="badge phys">physics</span></label>
     </div>
 
-    <label>Field of view <span id="fov-val"></span>°</label>
+    <label title="Camera lens only — no physics."><span>Field of view <span class="badge disp">display</span></span><span><span id="fov-val"></span>°</span></label>
     <input id="fov" type="range" min="30" max="100" step="1" value="60" />
 
-    <label>Exposure <span id="exposure-val"></span></label>
+    <label title="Tone-mapping brightness — no physics."><span>Exposure <span class="badge disp">display</span></span><span id="exposure-val"></span></label>
     <input id="exposure" type="range" min="0.2" max="4" step="0.05" value="1" />
 
-    <label>Bloom <span id="bloom-val"></span></label>
+    <label title="Glow post-process — no physics."><span>Bloom <span class="badge disp">display</span></span><span id="bloom-val"></span></label>
     <input id="bloom" type="range" min="0" max="2" step="0.05" value="0.7" />
 
-    <label>Star density <span id="stars-val"></span></label>
+    <label title="The background sky is procedural, not a catalog."><span>Star density <span class="badge art">artistic</span></span><span id="stars-val"></span></label>
     <input id="stars" type="range" min="0.2" max="2" step="0.05" value="1" />
 
-    <label>Disk temperature <span id="disktemp-val"></span> K</label>
+    <label title="Manual override, only active when coupling is off."><span>Disk temperature <span class="badge art">artistic</span></span><span><span id="disktemp-val"></span> K</span></label>
     <input id="disktemp" type="range" min="3000" max="20000" step="100" value="8000" />
 
-    <label>Disk brightness <span id="diskbright-val"></span></label>
+    <label title="Display gain on the disk emission."><span>Disk brightness <span class="badge disp">display</span></span><span id="diskbright-val"></span></label>
     <input id="diskbright" type="range" min="0" max="3" step="0.05" value="1" />
 
-    <label>Disk size <span id="disksize-val"></span> M</label>
+    <label title="Real disk outer radii vary hugely; this is for looks."><span>Disk size <span class="badge art">artistic</span></span><span><span id="disksize-val"></span> M</span></label>
     <input id="disksize" type="range" min="8" max="30" step="0.5" value="19" />
 
-    <label>Time speed <span id="timespeed-val"></span> M/s</label>
+    <label title="Simulation clock rate (coordinate time per real second)."><span>Time speed <span class="badge disp">display</span></span><span><span id="timespeed-val"></span> M/s</span></label>
     <input id="timespeed" type="range" min="0" max="120" step="1" value="30" />
 
-    <label>Jet power <span id="jetpower-val"></span></label>
+    <label title="Jet emission model is illustrative; the 0.85c knot kinematics and beaming are physical."><span>Jet power <span class="badge art">artistic</span></span><span id="jetpower-val"></span></label>
     <input id="jetpower" type="range" min="0" max="2" step="0.05" value="1" />
 
     <div class="check">
       <input id="lensing" type="checkbox" checked />
-      <label for="lensing" style="margin:0">Gravitational lensing</label>
+      <label for="lensing" style="margin:0" title="Off = straight-ray bypass for comparison (not physical).">Gravitational lensing <span class="badge phys">physics</span></label>
     </div>
 
     <div class="check">
       <input id="disk" type="checkbox" checked />
-      <label for="disk" style="margin:0">Accretion disk</label>
+      <label for="disk" style="margin:0" title="Content on/off.">Accretion disk <span class="badge disp">display</span></label>
     </div>
 
     <div class="check">
       <input id="doppler" type="checkbox" checked />
-      <label for="doppler" style="margin:0">Doppler &amp; redshift</label>
+      <label for="doppler" style="margin:0" title="Off = &quot;Hollywood mode&quot;: hides the true brightness asymmetry, as the Interstellar renders did.">Doppler &amp; redshift <span class="badge phys">physics</span></label>
     </div>
 
     <div class="check">
       <input id="stars-on" type="checkbox" checked />
-      <label for="stars-on" style="margin:0">Orbiting stars</label>
+      <label for="stars-on" style="margin:0" title="Content on/off.">Orbiting stars <span class="badge disp">display</span></label>
     </div>
 
     <div class="check">
       <input id="gas-on" type="checkbox" checked />
-      <label for="gas-on" style="margin:0">Infalling gas</label>
+      <label for="gas-on" style="margin:0" title="Content on/off.">Infalling gas <span class="badge disp">display</span></label>
     </div>
 
     <div class="check">
       <input id="jets-on" type="checkbox" checked />
-      <label for="jets-on" style="margin:0">Relativistic jets</label>
+      <label for="jets-on" style="margin:0" title="Content on/off.">Relativistic jets <span class="badge disp">display</span></label>
     </div>
 
-    <button id="tde">☄ Throw a star at it (TDE)</button>
+    <div class="sub" style="margin-top:12px">Learn</div>
+
+    <div class="check">
+      <input id="edu-callouts" type="checkbox" />
+      <label for="edu-callouts" style="margin:0">What am I looking at?</label>
+    </div>
+
+    <div class="check">
+      <input id="edu-trails" type="checkbox" />
+      <label for="edu-trails" style="margin:0">Orbit trails</label>
+    </div>
+
+    <div class="check">
+      <input id="edu-clocks" type="checkbox" />
+      <label for="edu-clocks" style="margin:0">Clocks — time dilation</label>
+    </div>
+
+    <div class="check">
+      <input id="edu-potential" type="checkbox" />
+      <label for="edu-potential" style="margin:0">Effective potential</label>
+    </div>
+
+    <div class="check">
+      <input id="edu-embed" type="checkbox" />
+      <label for="edu-embed" style="margin:0">Embedding diagram</label>
+    </div>
+
+    <button id="tde" title="Physics: exact Kerr geodesics for star &amp; debris, r_t and Hills-mass scalings, t^(-5/3) flare. Artistic: debris energy spread widened so fallback takes ~800 M (not months); flare display brightness is √-compressed (readout reports the true ratio).">☄ Throw a star at it (TDE)</button>
     <button id="pause">⏸ Pause</button>
 
     <div class="readout" id="tde-readout"></div>
@@ -126,6 +160,7 @@
     <div class="readout" id="dist-readout"></div>
     <div class="readout" id="fps-readout"></div>
     <div class="hint">Drag to orbit · scroll to zoom</div>
+    <div class="hint">physics = exact GR · display = camera/rendering · artistic = illustrative</div>
   </div>
 
   <div id="overlay"><div id="overlay-text">Compiling geodesic integrator…</div></div>

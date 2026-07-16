@@ -20,6 +20,7 @@ import {
   type TdeState,
 } from "./tde";
 import { compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
+import { clearHud, initHud, resizeHud } from "./hud";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
 import {
@@ -49,6 +50,7 @@ if (!glMaybe) {
   throw new Error("WebGL2 unavailable");
 }
 const gl: WebGL2RenderingContext = glMaybe;
+const hudCtx = initHud();
 const hdr = gl.getExtension("EXT_color_buffer_float") !== null;
 if (!hdr) {
   console.warn("EXT_color_buffer_float missing - falling back to LDR bloom");
@@ -93,6 +95,7 @@ function resize() {
     canvas.height = h;
     allocateTargets(w, h);
   }
+  resizeHud(hudCtx.canvas, canvas.clientWidth, canvas.clientHeight, dpr);
 }
 window.addEventListener("resize", resize);
 
@@ -120,6 +123,12 @@ const params = {
   massExp: 6.5, // log10 of the hole mass in solar masses
   mdotExp: -1, // log10 of the accretion rate in Eddington units
   coupleT: true, // disk temperature/brightness follow mass & mdot
+  // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
+  eduCallouts: false,
+  eduTrails: false,
+  eduClocks: false,
+  eduPotential: false,
+  eduEmbed: false,
 };
 
 // ---------- matter state ----------
@@ -189,6 +198,11 @@ bindCheckbox("doppler", (v) => (params.doppler = v));
 bindCheckbox("stars-on", (v) => (params.stars = v));
 bindCheckbox("gas-on", (v) => (params.gas = v));
 bindCheckbox("jets-on", (v) => (params.jets = v));
+bindCheckbox("edu-callouts", (v) => (params.eduCallouts = v));
+bindCheckbox("edu-trails", (v) => (params.eduTrails = v));
+bindCheckbox("edu-clocks", (v) => (params.eduClocks = v));
+bindCheckbox("edu-potential", (v) => (params.eduPotential = v));
+bindCheckbox("edu-embed", (v) => (params.eduEmbed = v));
 
 const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 pauseBtn.addEventListener("click", () => {
@@ -392,6 +406,9 @@ function render() {
   gl.uniform1f(U(progComposite, "uExposure"), params.exposure);
   drawQuad();
   gl.activeTexture(gl.TEXTURE0);
+
+  // HUD overlay (2D canvas above the GL frame; overlays arrive in 6b–6g)
+  clearHud(hudCtx, canvas.clientWidth, canvas.clientHeight);
 
   if (dbgScan) {
     dbgReport("scene", sceneFbo);
