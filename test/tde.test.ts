@@ -44,18 +44,22 @@ function bodyFromU(p: V3, u: V4, a: number): TdeBody {
   };
 }
 
+/** The app's default disk outer edge (index.html "disksize"). */
+const DISK_OUTER = 19;
+
 /** Run a launched event forward in fixed chunks until a predicate holds. */
 function runUntil(
   st: TdeState,
   a: number,
   dt: number,
   maxT: number,
-  done: (st: TdeState, t: number) => boolean
+  done: (st: TdeState, t: number) => boolean,
+  diskOuter = DISK_OUTER
 ): number {
   const rand = mulberry32(0xbeef);
   let t = 0;
   while (t < maxT) {
-    stepTde(st, dt, a, t, rand);
+    stepTde(st, dt, a, t, rand, diskOuter);
     t += dt;
     if (done(st, t)) return t;
   }
@@ -154,7 +158,7 @@ describe("tidal disruption event", () => {
     const eaten = new Set<number>();
     runUntil(st, a, 1, 4 * FALLBACK_T0, () => {
       st.bodies.forEach((b, i) => {
-        if (b.alive && b.wentOut && -b.mt < 1 && ksRadius(b.p, a) < st.rt) eaten.add(i);
+        if (b.alive && b.wentOut && -b.mt < 1 && ksRadius(b.p, a) < DISK_OUTER) eaten.add(i);
       });
       return false;
     });
@@ -205,8 +209,49 @@ describe("tidal disruption event", () => {
     const st = launchTde(1e5, a); // r_t = 218 M >> the 30 M spawn radius
     expect(st.rt).toBeGreaterThan(30);
     const rand = mulberry32(1);
-    stepTde(st, 0.5, a, 0, rand);
+    stepTde(st, 0.5, a, 0, rand, DISK_OUTER);
     expect(st.phase).toBe("debris");
+  });
+
+  it("low-mass debris stays lit out on its loop, where nothing can eat it", () => {
+    // Regression: the disk-eat fade was keyed on r < st.rt. r_t belongs to the
+    // STAR and scales as M^(-2/3), so at 1e5 M☉ it is 219 M — larger than the
+    // whole scene — and every bound element began dissolving the instant it
+    // passed apocenter, tens of M from anything that could eat it. The stream
+    // evaporated in open space and never fell back, which read on screen as
+    // the star simply vanishing. The DISK does the eating, so the disk's edge
+    // is the radius that decides.
+    const a = 0.7;
+    const st = launchTde(1e5, a);
+    expect(st.rt).toBeGreaterThan(3 * DISK_OUTER); // r_t engulfs the scene
+
+    runUntil(st, a, 1, 800, () => false); // out past apocenter
+    const looping = st.bodies.filter(
+      (b) =>
+        b.alive &&
+        b.wentOut &&
+        -b.mt < 1 && // bound
+        ksRadius(b.p, a) > 1.5 * DISK_OUTER && // well outside the disk...
+        ksRadius(b.p, a) < 55 // ...but not yet "left the scene"
+    );
+    expect(looping.length).toBeGreaterThan(0);
+    // spawn brightness is 0.5..1 and nothing out here should have dimmed it
+    for (const b of looping) expect(b.bright).toBeGreaterThan(0.45);
+  });
+
+  it("low-mass debris survives long enough to fall back into the disk", () => {
+    // The payoff of keying the fade on the disk: the bound tail completes its
+    // loop and reaches the disk body, which is the part worth watching.
+    const a = 0.7;
+    const st = launchTde(1e5, a);
+    let reachedDisk = false;
+    runUntil(st, a, 1, 2000, () => {
+      if (st.bodies.some((b) => b.alive && b.wentOut && ksRadius(b.p, a) < DISK_OUTER)) {
+        reachedDisk = true;
+      }
+      return reachedDisk;
+    });
+    expect(reachedDisk).toBe(true);
   });
 
   it("stream capsules draw at the endpoint-average brightness until stretched", () => {

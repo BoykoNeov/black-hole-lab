@@ -40,6 +40,7 @@ uniform vec3 uCamFwd;
 uniform float uTanHalfFov;
 uniform float uLensing;      // 1 = real lensing, 0 = flat-space bypass
 uniform float uStarDensity;  // ~0.2 .. 2
+uniform float uSkyOn;        // 1 = draw the background sky (stars + Milky Way)
 uniform float uSimT;         // simulation (coordinate) time in M
 uniform float uDiskOn;       // 1 = draw accretion disk
 uniform float uDoppler;      // 1 = Doppler + gravitational shift, 0 = Hollywood
@@ -141,7 +142,13 @@ vec3 milkyway(vec3 d) {
   return g * tint * 0.8 + vec3(0.004, 0.005, 0.009);
 }
 
-vec3 skyColor(vec3 d) { return starfield(d) + milkyway(d); }
+// Killing the sky leaves the escaped rays black, which is what isolates the
+// emission from the hole itself — without a backdrop there is nothing for the
+// lensing to distort, so the disk/jet/matter read on their own.
+vec3 skyColor(vec3 d) {
+  if (uSkyOn < 0.5) return vec3(0.0);
+  return starfield(d) + milkyway(d);
+}
 
 // ---------- Kerr–Schild metric (world frame: spin along +y) ----------
 

@@ -284,16 +284,20 @@ export function spawnDebris(
  * Advance the whole event by dt. Infall: integrate the star, disrupt when
  * it crosses r_t (or mark it swallowed at the horizon — the Hills-mass
  * outcome). Debris: integrate every element; bound elements that have
- * looped out past apocenter and fallen back are eaten by the disk (that
- * fallback is what powers the flare — main.ts drives it analytically from
- * tDisrupt), unbound ones fade once they leave the scene.
+ * looped out past apocenter and fallen back into the disk are eaten by it
+ * (that fallback is what powers the flare — main.ts drives it analytically
+ * from tDisrupt), unbound ones fade once they leave the scene.
+ *
+ * diskOuter is the disk's outer edge in M, and it is the disk — not the
+ * star's r_t — that does the eating: see the note on the fade below.
  */
 export function stepTde(
   st: TdeState,
   dt: number,
   a: number,
   simT: number,
-  rand: () => number
+  rand: () => number,
+  diskOuter: number
 ): void {
   const rHor = horizonRadius(a);
   if (st.phase === "infall") {
@@ -320,8 +324,14 @@ export function stepTde(
     else if (b.movedOut && r < b.prevR - 1e-3) b.wentOut = true;
     b.prevR = r;
     const E = -b.mt;
-    if (b.wentOut && E < 1 && r < st.rt) {
-      // fallen back inside the disruption site: eaten by the disk
+    if (b.wentOut && E < 1 && r < diskOuter) {
+      // Fallen back into the disk body: eaten by it. Keyed on the DISK's
+      // edge, not r_t — r_t is a property of the STAR and scales as M^(-2/3),
+      // so below ~1e6.3 M☉ it runs to hundreds of M, well outside the disk
+      // and most of the scene. Keyed there, every bound element started
+      // dissolving the moment it passed apocenter, in open space, nowhere
+      // near anything that could eat it: the stream simply evaporated
+      // mid-flight instead of falling back.
       b.bright *= Math.exp(-dt / 80);
     } else if (r > LEAVING_R) {
       b.bright *= Math.exp(-dt / LEAVING_FADE_T); // gone for good: leaves the scene

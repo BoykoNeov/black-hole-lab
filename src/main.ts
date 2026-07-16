@@ -175,6 +175,7 @@ const params = {
   bloom: 0.7,
   threshold: 1.0,
   starDensity: 1.0,
+  sky: true,
   disk: true,
   doppler: true,
   diskTempK: 8000,
@@ -417,6 +418,11 @@ bindCheckbox("doppler", (v) => (params.doppler = v));
 bindCheckbox("stars-on", (v) => (params.stars = v));
 bindCheckbox("gas-on", (v) => (params.gas = v));
 bindCheckbox("jets-on", (v) => (params.jets = v));
+bindCheckbox("sky-on", (v) => {
+  params.sky = v;
+  // Star density only has a sky to populate (same pattern as couple/disktemp).
+  (document.getElementById("stars") as HTMLInputElement).disabled = !v;
+});
 bindCheckbox("edu-callouts", (v) => (params.eduCallouts = v));
 bindCheckbox("edu-shadow", (v) => (params.eduShadow = v));
 bindCheckbox("edu-trails", (v) => (params.eduTrails = v));
@@ -512,7 +518,7 @@ function render() {
       if (b.r > rWas + 2) gasTrails[i].clear();
     }
     if (tde) {
-      stepTde(tde, dtSim, params.spin, simT, rng);
+      stepTde(tde, dtSim, params.spin, simT, rng, params.diskOuter);
       // Indexed by slot in tde.bodies, NOT by the aliveBodies() ordering the
       // uniforms use — that array is filtered, so its indices shift as debris
       // is eaten and surviving strands would inherit a neighbour's history.
@@ -666,6 +672,7 @@ function render() {
   gl.uniform1f(U(progScene, "uTanHalfFov"), tanHalfFov);
   gl.uniform1f(U(progScene, "uLensing"), params.lensing ? 1 : 0);
   gl.uniform1f(U(progScene, "uStarDensity"), params.starDensity);
+  gl.uniform1f(U(progScene, "uSkyOn"), params.sky ? 1 : 0);
   gl.uniform1f(U(progScene, "uSimT"), simT);
   gl.uniform1f(U(progScene, "uDiskOn"), params.disk ? 1 : 0);
   gl.uniform1f(U(progScene, "uDoppler"), params.doppler ? 1 : 0);

@@ -86,10 +86,15 @@ analytically and keeps the true t^(-5/3) shape regardless. Its display
 brightness is sqrt-compressed (the readout reports the physical ratio).
 
 What the debris does is the integrator's business, not ours: at the default
-mass the bound tail loops out and fades as the disk eats it near r_t, while
-at ~1e7.5 M☉ and low spin — r_t only a couple of M outside the horizon —
-every element is captured and crosses. Spin the hole up at that mass and the
-smaller horizon lets the same stream survive and loop instead.
+mass the bound tail loops out and fades as the disk eats it on the way back
+in, while at ~1e7.5 M☉ and low spin — r_t only a couple of M outside the
+horizon — every element is captured and crosses. Spin the hole up at that
+mass and the smaller horizon lets the same stream survive and loop instead.
+That fade is keyed on the *disk's* outer edge, not on r_t: r_t belongs to the
+star and scales as M^(-2/3), so at the low end of the mass slider it runs to
+hundreds of M — larger than the scene — and keying the fade there dissolved
+the whole stream in open space, nowhere near anything that could eat it,
+before it could ever fall back.
 
 Slice 3 adds matter in motion, all sampled **along the same per-pixel
 geodesics** rather than as unlensed billboards, so every piece of matter is

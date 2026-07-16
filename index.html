@@ -138,6 +138,11 @@
       <label for="jets-on" style="margin:0" title="Content on/off.">Relativistic jets <span class="badge disp">display</span></label>
     </div>
 
+    <div class="check">
+      <input id="sky-on" type="checkbox" checked />
+      <label for="sky-on" style="margin:0" title="Content on/off. Off: escaped rays land on black, so nothing behind the hole is there to be lensed.">Background sky <span class="badge disp">display</span></label>
+    </div>
+
     <div class="sub" style="margin-top:12px">Performance</div>
 
     <label title="Renders the per-pixel geodesic march at a fraction of screen resolution — cost falls with the square of the scale, and the pixels that are drawn stay fully integrated. Overlays and text stay sharp at any setting. Low additionally shortens the march budget, which softens the photon ring slightly: it is the only setting that trades physical fidelity for speed."><span>Quality <span class="badge disp">display</span></span></label>
