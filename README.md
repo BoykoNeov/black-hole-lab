@@ -207,9 +207,9 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 5. **Physics-coupled behavior** — mass & accretion-rate sliders drive the
    disk temperature, physical-unit readouts, tidal disruption events with
    geodesic debris streams and a t^(-5/3) flare ✅
-6. Educational overlays — clocks, potentials, physical-vs-artistic knob
+6. **Educational overlays** — clocks, potentials, physical-vs-artistic knob
    labels, embedding diagram, orbit trails, shadow/photon-ring annotation,
-   callout mode (detailed sub-slice plan in `PLAN-slice-6.md`)
+   callout mode (detailed sub-slice plan in `PLAN-slice-6.md`) ✅
    - 6a HUD infrastructure + knob provenance badges ✅
    - 6b clocks — gravitational + velocity time dilation ✅
    - 6c effective-potential inset — barrier, ISCO minimum, live TDE energies ✅
