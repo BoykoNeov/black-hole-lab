@@ -16,6 +16,7 @@ import {
   aliveBodies,
   bodyU,
   launchTde,
+  segIntensity,
   stepTde,
   type TdeState,
 } from "./tde";
@@ -317,9 +318,12 @@ function render() {
     gasUArr.set(gasU(b, spinCtx), i * 4);
   }
 
-  // TDE star / debris uniforms (exact geodesic positions + 4-velocities)
+  // TDE star / debris uniforms (exact geodesic positions + 4-velocities).
+  // The shader draws capsules between consecutive elements, so the intact
+  // star is duplicated into a degenerate (zero-length) capsule, and each
+  // element's info.z carries the intensity of the capsule it starts.
   const tdeBodies = tde ? aliveBodies(tde) : [];
-  const tdeN = Math.min(tdeBodies.length, TDE_MAX);
+  let tdeN = Math.min(tdeBodies.length, TDE_MAX);
   for (let i = 0; i < tdeN; i++) {
     const b = tdeBodies[i];
     tdePosArr.set(b.p, i * 4);
@@ -328,6 +332,25 @@ function render() {
     tdeInfoArr[i * 4] = b.tempK;
     tdeInfoArr[i * 4 + 1] = b.bright;
   }
+  if (tdeN === 1) {
+    tdePosArr.copyWithin(4, 0, 4);
+    tdeUArr.copyWithin(4, 0, 4);
+    tdeInfoArr.copyWithin(4, 0, 4);
+    tdeN = 2;
+  }
+  for (let i = 0; i + 1 < tdeN; i++) {
+    const len = Math.hypot(
+      tdePosArr[(i + 1) * 4] - tdePosArr[i * 4],
+      tdePosArr[(i + 1) * 4 + 1] - tdePosArr[i * 4 + 1],
+      tdePosArr[(i + 1) * 4 + 2] - tdePosArr[i * 4 + 2]
+    );
+    tdeInfoArr[i * 4 + 2] = segIntensity(
+      tdeInfoArr[i * 4 + 1],
+      tdeInfoArr[(i + 1) * 4 + 1],
+      len
+    );
+  }
+  if (tdeN > 0) tdeInfoArr[(tdeN - 1) * 4 + 2] = 0;
 
   // static-observer tetrad at the camera (covariant legs for the shader)
   const tet = buildStaticTetrad(basis.pos, params.spin, basis.right, basis.up, basis.fwd);

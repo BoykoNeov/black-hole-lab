@@ -20,6 +20,7 @@ import {
   aliveBodies,
   bodyU,
   launchTde,
+  segIntensity,
   stepBody,
   stepTde,
   type TdeBody,
@@ -206,6 +207,35 @@ describe("tidal disruption event", () => {
     const rand = mulberry32(1);
     stepTde(st, 0.5, a, 0, rand);
     expect(st.phase).toBe("debris");
+  });
+
+  it("stream capsules draw at the endpoint-average brightness until stretched", () => {
+    // degenerate capsule (the intact star) and short segments: no dimming
+    expect(segIntensity(1, 1, 0)).toBeCloseTo(1, 10);
+    expect(segIntensity(0.8, 0.4, 0.5)).toBeCloseTo(0.6, 10);
+    // stretching dims monotonically (spaghettification pulls the stream thin)
+    let prev = Infinity;
+    for (const len of [1.5, 3, 6, 12, 20, 28, 33]) {
+      const v = segIntensity(1, 1, len);
+      expect(v).toBeLessThan(prev);
+      expect(v).toBeGreaterThan(0);
+      prev = v;
+    }
+    // past the fade the chord no longer tracks the physical stream: culled
+    expect(segIntensity(1, 1, 40)).toBe(0);
+  });
+
+  it("debris kicks are collinear, so the drawn stream is a smooth curve", () => {
+    // spawnDebris scales the star's velocity without transverse scatter;
+    // right after disruption every element sits at the star's position and
+    // the stream stays a 1-D curve as it stretches (thickness is rendering)
+    const a = 0;
+    const st = launchTde(1e7, a);
+    runUntil(st, a, 1, 1500, (s) => s.phase === "debris");
+    const p0 = st.bodies[0].p;
+    for (const b of st.bodies) {
+      expect(Math.hypot(b.p[0] - p0[0], b.p[1] - p0[1], b.p[2] - p0[2])).toBeLessThan(1e-9);
+    }
   });
 
   it("debris elements stay on exact geodesics: E and the norm are conserved", () => {

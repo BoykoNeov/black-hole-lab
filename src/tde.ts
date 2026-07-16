@@ -231,9 +231,16 @@ export function stepBody(b: TdeBody, dt: number, a: number, rHor: number): void 
 /**
  * Shred the star into DEBRIS_COUNT elements at its current position: same
  * velocity direction, speeds spread so the conserved energies straddle
- * E = 1 (half bound, half unbound), plus a little transverse scatter for
- * stream thickness. The spread is sized so the most-bound element's
- * Keplerian period is FALLBACK_T0 (see the header note on compression).
+ * E = 1 (half bound, half unbound). The spread is sized so the most-bound
+ * element's Keplerian period is FALLBACK_T0 (see the header note on
+ * compression).
+ *
+ * The kicks are exactly collinear — no transverse scatter. The renderer
+ * connects consecutive elements into one continuous capsule stream (real
+ * spaghettification is a stream, not a blob cloud), and since the elements
+ * are ordered by energy they are also ordered along the stream, so a
+ * transverse kick would integrate into a zigzag wider than the drawn
+ * stream's radius. Thickness comes from each element's gaussian size.
  */
 export function spawnDebris(
   star: TdeBody,
@@ -259,24 +266,15 @@ export function spawnDebris(
       s = UNBOUND_S_MIN + (1 - UNBOUND_S_MIN) * ((f - BOUND_FRAC) / (1 - BOUND_FRAC));
     }
     const scale = 1 + (s * dE) / v2; // dE_newt = v dv
-    const vi: V3 = [
-      v[0] * scale + 0.012 * (rand() - 0.5),
-      v[1] * scale + 0.012 * (rand() - 0.5),
-      v[2] * scale + 0.012 * (rand() - 0.5),
-    ];
+    const vi: V3 = [v[0] * scale, v[1] * scale, v[2] * scale];
     // keep (1, v) safely timelike — the stream head is fast near pericenter
     for (let k = 0; k < 25; k++) {
       const V: V4 = [1, vi[0], vi[1], vi[2]];
       if (-gDot(star.p, a, V, V) > 0.02) break;
       for (let c = 0; c < 3; c++) vi[c] = v[c] + (vi[c] - v[c]) * 0.7;
     }
-    const pos: V3 = [
-      star.p[0] + 0.06 * (rand() - 0.5),
-      star.p[1] + 0.06 * (rand() - 0.5),
-      star.p[2] + 0.06 * (rand() - 0.5),
-    ];
     out.push(
-      makeBody(pos, vi, a, 0.15 + 0.08 * rand(), 0.5 + 0.5 * rand(), 4600 + 1400 * rand())
+      makeBody(star.p, vi, a, 0.15 + 0.08 * rand(), 0.5 + 0.5 * rand(), 4600 + 1400 * rand())
     );
   }
   return out;
@@ -336,4 +334,31 @@ export function stepTde(
 /** Bodies currently worth uploading to the shader. */
 export function aliveBodies(st: TdeState): TdeBody[] {
   return st.bodies.filter((b) => b.alive);
+}
+
+/** Segments shorter than this are "unstretched" and draw at full brightness. */
+const SEG_REF = 1.2;
+/**
+ * Where a drawn segment stops tracking the physical stream. The energy
+ * sampling has one deliberate hole — the marginally bound middle (between
+ * the last bound and first unbound element) is skipped, see spawnDebris —
+ * so that one chord stretches to tens of M and would eventually cut a
+ * straight line across the scene instead of following the stream's curve.
+ * Everywhere else neighbor spacing stays a few M, well under this.
+ */
+const SEG_FADE_START = 24;
+const SEG_FADE_END = 34;
+
+/**
+ * Brightness of the capsule drawn between two consecutive debris elements.
+ * Mass conservation says a stretching stream dims as 1/length, but at that
+ * rate the returning tail — the part actually worth watching — was nearly
+ * invisible near pericenter where the stretch is largest; sqrt is the
+ * artistic compromise, dimming enough to read as "pulled thin" while the
+ * fallback stays lit.
+ */
+export function segIntensity(brightA: number, brightB: number, len: number): number {
+  const stretch = Math.sqrt(Math.min(1, SEG_REF / Math.max(len, 1e-6)));
+  const fade = Math.min(1, Math.max(0, (SEG_FADE_END - len) / (SEG_FADE_END - SEG_FADE_START)));
+  return 0.5 * (brightA + brightB) * stretch * fade;
 }

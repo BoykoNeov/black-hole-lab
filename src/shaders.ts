@@ -66,7 +66,7 @@ uniform vec4 uGasU[${GAS_COUNT}];      // contravariant 4-velocity (t, x, y, z)
 uniform int uTdeN;                     // live TDE bodies (0 = no event)
 uniform vec4 uTdePos[${TDE_MAX}];      // xyz world position, w gaussian radius
 uniform vec4 uTdeU[${TDE_MAX}];        // contravariant 4-velocity (t, x, y, z)
-uniform vec4 uTdeInfo[${TDE_MAX}];     // x temperature K, y brightness
+uniform vec4 uTdeInfo[${TDE_MAX}];     // x temperature K, y brightness, z capsule intensity to next element
 
 const float PI = 3.14159265358979;
 
@@ -361,32 +361,73 @@ vec3 starSegment(vec3 a, vec3 b, float mt, vec3 mv) {
   return e;
 }
 
-// Line-integrated emission of the TDE star / debris stream — the same
-// gaussian-blob law as the orbiting stars, with a per-body brightness that
-// the CPU fades as the stream is eaten by the disk or leaves the scene.
-// Each body carries its exact geodesic 4-velocity, so the plunging star's
-// redshift as it approaches the horizon (the swallowed-whole case) and the
-// stream head's beaming come out of the same g = 1/(m.u) as everything else.
+// Line-integrated emission of the TDE star / debris stream. Consecutive
+// debris elements (energy-ordered = stream-ordered) are joined into gaussian
+// capsules, so the star spaghettifies into one continuous stream that
+// stretches as the elements separate — the closest-point pair between the
+// march step and each capsule is found with the standard two-segment
+// algorithm, and radius, temperature, and 4-velocity are interpolated along
+// the capsule. Per-capsule intensity comes precomputed from the CPU
+// (tde.ts segIntensity: eaten/leaving fades plus stretch dimming). Capsules
+// combine by strongest contribution, NOT by sum — at every joint two
+// capsules touch at full gaussian weight, and summing painted a 2x-bright
+// bead on each debris element instead of a smooth filament. Each element
+// carries its exact geodesic 4-velocity, so the plunging star's redshift as
+// it approaches the horizon (the swallowed-whole case) and the stream
+// head's beaming come out of the same g = 1/(m.u) as everything else.
+
+// Cheap erf (tanh fit, ~2% max error) for the along-ray gaussian window.
+float erfA(float x) {
+  float e = exp(-2.4052 * clamp(x, -4.0, 4.0));
+  return 2.0 / (1.0 + e) - 1.0;
+}
+
 vec3 tdeSegment(vec3 a, vec3 b, float mt, vec3 mv) {
-  vec3 e = vec3(0.0);
-  vec3 d = b - a;
-  float len2 = max(dot(d, d), 1e-8);
-  for (int i = 0; i < ${TDE_MAX}; i++) {
-    if (i >= uTdeN) break;
-    vec3 sp = uTdePos[i].xyz;
-    float t = clamp(dot(sp - a, d) / len2, 0.0, 1.0);
-    vec3 q = a + t * d - sp;
-    float sig = uTdePos[i].w;
-    float d2 = dot(q, q) / (sig * sig);
-    if (d2 < 12.0) {
-      float g = uDoppler > 0.5 ? uShift(mt, mv, uTdeU[i]) : 1.0;
-      float Tk = uTdeInfo[i].x;
-      float Tn = Tk * 0.000125;
-      float g2 = g * g;
-      e += bbColor(Tk * g) * (12.0 * Tn * sqrt(Tn) * uTdeInfo[i].y * g2 * g2 * exp(-d2));
+  vec3 d1 = b - a;
+  float aa = max(dot(d1, d1), 1e-8);
+  float score = 0.0;
+  int win = -1;
+  float wt = 0.0;
+  for (int i = 0; i < ${TDE_MAX} - 1; i++) {
+    if (i >= uTdeN - 1) break;
+    float inten = uTdeInfo[i].z;
+    if (inten < 1e-4) continue;
+    vec3 A = uTdePos[i].xyz;
+    vec3 d2 = uTdePos[i + 1].xyz - A;
+    vec3 rv = a - A;
+    float ee = max(dot(d2, d2), 1e-8);
+    float bb = dot(d1, d2);
+    float den = aa * ee - bb * bb;
+    float s = den > 1e-7 ? clamp((bb * dot(d2, rv) - dot(d1, rv) * ee) / den, 0.0, 1.0) : 0.0;
+    float t = clamp((bb * s + dot(d2, rv)) / ee, 0.0, 1.0);
+    s = clamp((bb * t - dot(d1, rv)) / aa, 0.0, 1.0);
+    vec3 q = (a + s * d1) - (A + t * d2);
+    float sig = mix(uTdePos[i].w, uTdePos[i + 1].w, t);
+    float q2 = dot(q, q) / (sig * sig);
+    if (q2 < 12.0) {
+      // Analytic gaussian integral along the step, not a point sample: when
+      // the stream runs nearly along the ray, exp(-q2) once per step makes
+      // brightness jump with the discrete number of steps inside the tube,
+      // which banded the foreshortened stream like a washboard. Distance to
+      // the capsule axis is quadratic in the step parameter, so the integral
+      // is an erf window of width sigma/sin(theta) centred on the closest
+      // approach, normalized so a broadside crossing matches the old point
+      // sample.
+      float sinT = sqrt(max(den, 0.0) / (aa * ee));
+      float w = sig / max(sinT, 0.02);
+      float sLin = (bb * t - dot(d1, rv)) / aa;
+      float L1 = sqrt(aa);
+      float c = inten * exp(-q2) * (w / sig)
+              * 0.5 * (erfA((1.0 - sLin) * L1 / w) - erfA(-sLin * L1 / w));
+      if (c > score) { score = c; win = i; wt = t; }
     }
   }
-  return e;
+  if (win < 0) return vec3(0.0);
+  float g = uDoppler > 0.5 ? uShift(mt, mv, mix(uTdeU[win], uTdeU[win + 1], wt)) : 1.0;
+  float Tk = mix(uTdeInfo[win].x, uTdeInfo[win + 1].x, wt);
+  float Tn = Tk * 0.000125;
+  float g2 = g * g;
+  return bbColor(Tk * g) * (12.0 * Tn * sqrt(Tn) * score * g2 * g2);
 }
 
 // Stars + jet + TDE debris along one march segment, using the current ray momentum.

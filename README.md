@@ -69,14 +69,18 @@ The star and all 32 debris elements move on exact timelike Kerr geodesics
 integrated with the same Kerr–Schild Hamiltonian RK4 as the photons (only
 the mass shell differs: m·m = -1, with E = -m_t conserved exactly), so the
 stream's stretch, the relativistic capture of the deepest debris, and the
-horizon crossing all emerge from the integration. The drawn stream carries
-the artistic knobs, all documented in the code. The energy spread is widened
+horizon crossing all emerge from the integration. The debris elements are
+drawn as one continuous chain of gaussian capsules (energy order = stream
+order), so the star visibly spaghettifies into a single stretching filament
+rather than a cloud of blobs; capsules combine by strongest contribution
+(summing would bead the joints) and dim as they stretch. The drawn stream
+carries the artistic knobs, all documented in the code. The energy spread is widened
 so first fallback takes ~600 M instead of months — Kepler ties that period to
 how far the tail loops, so it also decides whether the stream stays in frame.
 The split is biased ~70/30 toward bound rather than the physical 50/50, and
 the bound elements are spread by fallback *period* rather than uniformly in
 energy: the physical spread is what makes real fallback a t^(-5/3) tail, and
-drawn literally it put 27 of 32 blobs on ~1e3 M orbits that coast out of
+drawn literally it put 27 of 32 elements on ~1e3 M orbits that coast out of
 frame and never visibly return. The flare's light curve is integrated
 analytically and keeps the true t^(-5/3) shape regardless. Its display
 brightness is sqrt-compressed (the readout reports the physical ratio).
@@ -118,7 +122,8 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   tested)
 - `src/tde.ts` — TDE state machine: marginally bound star launch, timelike
   geodesic stepper (reuses the kerr.ts RK4), disruption into a debris
-  stream, fallback/escape bookkeeping (pure, tested)
+  stream, fallback/escape bookkeeping, capsule-chain stream intensity
+  (pure, tested)
 - `src/lens.ts` — Schwarzschild CPU integrator (pure, tested a = 0 reference)
 - `src/disk.ts` — disk physics helpers mirrored by the shader (pure, tested)
 - `src/matter.ts` — star orbits + gas inspiral/plunge state (pure, tested)
