@@ -146,12 +146,53 @@ the a = 0 side goes first because it is far the cheaper (~66 ms of tracing
 against ~540 ms at a = 0.998) and then yields the rest — so the HUD costs what
 it always did.
 
-The remaining slice-6 overlays stay off while comparing, in two groups: the
-trails and the 6g callout layer project world points onto the *whole frame*
-and would stripe across both halves at positions belonging to neither; the
-clocks and the two insets each describe a single spacetime, and the potential
-inset is anchored where it would sit on the Schwarzschild half while plotting
-the Kerr side's curve. 7c brings the insets back per-side.
+The remaining slice-6 overlays stay off while comparing: the trails and the 6g
+callout layer project world points onto the *whole frame* and would stripe
+across both halves at positions belonging to neither, and the clocks describe a
+single spacetime. (The trails come back in 7d.)
+
+7c brings the two insets back, one copy per side, each drawn at the spin of the
+half behind it — the potential inset against that half's left edge and the
+funnel against its right, so a half reads as a small copy of the whole frame's
+layout. Per-side rather than two curves overlaid in one panel, and the funnel
+is what decides it: two wireframe surfaces of revolution drawn over each other
+are a mesh nobody can read, and splitting the conventions — one inset
+comparing by overlay, the other by position — would cost more than it bought.
+The potential inset loses nothing by it, because its axis window is a fixed
+constant: two panels of it are directly comparable by eye, with no per-side
+rescaling able to forge a difference the spin didn't make. That is the same
+bargain `splitViewports` makes when it hands both halves equal widths, and the
+inset scale is shared across the sides for the same reason — either grip
+resizes both copies together, so the halves can never be sized apart.
+
+What the insets show follows the same rule the scene pass follows: only what
+the renderer is actually drawing. That cuts per group. Stars are drawn on both
+halves, so the funnel refills them at its own side's spin (`starState` is
+closed-form in (t, a), so this is the same scratch the scene pass reuses
+between its two draws); gas and TDE debris are stateful, drawn on neither half,
+and so get no dots and no potential-curve marks on either. The funnel's profile
+cache grew a second slot to match — a = 0 and the slider's a are now both asked
+for every frame, and one slot would miss on both calls and re-integrate ~400
+steps of quadrature twice per frame, turning a cache into a per-frame cost.
+
+The default `eduL` is 2√3, which is exactly the Schwarzschild ISCO's angular
+momentum — so out of the box the left panel shows *no* stable-orbit marker
+while the right one does. That is the physics, not a gap: at a = 0 this L puts
+the trough exactly at the ISCO, where the minimum and the barrier peak merge
+into an inflection and annihilate, which is what the panel's own caption means
+by the minimum flattening away. The contrast to read across the divider is the
+ISCO and photon-orbit markers, which run 6.00 M and 3.00 M at a = 0 against
+1.24 M and 1.07 M at a = 0.998. The trough itself moves the *other* way
+(marginal at 6 M, against a real well at ~10.2 M): prograde frame dragging
+drops L_isco from 3.46 to 1.39, so the same L now buys an orbit far outside the
+ISCO rather than sitting on it.
+
+Known limitation: with both insets on, compare mode needs roughly a 1400 px
+window before the funnel stops overlapping the potential panel's legend — the
+split halves the room each pair has, where single view only overlaps below
+~840 px. The grips are the remedy and already work per-side; the panels were
+not auto-shrunk to fit, because a clamp that silently overrides a drag is worse
+than an overlap the user can see and fix.
 
 Two labels are deliberately not duplicated onto the a = 0 half. The photon-ring
 callout is emitted once, against the slider's outline, and the callout layout
@@ -228,7 +269,14 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   unequal widths mean unequal aspect ratios, which would scale the two shadows
   differently and forge a difference the spin didn't make. The split starts
   clear of the control panel: splitting the whole frame puts the left half's
-  hole at w/4, behind the panel on any window under ~1000 px
+  hole at w/4, behind the panel on any window under ~1000 px. `splitViewports`
+  is called twice per frame from main.ts — once in scene-target px for
+  `gl.viewport`, and once in CSS px to place 7c's per-side insets. The insets
+  re-derive their split rather than dividing the GL one back out by the render
+  scale, which the 7b outline may *not* do: the outline traces the drawn disk
+  and has to land on the pixels the shader marched, while an inset only has to
+  sit inside a half. Being pure in `clientWidth` is what lets the grip
+  hit-test call it from a pointer handler, outside the render loop
 - `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
@@ -263,8 +311,11 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   The potential and embedding insets are drag-resizable from the corner facing
   the scene: the resize is one `ctx.scale` around the whole panel rather than a
   reflow, so the plots keep the proportions they were tuned at and only the
-  grip itself is drawn at constant screen size. The HUD canvas is
-  `pointer-events: none` so camera drags reach the GL canvas, which means the
+  grip itself is drawn at constant screen size. Both take their spin as an
+  argument and draw one spacetime, which is what let 7c place a copy per side
+  without either of them learning that compare mode exists — the placement,
+  the per-side spin and the grip hit-testing all stay in main.ts. The HUD canvas
+  is `pointer-events: none` so camera drags reach the GL canvas, which means the
   grips can never receive a pointer event themselves — main.ts hit-tests them
   and claims the pointerdown through `attachControls`' `claimed` hook
 - `test/compare.test.ts` — checks the two viewports come out exactly equal in
@@ -343,7 +394,7 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    contrast rather than by explanation
    - 7a split-screen scene: two viewports, one FBO, per-side spin ✅
    - 7b shadow outline traced per side (the circle vs the D-shape) ✅
-   - 7c potential & embedding insets carrying both spins' curves — TODO
+   - 7c potential & embedding insets per side, each at its half's spin ✅
    - 7d orbit trails per side, which is what would make Lense–Thirring
      precession visible — TODO
 

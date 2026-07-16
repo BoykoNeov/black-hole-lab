@@ -27,6 +27,7 @@ import {
   sideLabel,
   splitViewports,
   type Rect,
+  type Split,
 } from "./compare";
 import {
   EMBED_GAS,
@@ -266,49 +267,95 @@ const INSET_SPEC: Record<InsetId, InsetSpec> = {
 
 const insetScale = (id: InsetId) => (id === "pot" ? params.potScale : params.embedScale);
 
+/** Which half of compare mode an inset belongs to; null = the single view. */
+type InsetSide = "left" | "right";
+
+/**
+ * Compare mode's two halves in CSS px. The render loop builds its own copy in
+ * scene-target px to hand to gl.viewport; this one is re-derived from
+ * clientWidth rather than divided back out of it, which the 7b outline may not
+ * do — that traces the drawn disk and has to land on the very pixels the
+ * shader marched. An inset only has to sit *inside* a half, so a rounding
+ * pixel either way is invisible, and being pure in clientWidth lets the grip
+ * hit-test call this from a pointer handler, outside the render loop.
+ */
+function splitCss(): Split {
+  const w = Math.max(canvas.clientWidth - COMPARE_X0, 0);
+  return splitViewports(COMPARE_X0, w, canvas.clientHeight, COMPARE_GUTTER);
+}
+
+/**
+ * The horizontal band an inset anchors in: the frame at large, or in compare
+ * mode the one viewport whose spacetime it plots (7c). Both insets keep the
+ * single view's convention inside that band — potential against the left edge,
+ * funnel against the right — so a half reads like a small copy of the whole.
+ */
+function insetBand(side: InsetSide | null): { left: number; right: number } {
+  if (side === null) return { left: POT_X, right: canvas.clientWidth - INSET_MARGIN };
+  const r = splitCss()[side];
+  return { left: r.x + INSET_MARGIN, right: r.x + r.w - INSET_MARGIN };
+}
+
+/** The sides an inset draws on: both halves while comparing, else one frame. */
+const insetSides = (): (InsetSide | null)[] => (params.compare ? ["left", "right"] : [null]);
+
+/** The spin a side is showing, and the radii already derived from it. */
+const sideSpin = (side: InsetSide | null) =>
+  side === "left" ? COMPARE_SPIN_LEFT : params.spin;
+const sideCtx = (side: InsetSide | null) => (side === "left" ? spinCtxSchw : spinCtx);
+
 /** Top-left of an inset and the corner its grip sits on, in CSS px. */
-function insetBox(id: InsetId): { x: number; y: number; gx: number; gy: number } {
+function insetBox(
+  id: InsetId,
+  side: InsetSide | null
+): { x: number; y: number; gx: number; gy: number } {
   const s = INSET_SPEC[id];
   const w = s.W * insetScale(id);
   const h = s.H * insetScale(id);
-  const x = id === "pot" ? POT_X : canvas.clientWidth - w - INSET_MARGIN;
+  const band = insetBand(side);
+  const x = id === "pot" ? band.left : band.right - w;
   const y = canvas.clientHeight - h - INSET_MARGIN;
   return { x, y, gx: id === "pot" ? x + w : x, gy: y };
 }
 
 function insetShown(id: InsetId): boolean {
-  // Compare mode hides both. Each plots exactly one spacetime, and the
-  // potential inset is anchored at POT_X — which lands on the LEFT
-  // (Schwarzschild) half while plotting the spin slider's a: a caption sitting
-  // on the wrong picture. Gated here rather than at the draw sites so the
-  // grips stop hit-testing too; an invisible inset that still eats camera
-  // drags would be worse than a wrong one. 7c gives them both curves.
-  if (params.compare) return false;
   return id === "pot" ? params.eduPotential : params.eduEmbed;
 }
 
 /** Which grip is under (px, py), if any. Embedding first: it is drawn last. */
-function gripUnder(px: number, py: number): InsetId | null {
+function gripUnder(px: number, py: number): { id: InsetId; side: InsetSide | null } | null {
   for (const id of ["embed", "pot"] as InsetId[]) {
     if (!insetShown(id)) continue;
-    const b = insetBox(id);
-    const s = INSET_SPEC[id];
-    const dx = (px - b.gx) * s.inX;
-    const dy = (py - b.gy) * s.inY;
-    if (dx >= -GRIP_HALO && dx <= GRIP_SIZE && dy >= -GRIP_HALO && dy <= GRIP_SIZE) {
-      return id;
+    for (const side of insetSides()) {
+      const b = insetBox(id, side);
+      const s = INSET_SPEC[id];
+      const dx = (px - b.gx) * s.inX;
+      const dy = (py - b.gy) * s.inY;
+      if (dx >= -GRIP_HALO && dx <= GRIP_SIZE && dy >= -GRIP_HALO && dy <= GRIP_SIZE) {
+        return { id, side };
+      }
     }
   }
   return null;
 }
 
+const sameGrip = (
+  g: { id: InsetId; side: InsetSide | null } | null,
+  id: InsetId,
+  side: InsetSide | null
+) => g !== null && g.id === id && g.side === side;
+
+// The scale is per inset, NOT per side: either grip resizes both halves' copies
+// together. Letting the sides be sized apart would put a difference into the
+// one picture whose whole job is to isolate what the spin does — the same
+// reason splitViewports hands both viewports exactly equal widths.
 let insetDrag: { id: InsetId; startScale: number; x0: number; y0: number } | null = null;
-let gripHot: InsetId | null = null;
+let gripHot: { id: InsetId; side: InsetSide | null } | null = null;
 
 function insetClaim(e: PointerEvent): boolean {
-  const id = gripUnder(e.clientX, e.clientY);
-  if (!id) return false;
-  insetDrag = { id, startScale: insetScale(id), x0: e.clientX, y0: e.clientY };
+  const hit = gripUnder(e.clientX, e.clientY);
+  if (!hit) return false;
+  insetDrag = { id: hit.id, startScale: insetScale(hit.id), x0: e.clientX, y0: e.clientY };
   canvas.setPointerCapture(e.pointerId);
   return true;
 }
@@ -316,7 +363,7 @@ function insetClaim(e: PointerEvent): boolean {
 canvas.addEventListener("pointermove", (e) => {
   if (!insetDrag) {
     gripHot = gripUnder(e.clientX, e.clientY);
-    canvas.style.cursor = gripHot ? INSET_SPEC[gripHot].cursor : "";
+    canvas.style.cursor = gripHot ? INSET_SPEC[gripHot.id].cursor : "";
     return;
   }
   const s = INSET_SPEC[insetDrag.id];
@@ -377,16 +424,29 @@ const embedScratch: V3 = [0, 0, 0];
 // The funnel's shape depends on nothing but (a, rMax), and integrating it is
 // ~400 steps of quadrature — so it is cached on exactly those two and rebuilt
 // only when the spin or disk-size slider actually moves.
-let embedProfile: EmbeddingProfile | null = null;
-let embedA = NaN;
-let embedRMax = NaN;
+//
+// Two slots, because compare mode (7c) asks for a = 0 and the slider's a in
+// the same frame: one slot would miss on both calls and re-integrate both
+// profiles every frame, turning a cache into a per-frame cost. Which slot a
+// spin lands in is only ever a hit-rate question — the (a, rMax) check below
+// is what makes the answer correct, so a slot can never serve a stale profile.
+interface EmbedSlot {
+  profile: EmbeddingProfile | null;
+  a: number;
+  rMax: number;
+}
+const embedSlots: Record<"schw" | "slider", EmbedSlot> = {
+  schw: { profile: null, a: NaN, rMax: NaN },
+  slider: { profile: null, a: NaN, rMax: NaN },
+};
 function embeddingFor(a: number, rMax: number): EmbeddingProfile {
-  if (!embedProfile || a !== embedA || rMax !== embedRMax) {
-    embedProfile = embeddingProfile(a, rMax, 400);
-    embedA = a;
-    embedRMax = rMax;
+  const slot = embedSlots[a === COMPARE_SPIN_LEFT ? "schw" : "slider"];
+  if (!slot.profile || a !== slot.a || rMax !== slot.rMax) {
+    slot.profile = embeddingProfile(a, rMax, 400);
+    slot.a = a;
+    slot.rMax = rMax;
   }
-  return embedProfile;
+  return slot.profile;
 }
 
 // Orbit trails (6e). Filled every frame whether or not the overlay is on — a
@@ -1298,81 +1358,121 @@ function render() {
   }
 
   if (insetShown("pot")) {
-    // E = -m_t is the conserved energy the geodesic integrator carries, so
-    // the dots are exact — they can only slide along r.
-    const nMark = Math.min(tdeBodies.length, POT_MARK_MAX);
-    for (let i = 0; i < nMark; i++) {
-      potMarkR[i] = ksRadius(tdeBodies[i].p, params.spin);
-      potMarkE[i] = -tdeBodies[i].mt;
+    // The TDE is stateful and compare mode draws it on neither half, so its
+    // marks go with it: a dot riding a curve for a spacetime it was never
+    // stepped in is exactly the kind of borrowed matter the mode refuses.
+    let nMark = 0;
+    if (!params.compare) {
+      // E = -m_t is the conserved energy the geodesic integrator carries, so
+      // the dots are exact — they can only slide along r.
+      nMark = Math.min(tdeBodies.length, POT_MARK_MAX);
+      for (let i = 0; i < nMark; i++) {
+        potMarkR[i] = ksRadius(tdeBodies[i].p, params.spin);
+        potMarkE[i] = -tdeBodies[i].mt;
+      }
     }
-    const box = insetBox("pot");
-    drawPotential(
-      hudCtx,
-      box.x,
-      box.y,
-      {
-        a: params.spin,
-        L: params.eduL,
-        rHor: spinCtx.rHor,
-        isco: spinCtx.isco,
-        markR: potMarkR,
-        markE: potMarkE,
-        markN: nMark,
-      },
-      params.potScale
-    );
-    const spec = INSET_SPEC.pot;
-    drawResizeGrip(hudCtx, box.gx, box.gy, spec.inX, spec.inY, gripHot === "pot");
+    // One curve per side, each captioning the spacetime drawn behind it (7c).
+    // The axis window is a fixed constant, so the two panels are directly
+    // comparable by eye — no per-side rescaling can forge a difference the
+    // spin did not make, which is the same bargain the equal-width split makes.
+    for (const side of insetSides()) {
+      const sctx = sideCtx(side);
+      const box = insetBox("pot", side);
+      drawPotential(
+        hudCtx,
+        box.x,
+        box.y,
+        {
+          a: sideSpin(side),
+          L: params.eduL, // one L across both: only a differs, so only a can move the curve
+          rHor: sctx.rHor,
+          isco: sctx.isco,
+          markR: potMarkR,
+          markE: potMarkE,
+          markN: nMark,
+        },
+        params.potScale
+      );
+      const spec = INSET_SPEC.pot;
+      drawResizeGrip(
+        hudCtx,
+        box.gx,
+        box.gy,
+        spec.inX,
+        spec.inY,
+        sameGrip(gripHot, "pot", side)
+      );
+    }
   }
 
   if (insetShown("embed")) {
-    // Only bodies the renderer is actually showing get a dot, so the funnel
-    // never disagrees with the frame behind it.
-    let nDots = 0;
-    const push = (r: number, az: number, group: number) => {
-      if (nDots >= EMBED_DOT_MAX) return;
-      embedDotR[nDots] = r;
-      embedDotAz[nDots] = az;
-      embedDotGroup[nDots] = group;
-      nDots++;
-    };
-    if (params.stars) {
-      for (let i = 0; i < STAR_COUNT; i++) {
-        // the funnel is indexed by BL radius, not the world distance
-        embedScratch[0] = starPosArr[i * 4];
-        embedScratch[1] = starPosArr[i * 4 + 1];
-        embedScratch[2] = starPosArr[i * 4 + 2];
-        push(
-          ksRadius(embedScratch, params.spin),
-          Math.atan2(embedScratch[2], embedScratch[0]),
-          EMBED_STARS
-        );
+    // One funnel per side (7c). Two of these cannot be overlaid into a single
+    // panel the way two V_eff curves could — a wireframe surface drawn twice
+    // over itself is a mesh nobody can read — so per-side is what carries both
+    // spins here, and the potential inset follows it rather than splitting the
+    // two overlays' conventions.
+    for (const side of insetSides()) {
+      const a = sideSpin(side);
+      const sctx = sideCtx(side);
+      // Only bodies the renderer is actually showing get a dot, so the funnel
+      // never disagrees with the frame behind it — and while comparing, that
+      // rule cuts differently per group. The stars are drawn on both halves
+      // (starState is closed-form in (t, a)), so they are refilled at this
+      // side's spin, reusing the same scratch the scene pass refills between
+      // its own two draws; gas and TDE debris are stateful, drawn on neither
+      // half, and so get no dots on either.
+      if (params.compare) fillStars(a, false);
+      let nDots = 0;
+      const push = (r: number, az: number, group: number) => {
+        if (nDots >= EMBED_DOT_MAX) return;
+        embedDotR[nDots] = r;
+        embedDotAz[nDots] = az;
+        embedDotGroup[nDots] = group;
+        nDots++;
+      };
+      if (params.stars) {
+        for (let i = 0; i < STAR_COUNT; i++) {
+          // the funnel is indexed by BL radius, not the world distance
+          embedScratch[0] = starPosArr[i * 4];
+          embedScratch[1] = starPosArr[i * 4 + 1];
+          embedScratch[2] = starPosArr[i * 4 + 2];
+          push(ksRadius(embedScratch, a), Math.atan2(embedScratch[2], embedScratch[0]), EMBED_STARS);
+        }
       }
+      if (!params.compare) {
+        if (params.gas) {
+          for (const b of gasBlobs) push(b.r, b.az, EMBED_GAS);
+        }
+        for (const b of tdeBodies) {
+          push(ksRadius(b.p, params.spin), Math.atan2(b.p[2], b.p[0]), EMBED_TDE);
+        }
+      }
+      const box = insetBox("embed", side);
+      drawEmbedding(
+        hudCtx,
+        box.x,
+        box.y,
+        {
+          profile: embeddingFor(a, params.diskOuter),
+          isco: sctx.isco,
+          yaw: camera.yaw,
+          dotR: embedDotR,
+          dotAz: embedDotAz,
+          dotGroup: embedDotGroup,
+          dotN: nDots,
+        },
+        params.embedScale
+      );
+      const spec = INSET_SPEC.embed;
+      drawResizeGrip(
+        hudCtx,
+        box.gx,
+        box.gy,
+        spec.inX,
+        spec.inY,
+        sameGrip(gripHot, "embed", side)
+      );
     }
-    if (params.gas) {
-      for (const b of gasBlobs) push(b.r, b.az, EMBED_GAS);
-    }
-    for (const b of tdeBodies) {
-      push(ksRadius(b.p, params.spin), Math.atan2(b.p[2], b.p[0]), EMBED_TDE);
-    }
-    const box = insetBox("embed");
-    drawEmbedding(
-      hudCtx,
-      box.x,
-      box.y,
-      {
-        profile: embeddingFor(params.spin, params.diskOuter),
-        isco: spinCtx.isco,
-        yaw: camera.yaw,
-        dotR: embedDotR,
-        dotAz: embedDotAz,
-        dotGroup: embedDotGroup,
-        dotN: nDots,
-      },
-      params.embedScale
-    );
-    const spec = INSET_SPEC.embed;
-    drawResizeGrip(hudCtx, box.gx, box.gy, spec.inX, spec.inY, gripHot === "embed");
   }
 
   if (dbgScan) {
