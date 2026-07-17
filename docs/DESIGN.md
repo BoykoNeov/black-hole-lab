@@ -370,15 +370,17 @@ pixel. The rendered shadow is circular there; the true one is a D. The step
 budget fills in the D's flat side.
 
 That is a one-sided error, which is the whole tell — a projection bug would move
-both edges. The cost tracks gamma and nothing else:
+both edges. The cost tracks gamma and nothing else (these are the CPU tracer's
+numbers, budget the only variable — the *prediction*, which the next section
+reconciles against the 51 px measured off the rendered frame):
 
-| edge | gamma | false shadow |
+| edge | gamma | false shadow, predicted |
 |---|---|---|
 | a = 0, both | 3.14 | 0.2 px |
 | a = 0.9 retrograde | 4.00 | 0.0 px |
 | a = 0.998 retrograde | 4.08 | 0.0 px |
 | a = 0.9 prograde | 1.22 | 23 px |
-| a = 0.998 prograde | 0.19 | 53 px |
+| a = 0.998 prograde | 0.19 | 53.5 px |
 
 ### It is the budget, not float32
 
