@@ -419,3 +419,33 @@ then traced across frames at ~3 ms each — a full one is ~540 ms of tracing at
 a = 0.998, so about three seconds at 60 fps. `settle()` defaults above that.
 Shoot early and you get a half-traced outline, which looks exactly like a broken
 overlay and is the most convincing wrong answer in here.
+
+### The launcher reuses rather than stacks
+
+`Start Black Hole Lab.bat` ran `npm run dev -- --open` unconditionally, and
+that is how a machine ends up with sixteen dev servers. Vite does not fail on a
+busy port, it climbs to the next free one — so every double-click quietly
+started another server and opened another tab, and nothing ever stopped the old
+ones. Each survivor holds a full geodesic raymarcher live in any tab still
+pointed at it, which is not a cost worth paying for a launcher that was asked to
+do nothing at all.
+
+So it looks first, and it asks the right question. "Is something on 5173" is the
+wrong one — the port is not proof of identity, and on this machine 5173 is
+usually a different project entirely. `tools/find-server.mjs` asks each port
+what it is *serving* and matches only this lab, which is the same question the
+visual harness has to answer, so they share the module rather than each keeping
+their own idea of which server is ours.
+
+Reusing an old server is safe rather than a bet on its age: vite transforms from
+disk on every request, so a server left up for days serves the code as it is
+now. The launcher says so, and says how to start fresh anyway — that is a real
+need when `vite.config` changes, which a running server would not pick up.
+
+The detection is dependency-free for a reason: the launcher's whole point is to
+work on a machine where nothing has been set up yet, and it runs before the
+`node_modules` check. It also cannot use `AbortSignal.timeout` for the per-port
+deadline. Sixteen of those left armed keep the loop alive past the answer, and
+exiting out from under them trips a libuv assertion on Windows
+(`UV_HANDLE_CLOSING`) rather than exiting — so the timers are owned and cleared,
+and the CLI sets `exitCode` instead of calling `exit`.

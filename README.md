@@ -308,6 +308,13 @@ Not part of the app, not run by `npm test` or `npm run build`. Plain `.mjs`
 rather than TypeScript — these need node APIs, the repo has no `@types/node`,
 and `tsconfig` covers `src` + `test`.
 
+- `tools/find-server.mjs` — finds a dev server already serving *this* lab, by
+  asking each port in 5173–5188 what its title is. The port alone can't say:
+  vite climbs to the next free one, so whichever project started first owns
+  5173. Used by both the harness and `Start Black Hole Lab.bat`, so the two
+  can't disagree about which server is ours. Dependency-free — the launcher
+  calls it before `npm install` is guaranteed to have run. Also a CLI: prints
+  the URL, or exits 1.
 - `tools/visual/harness.mjs` — drives the lab in headless chromium (playwright,
   already a devDependency) and measures what it drew. Captures the scene canvas,
   the HUD canvas and a composite of the two, all frozen from one frame, and

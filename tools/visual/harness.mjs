@@ -26,47 +26,21 @@
 import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { PORTS, TITLE, findServer } from "../find-server.mjs";
 
 /** Set to skip discovery and use one server. Otherwise the ports are scanned. */
 export const LAB_URL = process.env.LAB_URL ?? null;
 
-/**
- * Vite's default, and the fifteen it climbs through when the default is busy.
- *
- * Scanning rather than assuming 5173, because the port says nothing about
- * which project answers on it: vite takes the next free one, so whichever
- * project was started first owns 5173 and this lab lands wherever it lands.
- * A machine running three of these has no fixed port for any of them.
- */
-const PORTS = Array.from({ length: 16 }, (_, i) => 5173 + i);
-
-const TITLE = "Black Hole Lab";
-
-/**
- * The first port serving this lab. Any of them will do — vite transforms from
- * disk per request, so even a server left running for days serves current code.
- */
+/** Shared with the launcher, so the two cannot disagree about which server is ours. */
 async function discover() {
-  const found = await Promise.all(
-    PORTS.map(async (port) => {
-      try {
-        const res = await fetch(`http://localhost:${port}/`, {
-          signal: AbortSignal.timeout(2000),
-        });
-        return new RegExp(`<title>${TITLE}</title>`).test(await res.text()) ? port : null;
-      } catch {
-        return null; // nothing listening, or not http — either way, not us
-      }
-    })
-  );
-  const port = found.find((p) => p !== null);
-  if (!port)
+  const url = await findServer();
+  if (!url)
     throw new Error(
       `no ${TITLE} dev server found on ports ${PORTS[0]}-${PORTS[PORTS.length - 1]} — ` +
         `start one with \`npm run dev\` (this harness does not start a server), ` +
         `or set LAB_URL if it is somewhere else`
     );
-  return `http://localhost:${port}`;
+  return url;
 }
 
 /** Global rule: temp artifacts live outside the repo, never in the git tree. */
