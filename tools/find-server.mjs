@@ -16,6 +16,8 @@
  * launcher reads it straight into a variable.
  */
 
+import { pathToFileURL } from "node:url";
+
 /** Vite's default, and the fifteen it climbs through when the default is busy. */
 export const PORTS = Array.from({ length: 16 }, (_, i) => 5173 + i);
 
@@ -53,7 +55,14 @@ export async function findServer() {
   return port === undefined ? null : `http://localhost:${port}`;
 }
 
-if (import.meta.main) {
+// Compared by hand rather than via import.meta.main, which only exists on node
+// 24.2+. On anything older that is silently undefined, so the CLI would print
+// nothing, the launcher would read nothing, and it would go back to starting a
+// server per double-click with no sign anything was wrong.
+const isCli =
+  process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isCli) {
   const url = await findServer();
   // exitCode rather than exit(): let the loop drain on its own. Killing it
   // mid-teardown is what the assertion above is about.

@@ -449,3 +449,29 @@ deadline. Sixteen of those left armed keep the loop alive past the answer, and
 exiting out from under them trips a libuv assertion on Windows
 (`UV_HANDLE_CLOSING`) rather than exiting — so the timers are owned and cleared,
 and the CLI sets `exitCode` instead of calling `exit`.
+
+## The frame limit defaults to 60, not to uncapped
+
+The redraw cap shipped at the top of its own slider, which `FPS_UNLIMITED`
+spells as "don't limit" — rAF is vsync-capped anyway, so any limit at or above
+the panel's refresh does nothing, and on a 60 Hz display that was already the
+whole story.
+
+It is not the whole story on a faster one. Uncapped means "as fast as the panel
+asks", so a 144 Hz display buys two or three geodesic marches per 60 Hz worth of
+animation. Nothing in the scene reads better for them — the disk and the stars
+are not moving that fast — and this is a per-pixel raymarcher, so each of those
+frames costs the whole GPU rather than a slice of it. The physics is indifferent
+either way: simulation time is measured off the real clock, so the hole evolves
+at the same rate at any limit, and the slider is a `display` knob for exactly
+that reason.
+
+So 60 gives back what a fast display was silently spending, and changes nothing
+for anyone on 60 Hz. Raise it for a high-refresh pan, which is the one place the
+extra frames are the point.
+
+The value lives in `index.html` and is mirrored in `main.ts`'s `params`, which
+looks redundant and is not: `bindNumField` seeds `params` from the control's
+value at startup, so the markup wins and the TS initializer is a transient. The
+`quality` field above it carries the same "must match index.html" note for the
+same reason.

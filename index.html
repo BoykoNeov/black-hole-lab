@@ -156,9 +156,9 @@
     </select>
     <div class="hint">Scales the geodesic march with the square of resolution; overlays stay sharp. Low also shortens the march — the only setting that trades physical accuracy (a slightly softer photon ring) for speed.</div>
 
-    <label title="Caps how often the frame is redrawn. Simulation time is measured from the real clock, so the physics runs at the same speed at any limit — only the GPU does less work."><span>Frame rate limit <span class="badge disp">display</span></span><span><input id="fpslimit-num" type="number" min="15" max="240" step="1" value="240" /> fps</span></label>
-    <input id="fpslimit" type="range" min="15" max="240" step="1" value="240" />
-    <div class="hint">Any limit at or above your display's refresh rate does nothing — the browser already caps frames to vsync.</div>
+    <label title="Caps how often the frame is redrawn. Simulation time is measured from the real clock, so the physics runs at the same speed at any limit — only the GPU does less work."><span>Frame rate limit <span class="badge disp">display</span></span><span><input id="fpslimit-num" type="number" min="15" max="240" step="1" value="60" /> fps</span></label>
+    <input id="fpslimit" type="range" min="15" max="240" step="1" value="60" />
+    <div class="hint">Defaults to 60 — a per-pixel raymarcher gains nothing from a 144 Hz panel's extra frames but pays the full GPU cost of them. Raise it for a smoother pan. Any limit at or above your display's refresh rate does nothing; the browser already caps frames to vsync.</div>
 
     <div class="sub" style="margin-top:12px">Learn</div>
 

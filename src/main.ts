@@ -215,7 +215,7 @@ const params = {
   mdotExp: -1, // log10 of the accretion rate in Eddington units
   coupleT: true, // disk temperature/brightness follow mass & mdot
   quality: "high" as Quality, // must match the selected <option> in index.html
-  fpsLimit: FPS_UNLIMITED, // redraw cap; FPS_UNLIMITED = don't limit
+  fpsLimit: 60, // redraw cap; must match index.html's #fpslimit value
   // Split-screen a = 0 vs a = spin (slice 7)
   compare: false,
   // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
