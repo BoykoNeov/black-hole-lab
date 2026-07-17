@@ -306,6 +306,24 @@ The grips are the remedy and already work per side. The panels are deliberately
 not auto-shrunk to fit: a clamp that silently overrides a drag is worse than an
 overlap the user can see and fix.
 
+### Known limitation: so do the callout blocks
+
+A label's text block is a fixed width — 176 px for the shadow's, 187 px for the
+ring's — and a half is not. The layout slides text right to clear the control
+panel before it bounds it to the strip, so once those two demands cross, the
+block is pinned at the panel-clearance bound and the strip's end walks left past
+it: below ~1005 px of window the shadow's block reaches the gutter, and the
+ring's does from ~1049 px. Narrower still and a label overhangs the half it
+describes, which is exactly what bounding it to the strip was meant to prevent.
+
+Left as is, on two grounds. It is not 7e's: the ring's label has done this since
+7b and gives way *first*, so the shadow's is the better-behaved of the pair, and
+squaring it properly means teaching the layout a narrow mode — shorter copy, or
+text under the disk rather than beside it — which is a change to every callout,
+not to this one. And the window it needs is one compare mode does not have:
+1435 px is already the asking price for the insets, and the split is unreadable
+long before 1005 px regardless of what the labels do.
+
 That bargain does not extend to the label 7e hangs below the disk, which lands
 in the band the insets anchor in — and they are opaque and drawn *after* the
 callout layer, so a label reaching into one is not crowded but overdrawn,

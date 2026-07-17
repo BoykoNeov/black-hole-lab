@@ -1104,7 +1104,9 @@ function calloutWidth(ctx: CanvasRenderingContext2D, key: CalloutKey): number {
  * (x0, w) bounds the strip the text may slide within: the whole canvas
  * normally, but one half of the split when comparing (slice 7b). A label
  * describing one spacetime must not drift across the divider and appear to
- * caption the other — the strip is what stops it.
+ * caption the other — the strip is what stops it, down to the width where a
+ * block no longer fits inside a half at all (see DESIGN.md; ~1005 px for the
+ * shadow's, ~1049 px for the ring's, both under what the mode needs anyway).
  *
  * floorY is how far down the text may reach — the canvas's height normally,
  * but the top of the insets where they are drawn, since they are opaque and
