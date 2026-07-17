@@ -756,6 +756,7 @@ function drawOneTrail(
   tr: Trail,
   basis: CameraBasis,
   tanHalfFov: number,
+  x0: number,
   w: number,
   h: number,
   simT: number
@@ -773,8 +774,12 @@ function drawOneTrail(
 
   for (let i = 0; i < n; i++) {
     const t = tr.at(i, trailP);
+    // Projected at the STRIP's width, not the canvas's: the aspect has to be
+    // the one the shader gave this viewport, or the path is a correct
+    // projection of a view nobody is looking at (same rule 7b's outline
+    // follows). x0 then slides that half-width image onto its half.
     projectToScreen(trailP, basis, tanHalfFov, w, h, trailProj);
-    trailPx[i * 2] = trailProj.x;
+    trailPx[i * 2] = x0 + trailProj.x;
     trailPx[i * 2 + 1] = trailProj.y;
     trailVis[i] = trailProj.visible ? 1 : 0;
     trailAge[i] = (simT - t) / span;
@@ -1124,16 +1129,33 @@ export function drawCallouts(
   ctx.restore();
 }
 
+/**
+ * (x0, w) is the strip these trails belong to — the whole width normally, one
+ * half of the split when comparing (7d), which is why a trail's projection
+ * cannot simply be mapped over the canvas.
+ *
+ * The strip is clipped rather than trusted to stay inside itself: an orbit is
+ * a wide object, and projectToScreen calls a point visible out to |ndc| 1.2 —
+ * a margin that exists so 6g's leader lines can anchor just off-screen. Within
+ * a half that margin is 10% of a half-width of trail hanging over the divider,
+ * captioning the other spacetime with a path that is not its. In single view
+ * the strip IS the canvas, so the clip is a no-op there rather than a
+ * compare-only branch.
+ */
 export function drawTrails(
   ctx: CanvasRenderingContext2D,
   groups: TrailGroup[],
   basis: CameraBasis,
   tanHalfFov: number,
+  x0: number,
   w: number,
   h: number,
   simT: number
 ): void {
   ctx.save();
+  ctx.beginPath();
+  ctx.rect(x0, 0, w, h);
+  ctx.clip();
   ctx.lineWidth = 1.25;
   ctx.lineJoin = "round";
   for (let g = 0; g < groups.length; g++) {
@@ -1141,7 +1163,7 @@ export function drawTrails(
     if (!grp.on) continue;
     ctx.strokeStyle = MATTER_COLORS[grp.group];
     for (let i = 0; i < grp.trails.length; i++) {
-      drawOneTrail(ctx, grp.trails[i], basis, tanHalfFov, w, h, simT);
+      drawOneTrail(ctx, grp.trails[i], basis, tanHalfFov, x0, w, h, simT);
     }
   }
   ctx.restore();

@@ -146,10 +146,9 @@ the a = 0 side goes first because it is far the cheaper (~66 ms of tracing
 against ~540 ms at a = 0.998) and then yields the rest — so the HUD costs what
 it always did.
 
-The remaining slice-6 overlays stay off while comparing: the trails and the 6g
-callout layer project world points onto the *whole frame* and would stripe
-across both halves at positions belonging to neither, and the clocks describe a
-single spacetime. (The trails come back in 7d.)
+The remaining slice-6 overlays stay off while comparing: the 6g callout layer
+projects world points onto the *whole frame* and would stripe across both halves
+at positions belonging to neither, and the clocks describe a single spacetime.
 
 7c brings the two insets back, one copy per side, each drawn at the spin of the
 half behind it — the potential inset against that half's left edge and the
@@ -186,6 +185,41 @@ ISCO and photon-orbit markers, which run 6.00 M and 3.00 M at a = 0 against
 (marginal at 6 M, against a real well at ~10.2 M): prograde frame dragging
 drops L_isco from 3.46 to 1.39, so the same L now buys an orbit far outside the
 ISCO rather than sitting on it.
+
+7d gives each half the orbit trails, and it is the sub-slice the mode was built
+for: nodal precession is proportional to a, so the left ring *closes* and the
+right one walks, from one camera, at one mass, on identical orbital elements.
+Measured off the running app at r = 8.5 M and a = 0.998, over 15 s at 120 M/s,
+90% of the pixels the right half's trails light are new, against 22% on the left
+— and that 22% is not precession but the rolling buffer's ends and sub-pixel
+jitter along a curve being retraced. Only the stars carry trails here, the same
+cut the funnel's dots make: gas and debris are stateful, drawn on neither half,
+so their paths go with them.
+
+A trail is the one thing about a star that compare mode cannot refill from the
+other side's spin. `starState` is closed form in (t, a), which is why the scene
+pass and the insets can just re-evaluate the same scratch at the other a — but a
+*path* is a record of where the star has been, and the a = 0 half's path is not
+the slider half's evaluated differently. It is a different orbit, which is the
+whole point of drawing it. So each spin keeps its own set, recorded side by side
+every frame — in a pass of their own, deliberately not inside `fillStars`:
+that fills the shared `starPosArr` the scene pass and the funnel both read, and
+asking it for a second spin purely to feed a trail would leave the scratch at a
+spin its next reader never asked for. Both sets record whether or not the box is
+ticked, for the reason 6e's did: a half has to have a ring to show the moment
+compare goes on, not an orbit later. The spin slider clears the slider set (a new
+a teleports every star, and joining the old samples to the new would draw a jump)
+and deliberately spares the a = 0 set, whose ring survives a drag precisely
+because a = 0 is what the mode holds fixed.
+
+Each half projects at its *own* viewport's aspect and is clipped to its own
+strip. The aspect is the same rule 7b's outline follows. The clip is not: an
+orbit is a wide object, and `projectToScreen` calls a point visible out to
+|ndc| 1.2 — a margin that exists so 6g's leader lines can anchor just off-screen,
+and inside a half it is 10% of a half-width of trail hanging over the divider,
+captioning the other spacetime with a path that is not its. In single view the
+strip is the whole canvas, so the same clip is a no-op rather than a
+compare-only branch.
 
 Known limitation: with both insets on at scale 1, compare mode needs a 1435 px
 window before the funnel stops overlapping the potential panel's legend (the
@@ -310,6 +344,9 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   funnel, orbit trails, dashed shadow outline, and the callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
   other, with all copy in one `CALLOUT_COPY` table; DOM-only, verified by eye).
+  `drawTrails` takes the strip its paths belong to — the whole width normally,
+  one half when comparing (7d) — projects at that strip's aspect and clips to
+  it, so no side can draw a path across the divider.
   The potential and embedding insets are drag-resizable from the corner facing
   the scene: the resize is one `ctx.scale` around the whole panel rather than a
   reflow, so the plots keep the proportions they were tuned at and only the
@@ -397,8 +434,7 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    - 7a split-screen scene: two viewports, one FBO, per-side spin ✅
    - 7b shadow outline traced per side (the circle vs the D-shape) ✅
    - 7c potential & embedding insets per side, each at its half's spin ✅
-   - 7d orbit trails per side, which is what would make Lense–Thirring
-     precession visible — TODO
+   - 7d orbit trails per side — the left ring closes, the right one walks ✅
 
 Known bug, predating slice 7 and living in single view: the shadow-edge
 callout says the shadow is "about 2.6× the horizon's diameter" at every spin.

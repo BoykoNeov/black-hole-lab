@@ -455,6 +455,14 @@ function embeddingFor(a: number, rMax: number): EmbeddingProfile {
 // spin slider runs its callback immediately, and that callback clears these.
 const starTrails: Trail[] = [];
 for (let i = 0; i < STAR_COUNT; i++) starTrails.push(new Trail(TRAIL_CAP_STAR));
+// The a = 0 half's own history (7d). A trail is the one thing about a star
+// that compare mode cannot refill from the other side's spin: starState is
+// closed form in (t, a), but a PATH is the record of where the star has been,
+// and the Schwarzschild half's path is not the slider half's evaluated
+// differently — it is a different orbit, which is the whole point of drawing
+// it. So the two spins each keep a set, recorded side by side every frame.
+const starTrailsSchw: Trail[] = [];
+for (let i = 0; i < STAR_COUNT; i++) starTrailsSchw.push(new Trail(TRAIL_CAP_STAR));
 const gasTrails: Trail[] = [];
 for (let i = 0; i < GAS_COUNT; i++) gasTrails.push(new Trail(TRAIL_CAP_GAS));
 const tdeTrails: Trail[] = [];
@@ -463,6 +471,16 @@ const trailGroups: TrailGroup[] = [
   { trails: starTrails, group: EMBED_STARS, on: true },
   { trails: gasTrails, group: EMBED_GAS, on: true },
   { trails: tdeTrails, group: EMBED_TDE, on: true },
+];
+// One group list per compare half (7d), holding stars and nothing else: gas and
+// TDE debris are stateful and drawn on neither half, so their trails go with
+// them — the same cut the funnel's dots make. Preallocated beside trailGroups
+// because drawTrails runs every frame and the trail path never touches the heap.
+const trailGroupsSchw: TrailGroup[] = [
+  { trails: starTrailsSchw, group: EMBED_STARS, on: true },
+];
+const trailGroupsSlider: TrailGroup[] = [
+  { trails: starTrails, group: EMBED_STARS, on: true },
 ];
 const trailScratch: V3 = [0, 0, 0];
 
@@ -626,6 +644,8 @@ bindSlider("spin", (v) => {
   // onto its new orbit — the old samples are a path through a spacetime that
   // no longer exists, and joining them to the new ones would draw a jump.
   // Gas and debris carry their own state and move continuously instead.
+  // starTrailsSchw is deliberately spared: this slider is not its spin, and its
+  // ring survives a drag precisely because a = 0 is what compare holds fixed.
   for (const t of starTrails) t.clear();
 });
 const fmtSci = (x: number) => {
@@ -766,6 +786,17 @@ function render() {
     tauIsco += dtSim * circRate(spinCtx.isco, params.spin);
     const star = tde ? tde.bodies[0] : null;
     if (star && star.alive) tauStar += dtSim / bodyU(star, params.spin)[0];
+    // Star trails are recorded here rather than inside fillStars, which the
+    // scene pass and the funnel share: fillStars writes starPosArr, and asking
+    // it for a second spin purely to feed a trail would leave that scratch at a
+    // spin its next reader never asked for (single view's funnel dots read it
+    // without refilling). Both sets are recorded whichever mode is on, for the
+    // reason the trails are recorded with the overlay off at all: a half has to
+    // have a ring to show the moment compare is ticked, not an orbit later.
+    for (let i = 0; i < STAR_COUNT; i++) {
+      starTrails[i].push(starState(STAR_ORBITS[i], simT, params.spin).pos, simT);
+      starTrailsSchw[i].push(starState(STAR_ORBITS[i], simT, COMPARE_SPIN_LEFT).pos, simT);
+    }
     for (let i = 0; i < GAS_COUNT; i++) {
       const b = gasBlobs[i];
       const rWas = b.r;
@@ -822,15 +853,16 @@ function render() {
   // starState is a closed form in (t, a), so compare mode just fills the same
   // scratch arrays again at the other spin between the two draws — no second
   // copy of the star state has to exist anywhere. Called per side from the
-  // scene pass below; trails are recorded on the spin slider's side only.
-  const fillStars = (spin: number, pushTrails: boolean) => {
+  // scene pass below, and again per side by the funnel, which reads the scratch
+  // this leaves: whoever calls it last owns starPosArr, so nothing may call it
+  // for a spin it is not about to draw.
+  const fillStars = (spin: number) => {
     for (let i = 0; i < STAR_COUNT; i++) {
       const s = starState(STAR_ORBITS[i], simT, spin);
       starPosArr.set(s.pos, i * 4);
       starPosArr[i * 4 + 3] = STAR_ORBITS[i].radius;
       starUArr.set(s.u, i * 4);
       starTempArr[i] = STAR_ORBITS[i].tempK;
-      if (pushTrails) starTrails[i].push(s.pos, simT);
     }
   };
   for (let i = 0; i < GAS_COUNT; i++) {
@@ -979,8 +1011,8 @@ function render() {
    * not stepped in — compare mode turns them off on BOTH halves rather than
    * show one side matter the other cannot have.
    */
-  const drawSide = (view: Rect, spin: number, ctx: SpinCtx, sliderSide: boolean) => {
-    fillStars(spin, stepped && sliderSide);
+  const drawSide = (view: Rect, spin: number, ctx: SpinCtx) => {
+    fillStars(spin);
     const tet = buildStaticTetrad(basis.pos, spin, basis.right, basis.up, basis.fwd);
     const matterOn = !params.compare;
     gl.viewport(view.x, view.y, view.w, view.h);
@@ -1034,9 +1066,9 @@ function render() {
     // overwrite everything either side of the gap.
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    drawSide(split.left, COMPARE_SPIN_LEFT, spinCtxSchw, false);
+    drawSide(split.left, COMPARE_SPIN_LEFT, spinCtxSchw);
   }
-  drawSide(viewSlider, params.spin, spinCtx, true);
+  drawSide(viewSlider, params.spin, spinCtx);
 
   // dev diagnostics (?dbg): scan render targets for NaN/Inf/negatives —
   // a single bad scene pixel smears black blocks through the bloom pyramid
@@ -1124,25 +1156,30 @@ function render() {
     );
   }
 
-  // Trails and callouts project world points onto the whole frame, so in
-  // compare mode they would stripe across both halves at positions that
-  // belong to neither viewport. Off until they are made per-side.
-  if (params.eduTrails && !params.compare) {
-    // Drawn first: the insets below are opaque panels and should cover them.
-    // A group's trails go away with its matter, so the overlay never shows a
-    // path for something the frame behind it isn't drawing.
-    trailGroups[0].on = params.stars;
-    trailGroups[1].on = params.gas;
-    trailGroups[2].on = tde !== null;
-    drawTrails(
-      hudCtx,
-      trailGroups,
-      basis,
-      tanHalfFov,
-      canvas.clientWidth,
-      canvas.clientHeight,
-      simT
-    );
+  // Drawn first: the insets below are opaque panels and should cover them.
+  // A group's trails go away with its matter, so the overlay never shows a
+  // path for something the frame behind it isn't drawing.
+  if (params.eduTrails) {
+    if (params.compare) {
+      // 7d, and the reason the whole slice is worth drawing: the nodal
+      // precession that keeps an inclined ring from closing is proportional to
+      // a, so it is exactly zero on the left. The left ring closes on itself
+      // and the right one walks — side by side, from one camera, at one mass.
+      // Each half is projected at its OWN viewport's aspect and clipped to its
+      // own strip, so neither can draw a path across the divider.
+      trailGroupsSchw[0].on = params.stars;
+      trailGroupsSlider[0].on = params.stars;
+      drawTrails(hudCtx, trailGroupsSchw, basis, tanHalfFov,
+        hudX(split.left), hudW(split.left), canvas.clientHeight, simT);
+      drawTrails(hudCtx, trailGroupsSlider, basis, tanHalfFov,
+        hudX(viewSlider), hudW(viewSlider), canvas.clientHeight, simT);
+    } else {
+      trailGroups[0].on = params.stars;
+      trailGroups[1].on = params.gas;
+      trailGroups[2].on = tde !== null;
+      drawTrails(hudCtx, trailGroups, basis, tanHalfFov,
+        0, canvas.clientWidth, canvas.clientHeight, simT);
+    }
   }
 
   // ---- shadow outline (6f) + the callout layer (6f labels + 6g) ----
@@ -1421,7 +1458,7 @@ function render() {
       // side's spin, reusing the same scratch the scene pass refills between
       // its own two draws; gas and TDE debris are stateful, drawn on neither
       // half, and so get no dots on either.
-      if (params.compare) fillStars(a, false);
+      if (params.compare) fillStars(a);
       let nDots = 0;
       const push = (r: number, az: number, group: number) => {
         if (nDots >= EMBED_DOT_MAX) return;
