@@ -433,10 +433,14 @@ export function stepLength(r: number): number {
  * (which interpolates it into its loop bound), main.ts's presets and the tests
  * cannot drift apart — the number is only meaningful if all three agree.
  *
- * A ray that spends it is left as captured rather than escaping, which is not
- * free: see the shadow-edge budget test in test/edu.test.ts and the DESIGN.md
- * section on what gamma costs the renderer. Raising it is a real (and at high
- * spin, badly-paying) performance trade, not a bug fix.
+ * A ray that spends it no longer falls through as captured — that cost ~50px of
+ * false shadow on the a = 0.998 prograde edge, and no budget could have fixed
+ * it, since settling a ray at offset delta from the critical curve takes
+ * ~(1/gamma) ln(1/delta) half-orbits and diverges there. rayCaptured settles it
+ * instead, exactly and without stepping, so this number now buys march
+ * FIDELITY (how well the disk, matter and sky directions are integrated) and
+ * nothing about the shadow's edge. Raising it is a pure performance trade.
+ * See test/edu.test.ts and DESIGN.md on what gamma costs the renderer.
  */
 export const MARCH_MAX_STEPS = 320;
 

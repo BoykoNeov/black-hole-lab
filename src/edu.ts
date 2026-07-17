@@ -381,16 +381,23 @@ export interface ShadowEdge {
  * the capture/escape transition is bracketed by geometric growth from ndc
  * radius 0.05 and bisected 16 times, pinning it to a few 1e-6 in ndc.
  *
- * This is the TRUE edge, which at high spin is not the one on screen. The
- * launch geometry is shared with the shader, but the integration is not: this
- * traces to maxSteps 4000 while the shader stops at MARCH_MAX_STEPS and leaves
- * a spent ray as captured. Near the prograde photon orbit at a = 0.998 the
- * Lyapunov exponent falls to 0.19, so light lingers there and blows that budget
- * while still outside the true shadow — and the renderer paints it black. The
- * outline then runs ~50px INSIDE the rendered disk on that edge (0px at a = 0,
- * 0px retrograde at any spin; measured on the frame with the harness and pinned
- * in edu.test.ts). Where they differ, this is right and the picture is wrong;
- * see docs/DESIGN.md, "what gamma costs the renderer".
+ * This used to be the one that was right. It no longer is — quite.
+ *
+ * It caught the renderer fairly: the shader left a ray that spent
+ * MARCH_MAX_STEPS as captured, and near the prograde photon orbit at a = 0.998
+ * the Lyapunov exponent falls to 0.19, so light lingered, blew the budget while
+ * still outside the true shadow, and got painted black. This outline, tracing
+ * to 4000, ran ~50px INSIDE the rendered disk on that edge and was the honest
+ * one. The shader now settles fate from the conserved lambda and Carter q
+ * instead (kerr.ts rayCaptured), exactly and without stepping, so the picture's
+ * edge is now exact.
+ *
+ * This is still marched, so it is still ~0.6px OUTSIDE the true edge at
+ * a = 0.998 prograde — the same effect, a hundredth of the size, and invisible
+ * on the frame, but the sign of the remaining disagreement now points here
+ * rather than at the picture (pinned in edu.test.ts). Pointing this at
+ * rayCaptured would make it exact and cost no traces at all.
+ * See docs/DESIGN.md, "what gamma costs the renderer".
  *
  * Cost is ~20 traces per azimuth, ~1000 per outline — and a single trace is
  * the atomic unit of work, from ~0.1 ms in the easy cases to milliseconds for

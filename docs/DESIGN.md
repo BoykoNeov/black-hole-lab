@@ -359,15 +359,18 @@ The slice set out to draw that ladder. It found something better first.
 Gamma does not only space the rings. It sets how long light lingers near the
 photon orbit — and therefore how many RK4 steps a ray needs before it resolves
 into "escaped" or "captured". The scene shader affords `MARCH_MAX_STEPS` of
-them, and a ray that spends the budget is left as captured. Where gamma is
+them, and it *used to* leave a ray that spent them as captured. Where gamma is
 large that is free: the light is gone long before the budget is. Where gamma is
-small it is not, and the renderer paints escaping light black.
+small it is not, and the renderer painted escaping light black.
 
 Measured on the frame with `tools/visual/harness.mjs`, at a = 0.998, sky-lit,
-fov 30: the rendered black disk runs **51 px past the traced outline on the
-prograde edge**, and 0 px on the retrograde one. At a = 0 the two agree to a
-pixel. The rendered shadow is circular there; the true one is a D. The step
-budget fills in the D's flat side.
+fov 30: the rendered black disk ran **51 px past the traced outline on the
+prograde edge**, and 0 px on the retrograde one. At a = 0 the two agreed to a
+pixel. The rendered shadow was circular there; the true one is a D. The step
+budget filled in the D's flat side.
+
+The rest of this section is the diagnosis, which stands. What was done about it
+is below, and it is not what this slice first concluded.
 
 That is a one-sided error, which is the whole tell — a projection bug would move
 both edges. The cost tracks gamma and nothing else (these are the CPU tracer's
@@ -394,31 +397,114 @@ is nothing left for precision to explain, and `test/edu.test.ts` pins it.
 This matters for what you would do about it. A precision-limited edge would not
 be fixed by a bigger budget; a budget-limited one would. But see below.
 
-### Why the budget stays at 320
+### Why the budget was the wrong lever
 
 Raising it pays badly, and gamma is again the reason. The rungs sit at `e^-gamma`
 of each other, so at a = 0.998 prograde (`e^-0.19 = 0.82`) they barely converge:
 each extra rung buys ~18% off the error and costs ~280 more steps. Sub-pixel
 would need thousands of steps — a global per-pixel cost, paid by every frame at
-every spin, to fix one edge at a setting almost nobody visits. The budget is a
-performance trade that at high spin has no good side, so it stays, and the lab
-says so rather than pretending otherwise.
+every spin, to fix one edge at a setting almost nobody visits.
 
-### What the lab does instead
+But "pays badly" undersells it, and this section used to stop there and conclude
+the error was a trade to live with. It is not a trade. A ray at offset `delta`
+from the critical curve needs `~(1/gamma) ln(1/delta)` half-orbits to settle, so
+the steps needed **diverge** as the edge is approached. No budget reaches it. Nor
+does a cleverer step rule — the near-hole arc length is over-conservative and a
+constant-steps-per-orbit rule would buy maybe 3-4x, which a divergence eats
+without noticing. Both levers are the same lever, and it does not reach.
 
-Nothing new is drawn. 6f's outline already shows the discrepancy — the orange D
-sitting inside the black disk is the renderer being caught — and it is the one
-that is right, because it traces to 4000 steps. What changed is that the code
-and docs no longer claim otherwise: `findShadowEdgeIncremental` used to say the
-outline "matches the rendered black disk by construction". It matches its
-*launch geometry* by construction. The integration is where they part.
+The budget stays at 320 anyway. It just no longer decides anything.
 
-Two scoping notes the copy has to carry. The 51 px is a **sky-lit** number: a
-culled ray still keeps whatever disk light it crossed on the way in, so with the
-disk on those pixels render as disk rather than black and the D survives — the
-error is worst where there is nothing else to fill it. And gamma is a per-edge
-equatorial number, never one value around the ring: off the equatorial plane the
-orbits are Carter-Q spherical ones with their own exponents.
+### The fate is not an integration result
+
+Capture does not have to be discovered by watching. A Kerr null geodesic's fate
+is fixed by two conserved numbers — `lambda = L_z/E` and Carter's `q = Q/E^2` —
+through the radial potential
+
+    R(r)/E^2 = (r^2 + a^2 - a*lambda)^2 - Delta*[(lambda-a)^2 + q]
+
+`Sigma^2 (dr/dlambda)^2 = R`, so the ray lives where `R >= 0` and turns where it
+vanishes: it plunges **iff** `R` stays positive from the camera down to `r+`. One
+turning point above the horizon and it reflects and escapes instead.
+
+`R(r+) = (r+^2 + a^2 - a*lambda)^2 >= 0`, and `R(camera) > 0` because the ray is
+there. So roots between them come in pairs, and `R` has to dip through a local
+minimum to reach them — testing `R`'s sign at its interior critical points
+settles it, and those are the roots of the cubic `R'/4`. `kerr.ts`'s
+`rayCaptured` does that; the shader mirrors it. Cost: no steps. So no exponent,
+and nothing left for a budget to buy.
+
+The claim worth making is not that this agrees with the 4000-step trace but that
+it is the edge the march **converges to**. Spend more and the marched edge walks
+monotonically inward and lands on it, never crossing: at a = 0.998 prograde,
+54.1px → 14.0px → 0.61px → 0.00px for 320 → 1k → 4k → 20k steps. `edu.test.ts`
+pins the sequence, not just the endpoint.
+
+Two pieces of algebra earned their place. Carter's `Q` is usually written
+`p_theta^2 + cos^2(th)(L_z^2/sin^2(th) - a^2 E^2)`, which divides by zero on the
+spin axis — where a face-on camera sits. Kerr–Schild shares `r` and `theta` with
+Boyer–Lindquist and mixes only `t` and `phi` with `r`, so `p_theta` is the same
+covector in both and comes straight off the Cartesian map:
+`p_theta = cot(th)(x m_x + z m_z) - r sin(th) m_y`. Then the Lagrange identity
+`(x m_x + z m_z)^2 + (z m_x - x m_z)^2 = (x^2+z^2)(m_x^2+m_z^2)` collects the two
+`cot^2` terms, and `x^2 + z^2 = (r^2+a^2) sin^2(th)` cancels the `sin^2` out of
+the denominator for good. What is left is a polynomial, regular everywhere: no
+axis case, no epsilon. Second, `R`'s constant term is `-a^2 q` in closed form.
+Expanding the square instead gives `(a^2 - a*lambda)^2 - a^2 k`, which at
+a = 0.998 near the critical curve is `1.188 - 1.185` — three of float32's seven
+digits gone exactly where the shader needs them.
+
+float32 is otherwise fine here, which is not obvious, because the sign test sits
+at a double root where conditioning is worst. Measured: the prograde edge is the
+soft one (`dRmin/ds = -1.04`, against the retrograde's `-949`), and float32's
+slop in `R` moves it by `1e-4 px`.
+
+### What changed on the frame
+
+Measured with `tools/visual/harness.mjs` — sky-lit, fov 30, bloom off, the same
+rows before and after — the prograde edge moves **in by 22px at a = 0.9 and 53px
+at a = 0.998**, against the 23 and 53.5 the table above predicted. a = 0 and both
+retrograde edges do not move by a single pixel: the one-sidedness that was the
+tell is now the regression check. The rendered disk at a = 0.998 is a D.
+
+Three scoping notes the copy has to carry.
+
+The fate is exact; the **colour of the revealed band is not**. Those rays are
+still winding when the budget ends, so they take the sky at their
+direction-at-exhaustion, which is near-tangent to the photon shell and nothing
+like their asymptotic direction. The band was measured for a seam and there is
+none — it is lensed nebula on both sides, wiggling by the same ±20 luma inside
+the band as outside — but "sky at an approximate direction" is the honest
+description of it. It beats black, which was not approximate but the wrong
+*fate*, and whether there is a hole in front of you is what the picture is for.
+Sub-pixel truth in a chaotically lensed band is not reachable at one sample per
+pixel anywhere near the ring, so nothing else was on offer.
+
+The 51 px was a **sky-lit** number: a culled ray still keeps whatever disk light
+it crossed on the way in, so with the disk on those pixels rendered as disk
+rather than black and the D survived — the error was worst where there was
+nothing else to fill it.
+
+And gamma is a per-edge equatorial number, never one value around the ring: off
+the equatorial plane the orbits are Carter-Q spherical ones with their own
+exponents. The criterion above carries no such restriction — `q` is exactly what
+it takes to handle the rest of the ring, which is why it needed computing.
+
+### Now the outline is the one that is wrong
+
+6f's traced D runs at 4000 steps, and this section used to call it the one that
+is right. It was right *about the renderer*, and the orange D sitting inside the
+black disk is what caught it. But it is not exact: 4000 steps still leave it
+~0.6px outside the true edge at a = 0.998 prograde. That is a hundredth of the
+shader's old error and invisible on the frame, but it is not zero, and
+`edu.test.ts` pins it rather than rounding it away. The renderer is now the more
+accurate of the two. Pointing `findShadowEdge` at `rayCaptured` would make the
+outline exact and drop ~540 ms of tracing per outline; not done here.
+
+The code-level claim that started all this stands corrected either way:
+`findShadowEdgeIncremental` used to say the outline "matches the rendered black
+disk by construction". It matches its *launch geometry* by construction. The
+integration is where they parted — and now nothing integrates to decide it.
 
 ### The winding number is a definition, not a detail
 

@@ -158,7 +158,7 @@ both halves, and the clocks and the rest of the callout layer stay off. The full
 argument, and what the split deliberately does *not* hold constant, is in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-7--schwarzschild-vs-kerr).
 
-### The photon ring's ladder, and what it costs the renderer (slice 8)
+### The photon ring's ladder, and what it cost the renderer (slice 8)
 
 The photon ring is a ladder of images — light that looped the hole once, twice,
 forever — each thinner than the last by `e^(−γ)`, with γ the Lyapunov exponent
@@ -166,19 +166,28 @@ of the unstable photon orbit (`edu.ts`'s `photonOrbitLyapunov`). It is exactly
 π at a = 0, and spin splits it hard and asymmetrically: 0.19 on the prograde
 edge at a = 0.998 against 4.08 on the retrograde one.
 
-The same γ says where the picture stops being true. It sets how long light
+The same γ said where the picture stopped being true. It sets how long light
 lingers near the photon orbit, hence how many march steps a ray needs to resolve
-as escaped — and the shader affords `MARCH_MAX_STEPS` of them, leaving a spent
-ray as captured. Where γ is small, escaping light gets painted black: at
-a = 0.998, sky-lit, **the rendered black disk runs ~50 px past the true shadow
-edge on the prograde edge** and 0 px on the retrograde one, so the render shows
-a circle where the truth is a D. At a = 0 the two agree to a pixel.
+as escaped — and the shader affords `MARCH_MAX_STEPS` of them, and used to leave
+a spent ray as captured. Where γ is small, escaping light got painted black: at
+a = 0.998, sky-lit, **the rendered black disk ran ~50 px past the true shadow
+edge on the prograde edge** and 0 px on the retrograde one, so the render showed
+a circle where the truth is a D.
 
-6f's traced outline is the one that is right (it traces to 4000 steps); where it
-sits inside the black disk, the renderer is the thing in error. Nothing new is
-drawn — the discrepancy was already on screen, only mislabelled. Why the budget
-stays where it is, and how the step budget was separated from float32 rather
-than guessed at, are in
+No budget fixes that — settling a ray at offset δ from the edge costs
+`~(1/γ) ln(1/δ)` half-orbits, which diverges — so the shader stopped asking the
+march. A ray's fate is fixed by two conserved numbers, `λ = L_z/E` and Carter's
+`q = Q/E²`: it plunges iff the radial potential has no turning point above the
+horizon. `kerr.ts`'s `rayCaptured` reads them off the launch momentum and solves
+a cubic; the shader mirrors it and consults it exactly when the budget runs out.
+No steps, so no exponent. The prograde edge moves in 22 px at a = 0.9 and 53 px
+at a = 0.998 (predicted: 23 and 53.5); a = 0 and both retrograde edges do not
+move a pixel. **The rendered shadow at a = 0.998 is now a D.**
+
+The fate is exact; the colour of the band it revealed is approximate — those
+rays are still winding when the budget ends. That, why the budget was the wrong
+lever rather than merely an expensive one, the axis-regular form of Carter's Q,
+and the float32 cancellation that had to be removed from the potential are in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-8--what-gamma-costs-the-renderer).
 
 ## File map
@@ -190,9 +199,13 @@ than guessed at, are in
   tetrad, Hamiltonian geodesic RK4 (pure, tested; the GLSL mirrors it). Each
   trace reports its `winding` — the angle its position direction swept, in
   half-turns — which is how far around the hole the ray actually went, and the
-  measure the photon-ring ladder is spaced in. Also owns `MARCH_MAX_STEPS`, the
-  shader's march budget: the GLSL interpolates it into its loop bound and
-  `main.ts`'s quality presets spend it, so the three cannot drift apart
+  measure the photon-ring ladder is spaced in. Also owns `rayCaptured` — a ray's
+  fate from its conserved `λ` and Carter `q` via the radial potential's turning
+  points, exact and step-free, which is what the shader consults when its budget
+  runs out rather than assuming the ray was swallowed (slice 8a) — and
+  `MARCH_MAX_STEPS`, the shader's march budget: the GLSL interpolates it into
+  its loop bound and `main.ts`'s quality presets spend it, so the three cannot
+  drift apart
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -215,12 +228,13 @@ than guessed at, are in
   rim's inverse-square-root singularity split off in closed form — `Trail`,
   the fixed-size ring buffer of (position, time) samples behind the orbit
   trails, `photonOrbitLyapunov` — how fast the photon orbit sheds light, which
-  spaces the ring's ladder at `e^(−γ)` and *also* sets where the shader's march
-  budget runs out and paints escaping light black — and the shadow-edge finder:
-  the true capture boundary, located by bisecting CPU rays launched exactly as
-  the shader launches them but integrated far past its budget, exposed as a
-  generator yielding per trace so the render loop can drain it against a time
-  budget (at high spin this is *not* the edge on screen — see slice 8), plus the
+  spaces the ring's ladder at `e^(−γ)` and *also* set where the shader's march
+  budget used to run out and paint escaping light black — and the shadow-edge
+  finder: the true capture boundary, located by bisecting CPU rays launched
+  exactly as the shader launches them but integrated far past its budget,
+  exposed as a generator yielding per trace so the render loop can drain it
+  against a time budget (still marched, so still ~0.6 px out at a = 0.998
+  prograde where the shader now is not — see slice 8), plus the
   callout geometry: which disk lobe is beamed toward the camera (from the same
   prograde `uCircCart` the shader's disk shift is built on) and how nearly a
   star sits behind the hole (pure, tested)
@@ -405,9 +419,18 @@ and `tsconfig` covers `src` + `test`.
    exponent: the `e^(−γ)` spacing of the ring's nested images, π at a = 0 and
    split 0.19/4.08 across the two edges at a = 0.998. Set out to draw the
    ladder; found that the same γ sets how many march steps a ray needs, so
-   where it is small the shader's budget runs out and paints escaping light as
+   where it is small the shader's budget ran out and painted escaping light as
    shadow (~50 px of it on the prograde edge at a = 0.998, sky-lit; 0 px at
    a = 0). No new overlay — 6f's outline already showed it, against docs that
    claimed the two agreed ✅
+   - 8a the march is the wrong oracle: fate is fixed by `λ` and Carter's `q`
+     through the radial potential, not discovered by stepping. `rayCaptured`
+     settles it exactly, at any budget; the prograde edge moves in 53 px at
+     a = 0.998 and the rendered shadow is finally a D ✅
 
 The roadmap is complete. There is no slice 9 queued.
+
+Known and pinned, not queued: 6f's traced outline runs at 4000 steps, which
+leaves it ~0.6 px outside the true edge at a = 0.998 prograde — the renderer is
+now the more accurate of the two. Pointing `findShadowEdge` at `rayCaptured`
+would make it exact and drop ~540 ms of tracing per outline.
