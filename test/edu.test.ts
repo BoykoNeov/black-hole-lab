@@ -297,7 +297,7 @@ describe("embeddingProfile", () => {
   });
 
   it("makes the throat locally gentler but deeper as spin rises", () => {
-    // PLAN-slice-6.md's 6d prose has this backwards ("spin flattens the
+    // docs/archive/PLAN-slice-6.md's 6d prose has this backwards ("spin flattens the
     // throat: z at r = 6 for a = 0.9 < z at r = 6 for a = 0"). It conflates
     // slope with height. Both halves below are the same formula the plan
     // gives, and they disagree with its conclusion: the wall at r = 6 does
@@ -589,7 +589,7 @@ describe("approachingSign", () => {
     // right = (cos yaw, 0, -sin yaw) at ANY pitch, and the dot product then
     // collapses to -dist·cos(pitch)·u^t·Omega·R < 0. Orbiting to the far side
     // moves camPos and right together, so the two cancel; crossing under the
-    // disk re-points `up` instead. (PLAN-slice-6.md's 6g expects a flip at
+    // disk re-points `up` instead. (docs/archive/PLAN-slice-6.md's 6g expects a flip at
     // yaw + pi — it does not happen, and physically must not: walking around
     // a carousel never reverses its sense while your head stays aligned with
     // its axis.)

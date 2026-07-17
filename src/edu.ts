@@ -97,7 +97,8 @@ export function circRate(r: number, a: number): number {
  * than the textbook square root. At a = 0, beta = 0 and gamma factors, giving
  * back sqrt((1 - 2/r)(1 + L^2/r^2)).
  *
- * NOTE: PLAN-slice-6.md's 6c prose drops the a^2/r^2 term from gamma. That
+ * NOTE: docs/archive/PLAN-slice-6.md's 6c prose drops the a^2/r^2 term from
+ * gamma. That
  * version disagrees with the circEL oracle by ~1% at a = 0.9; the form above
  * reproduces circEL's E exactly (see test/edu.test.ts).
  */

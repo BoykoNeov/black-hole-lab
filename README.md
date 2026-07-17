@@ -6,6 +6,12 @@ Units are geometrized: G = c = M = 1, so all distances are in units of the
 black hole mass M (Schwarzschild horizon at r = 2, photon sphere at r = 3;
 with spin the horizon sits at r+ = 1 + √(1 − a²)).
 
+This file is the entry point: what the lab does, how the renderer works, and
+where the code is. For *why* the code is the way it is — the artistic knobs and
+what they cost, the decisions behind compare mode — see
+[`docs/DESIGN.md`](docs/DESIGN.md). Finished plans are kept in `docs/archive/`,
+historical and not to be trusted over the code.
+
 ## Run
 
 ```
@@ -16,6 +22,8 @@ npm run build   # typecheck + production build
 ```
 
 ## Architecture
+
+### Spacetime and the renderer
 
 Since slice 4 the spacetime is **Kerr** (spin slider a ∈ [0, 0.998]). The
 scene shader marches every pixel's null geodesic with adaptive RK4 in
@@ -40,7 +48,9 @@ inclined star orbits precess at the Lense–Thirring nodal rate, and gas that
 crosses the (spin-dependent) ISCO switches to the true geodesic plunge with
 the ISCO's conserved E, L — regular through the horizon in Kerr–Schild
 time. The disk temperature profile's zero-torque inner edge follows the
-ISCO as the spin changes (pulled forward from slice 5).
+ISCO as the spin changes.
+
+### The accretion disk
 
 The disk is a thin equatorial sheet: Novikov–Thorne temperature profile
 (zero at the ISCO, peak at r = 49/6), blackbody colors, differentially
@@ -48,204 +58,12 @@ rotating fbm turbulence, and per-crossing Doppler + gravitational shift for
 circular-orbit matter (toggleable — "Hollywood mode" turns it off, as the
 Interstellar renders did).
 
-Slice 5 couples the picture to a chosen black-hole mass (10^5–10^11 M☉)
-and accretion rate (Eddington units). The geometry is mass-invariant, but
-the disk's peak temperature is not: T ∝ ṁ^(1/4) M^(-1/4) (isco/6)^(-3/4)
-(Shakura–Sunyaev, 1.54e7 K for 1 M☉ at Eddington), so stellar-mass holes
-are X-ray hot and only the most monstrous, starving quasars glow in
-visible colors; spinning the hole up pulls the inner edge in and heats it.
-Readouts translate the geometric units (horizon in km, one M of time in
-seconds, Wien band of the peak).
+### Matter in motion (slice 3)
 
-"Throw a star at it" launches a tidal disruption event: a sun-like star on
-a marginally bound orbit aimed to graze its tidal radius r_t, which in
-units of M is 4.7e5 (M/M☉)^(-2/3) — that scaling is the whole story. Below
-~10^8 M☉ the star is shredded at r_t into a debris stream (half bound,
-half unbound); the bound tail loops out and falls back, feeding a flare
-that lifts ṁ (and, with coupling on, the disk temperature) on the classic
-Rees t^(-5/3) light curve. Above the Hills mass, r_t sits inside the
-horizon and the star is swallowed whole — no flare, it just redshifts away.
-The aim is floored once that happens: "graze r_t" stops meaning anything when
-r_t is inside the horizon (you cannot skim a radius you can only cross once),
-and taken literally it aims the star at 0.02 M at the top of the slider — a
-dead radial drop that reads as a bug rather than as the Hills-mass story. It
-is aimed at a pericenter well inside the capture threshold instead (L = 1.73,
-against a threshold running from 4 at a = 0 to ~2 prograde-extremal, so the
-star is still certain to be taken at every spin — tested), which buys a
-visibly curved approach and changes no outcome: capture turns on r_t < r+,
-not on where it was aimed. Note that a TDE star never *orbits*: it is on a
-marginally bound (parabolic) one-pass orbit by construction, so the arc to
-watch is approach → shred → the debris tail's loop, not a closed orbit.
-The star and all 32 debris elements move on exact timelike Kerr geodesics
-integrated with the same Kerr–Schild Hamiltonian RK4 as the photons (only
-the mass shell differs: m·m = -1, with E = -m_t conserved exactly), so the
-stream's stretch, the relativistic capture of the deepest debris, and the
-horizon crossing all emerge from the integration. The debris elements are
-drawn as one continuous chain of gaussian capsules (energy order = stream
-order), so the star visibly spaghettifies into a single stretching filament
-rather than a cloud of blobs; capsules combine by strongest contribution
-(summing would bead the joints) and dim as they stretch. The drawn stream
-carries the artistic knobs, all documented in the code. The energy spread is widened
-so first fallback takes ~600 M instead of months — Kepler ties that period to
-how far the tail loops, so it also decides whether the stream stays in frame.
-The split is biased ~70/30 toward bound rather than the physical 50/50, and
-the bound elements are spread by fallback *period* rather than uniformly in
-energy: the physical spread is what makes real fallback a t^(-5/3) tail, and
-drawn literally it put 27 of 32 elements on ~1e3 M orbits that coast out of
-frame and never visibly return. The flare's light curve is integrated
-analytically and keeps the true t^(-5/3) shape regardless. Its display
-brightness is sqrt-compressed (the readout reports the physical ratio).
-
-What the debris does is the integrator's business, not ours: at the default
-mass the bound tail loops out and fades as the disk eats it on the way back
-in, while at ~1e7.5 M☉ and low spin — r_t only a couple of M outside the
-horizon — every element is captured and crosses. Spin the hole up at that
-mass and the smaller horizon lets the same stream survive and loop instead.
-That fade is keyed on the *disk's* outer edge, not on r_t: r_t belongs to the
-star and scales as M^(-2/3), so at the low end of the mass slider it runs to
-hundreds of M — larger than the scene — and keying the fade there dissolved
-the whole stream in open space, nowhere near anything that could eat it,
-before it could ever fall back.
-
-Slice 7 turns the spin slider into a controlled experiment. "Compare:
-Schwarzschild vs Kerr" splits the frame and renders a = 0 into the left
-viewport and the slider's a into the right, from one camera, at one mass and
-accretion rate, with the stars on identical orbital elements — so every
-difference on screen is the spin's doing and nothing else's. Neither half is
-faked or mirrored: the scene pass simply runs twice with a different a, so
-both are the full per-pixel geodesic renderer. It is close to free, because
-splitting halves each viewport's width and the two draws cover the pixel count
-the single one did — the cost is per pixel marched, not per draw. (The scene
-shader takes ray directions from `gl_FragCoord` relative to `uViewOrigin`, not
-the window, which is the only change the split needed.) The one thing NOT held
-constant besides a is the disk's peak temperature, and deliberately: the ISCO
-is where spin enters the temperature profile, so the two halves really are at
-different temperatures, and at a = 0.998 the right-hand disk goes *dimmer* in
-visible light because its hotter inner edge has moved into the X-ray.
-
-What compare mode does not show, it hides rather than fakes. Gas and TDE
-debris are stateful — advected and integrated frame to frame at one spin — so
-they cannot honestly appear on a side whose spin they were never stepped in,
-and they are dropped from both halves (with the TDE's flare, which would
-otherwise light both disks up to 8× from an event neither half draws). Stars
-survive the split because `starState` is a closed form in (t, a): the same
-scratch arrays are simply refilled at the other spin between the two draws.
-7b gives each half its own traced shadow outline, which is the slice's whole
-argument in one picture: a circle on the left, and at high spin a flat-sided D
-on the right, each hugging the black disk it belongs to. Nothing about the
-tracer changed — `findShadowEdgeIncremental` already returned NDC and took an
-aspect — so 7b is a cache per side plus getting the two mappings right. Both
-matter. The aspect must be the one the *shader* used (its viewport's w/h, far
-from the frame's shape once halved), or the outline is a perfectly-computed
-boundary of a view nobody is looking at; and the strip it is drawn back into
-is the GL rect divided by the render scale, not an independently re-rounded
-CSS split, which would sit a pixel off the disk it claims to trace. The static
-tetrad is spin-dependent, so each side launches its rays from its own. The two
-outlines share ONE frame's tracing budget rather than each taking their own —
-the a = 0 side goes first because it is far the cheaper (~66 ms of tracing
-against ~540 ms at a = 0.998) and then yields the rest — so the HUD costs what
-it always did.
-
-The remaining slice-6 overlays stay off while comparing: the 6g callout layer
-projects world points onto the *whole frame* and would stripe across both halves
-at positions belonging to neither, and the clocks describe a single spacetime.
-
-7c brings the two insets back, one copy per side, each drawn at the spin of the
-half behind it — the potential inset against that half's left edge and the
-funnel against its right, so a half reads as a small copy of the whole frame's
-layout. Per-side rather than two curves overlaid in one panel, and the funnel
-is what decides it: two wireframe surfaces of revolution drawn over each other
-are a mesh nobody can read, and splitting the conventions — one inset
-comparing by overlay, the other by position — would cost more than it bought.
-The potential inset loses nothing by it, because its axis window is a fixed
-constant: two panels of it are directly comparable by eye, with no per-side
-rescaling able to forge a difference the spin didn't make. That is the same
-bargain `splitViewports` makes when it hands both halves equal widths, and the
-inset scale is shared across the sides for the same reason — either grip
-resizes both copies together, so the halves can never be sized apart.
-
-What the insets show follows the same rule the scene pass follows: only what
-the renderer is actually drawing. That cuts per group. Stars are drawn on both
-halves, so the funnel refills them at its own side's spin (`starState` is
-closed-form in (t, a), so this is the same scratch the scene pass reuses
-between its two draws); gas and TDE debris are stateful, drawn on neither half,
-and so get no dots and no potential-curve marks on either. The funnel's profile
-cache grew a second slot to match — a = 0 and the slider's a are now both asked
-for every frame, and one slot would miss on both calls and re-integrate ~400
-steps of quadrature twice per frame, turning a cache into a per-frame cost.
-
-The default `eduL` is 2√3, which is exactly the Schwarzschild ISCO's angular
-momentum — so out of the box the left panel shows *no* stable-orbit marker
-while the right one does. That is the physics, not a gap: at a = 0 this L puts
-the trough exactly at the ISCO, where the minimum and the barrier peak merge
-into an inflection and annihilate, which is what the panel's own caption means
-by the minimum flattening away. The contrast to read across the divider is the
-ISCO and photon-orbit markers, which run 6.00 M and 3.00 M at a = 0 against
-1.24 M and 1.07 M at a = 0.998. The trough itself moves the *other* way
-(marginal at 6 M, against a real well at ~10.2 M): prograde frame dragging
-drops L_isco from 3.46 to 1.39, so the same L now buys an orbit far outside the
-ISCO rather than sitting on it.
-
-7d gives each half the orbit trails, and it is the sub-slice the mode was built
-for: nodal precession is proportional to a, so the left ring *closes* and the
-right one walks, from one camera, at one mass, on identical orbital elements.
-Measured off the running app at r = 8.5 M and a = 0.998, over 15 s at 120 M/s,
-90% of the pixels the right half's trails light are new, against 22% on the left
-— and that 22% is not precession but the rolling buffer's ends and sub-pixel
-jitter along a curve being retraced. Only the stars carry trails here, the same
-cut the funnel's dots make: gas and debris are stateful, drawn on neither half,
-so their paths go with them.
-
-A trail is the one thing about a star that compare mode cannot refill from the
-other side's spin. `starState` is closed form in (t, a), which is why the scene
-pass and the insets can just re-evaluate the same scratch at the other a — but a
-*path* is a record of where the star has been, and the a = 0 half's path is not
-the slider half's evaluated differently. It is a different orbit, which is the
-whole point of drawing it. So each spin keeps its own set, recorded side by side
-every frame — in a pass of their own, deliberately not inside `fillStars`:
-that fills the shared `starPosArr` the scene pass and the funnel both read, and
-asking it for a second spin purely to feed a trail would leave the scratch at a
-spin its next reader never asked for. Both sets record whether or not the box is
-ticked, for the reason 6e's did: a half has to have a ring to show the moment
-compare goes on, not an orbit later. The spin slider clears the slider set (a new
-a teleports every star, and joining the old samples to the new would draw a jump)
-and deliberately spares the a = 0 set, whose ring survives a drag precisely
-because a = 0 is what the mode holds fixed.
-
-Each half projects at its *own* viewport's aspect and is clipped to its own
-strip. The aspect is the same rule 7b's outline follows. The clip is not: an
-orbit is a wide object, and `projectToScreen` calls a point visible out to
-|ndc| 1.2 — a margin that exists so 6g's leader lines can anchor just off-screen,
-and inside a half it is 10% of a half-width of trail hanging over the divider,
-captioning the other spacetime with a path that is not its. In single view the
-strip is the whole canvas, so the same clip is a no-op rather than a
-compare-only branch.
-
-Known limitation: with both insets on at scale 1, compare mode needs a 1435 px
-window before the funnel stops overlapping the potential panel's legend (the
-two just touch there; measured against the layout, and the panel column's own
-width sets it — the split leaves each half `(clientWidth − 264 − 3) / 2`, and
-the pair needs 584 of it). The split halves the room each pair has, where
-single view only overlaps below ~840 px. The grips are the remedy and already work per-side; the panels were
-not auto-shrunk to fit, because a clamp that silently overrides a drag is worse
-than an overlap the user can see and fix.
-
-Two labels are deliberately not duplicated onto the a = 0 half. The photon-ring
-callout is emitted once, against the slider's outline, and the callout layout
-is now bounded to that side's strip so it cannot slide across the divider and
-appear to caption the other spacetime. The shadow-edge callout is dropped in
-compare mode outright, because its copy sizes the shadow against the horizon at
-one spin and compare mode has two on screen at once. (That copy quoted a flat
-"about 2.6×" at every spin until `shadowHorizonRatio` made it a function of `a`
-— see the shadow-edge sizing note below. Re-emitting it per side, each half
-with its own ratio, would make the ratio's spin dependence the very thing the
-split shows; it is not wired up, because two shadow callouts need a per-strip
-copy and width memo, which the `CalloutKey`-keyed table does not have.)
-
-Slice 3 adds matter in motion, all sampled **along the same per-pixel
-geodesics** rather than as unlensed billboards, so every piece of matter is
-gravitationally lensed for free (a star passing behind the hole smears into
-an Einstein ring; the far-side jet base wraps around the shadow):
+All of it is sampled **along the same per-pixel geodesics** rather than as
+unlensed billboards, so every piece of matter is gravitationally lensed for
+free: a star passing behind the hole smears into an Einstein ring, and the
+far-side jet base wraps around the shadow.
 
 - **Orbiting stars** — gaussian blobs on inclined circular geodesics
   (exactly physical: spherical symmetry makes every plane equatorial), with
@@ -269,9 +87,7 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   axis gives *exactly* the 4-velocity of the same orbit further along the arc,
   so one uniform shades the whole tail with the far end correctly receding
   where the head approaches. The tail dims as 1/length (mass conservation,
-  taken literally here rather than sqrt-softened as the TDE stream is — the
-  TDE's returning tail needed the help, whereas gas smeared down a ~7 M arc
-  at the old blob normalization bloomed into a solid white band).
+  taken literally here rather than sqrt-softened as the TDE stream is).
 - **Relativistic jets** — a bipolar volumetric emission cone integrated
   along each march step, with knots streaming outward at 0.85c and
   relativistic beaming: emission scales as g³ on the exact local shift, so a
@@ -284,6 +100,66 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - **Time controls** — simulation time runs in coordinate-time units of M
   (pause button + speed slider, 0–120 M per real second); disk turbulence,
   stars, gas, and jet knots all advance on the same clock.
+
+### Physical scales (slice 5)
+
+Slice 5 couples the picture to a chosen black-hole mass (10^5–10^11 M☉)
+and accretion rate (Eddington units). The geometry is mass-invariant, but
+the disk's peak temperature is not: T ∝ ṁ^(1/4) M^(-1/4) (isco/6)^(-3/4)
+(Shakura–Sunyaev, 1.54e7 K for 1 M☉ at Eddington), so stellar-mass holes
+are X-ray hot and only the most monstrous, starving quasars glow in
+visible colors; spinning the hole up pulls the inner edge in and heats it.
+Readouts translate the geometric units (horizon in km, one M of time in
+seconds, Wien band of the peak).
+
+"Throw a star at it" launches a tidal disruption event: a sun-like star on a
+marginally bound orbit aimed to graze its tidal radius r_t = 4.7e5 (M/M☉)^(-2/3)
+in units of M. Below ~10^8 M☉ the star is shredded at r_t into a debris stream
+(half bound, half unbound); the bound tail loops out and falls back, feeding a
+flare that lifts ṁ (and, with coupling on, the disk temperature) on the classic
+Rees t^(-5/3) light curve. Above the Hills mass, r_t sits inside the horizon and
+the star is swallowed whole — no flare, it just redshifts away. The star and all
+32 debris elements move on exact timelike Kerr geodesics, so the stream's
+stretch, the capture of the deepest debris and the horizon crossing all emerge
+from the integration. The drawn stream carries several artistic knobs — the aim
+floor, the widened energy spread, the 70/30 bound split, the capsule chain —
+each documented in the code and argued in
+[`docs/DESIGN.md`](docs/DESIGN.md#slice-5--tidal-disruption-events).
+
+### Educational overlays (slice 6)
+
+A 2D HUD canvas above the GL view: clocks showing gravitational and velocity
+time dilation, an effective-potential inset, an embedding-diagram funnel with
+live matter riding it, orbit trails, the traced shadow outline and photon-ring
+annotation, and a "what am I looking at?" callout mode that names the frame from
+its real geometry. Knob labels carry a badge saying whether they are physics or
+artistic licence.
+
+Both insets are drag-resizable from the corner facing the scene. The shadow-edge
+callout's "how much wider than the hole" ratio is analytic and spin-dependent —
+see [`docs/DESIGN.md`](docs/DESIGN.md#slice-6--the-shadow-edge-number).
+
+### Compare mode (slice 7)
+
+"Compare: Schwarzschild vs Kerr" splits the frame and renders a = 0 into the
+left viewport and the slider's a into the right, from one camera, at one mass
+and accretion rate, with the stars on identical orbital elements — so every
+difference on screen is the spin's doing and nothing else's. Neither half is
+faked or mirrored: the scene pass runs twice with a different a, so both are the
+full per-pixel geodesic renderer, and it is close to free because the two
+half-width draws cover the pixel count the single one did.
+
+Each half gets its own traced shadow outline (7b), its own potential inset and
+funnel at its own spin (7c), and its own orbit trails (7d) — the left ring
+closes, the right one walks. What the mode cannot show honestly it hides rather
+than fakes: gas and TDE debris are stateful and integrated at one spin, so they
+are dropped from both halves, and the clocks and callouts stay off. The full
+argument, and what the split deliberately does *not* hold constant, is in
+[`docs/DESIGN.md`](docs/DESIGN.md#slice-7--schwarzschild-vs-kerr).
+
+## File map
+
+### `src/`
 
 - `src/kerr.ts` — Kerr physics oracle: closed forms (horizon, ISCO, circular
   E/L/Ω, plunge 4-velocity), Kerr–Schild metric (raise/lower), static
@@ -300,20 +176,42 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `src/matter.ts` — star orbits + gas inspiral/plunge state, and `gasRates`,
   the (daz/dt, dR/dt) the shader sweeps backward to draw the sheared gas arcs
   (pure, tested)
+- `src/edu.ts` — educational-overlay math: unlensed world→screen projection
+  matching the shader's ray construction, proper-time rates for the static
+  camera and circular orbiters, equatorial Kerr effective potential, Bardeen
+  photon-orbit radii and the impact parameters of those orbits (which bound
+  the shadow's width, hence `shadowHorizonRatio` — how much wider than the
+  hole the black disk is, the shadow-edge callout's number), the equatorial
+  embedding profile z(r) — Flamm's paraboloid at a = 0, integrated with the
+  rim's inverse-square-root singularity split off in closed form — `Trail`,
+  the fixed-size ring buffer of (position, time) samples behind the orbit
+  trails, and the shadow-edge finder: the on-screen capture boundary, located
+  by bisecting CPU rays launched exactly as the shader launches them, exposed
+  as a generator yielding per trace so the render loop can drain it against a
+  time budget, plus the callout geometry: which disk lobe is beamed toward
+  the camera (from the same prograde `uCircCart` the shader's disk shift is
+  built on) and how nearly a star sits behind the hole (pure, tested)
 - `src/compare.ts` — slice 7's split-screen layout math: the two equal
   viewports, their midpoint, and each side's name (pure, tested). Both halves
   get exactly the same width — the gutter absorbs the odd pixel — because
   unequal widths mean unequal aspect ratios, which would scale the two shadows
   differently and forge a difference the spin didn't make. The split starts
   clear of the control panel: splitting the whole frame puts the left half's
-  hole at w/4, behind the panel on any window under ~1000 px. `splitViewports`
-  is called twice per frame from main.ts — once in scene-target px for
-  `gl.viewport`, and once in CSS px to place 7c's per-side insets. The insets
-  re-derive their split rather than dividing the GL one back out by the render
-  scale, which the 7b outline may *not* do: the outline traces the drawn disk
-  and has to land on the pixels the shader marched, while an inset only has to
-  sit inside a half. Being pure in `clientWidth` is what lets the grip
-  hit-test call it from a pointer handler, outside the render loop
+  hole at w/4, behind the panel on any window under ~1000 px.
+  `splitViewports` is called twice per frame — once from main.ts in
+  scene-target px for `gl.viewport`, and once from `insets.ts`'s `splitCss` in
+  CSS px to place 7c's per-side insets. The insets re-derive their split rather
+  than dividing the GL one back out by the render scale, which the 7b outline
+  may *not* do: the outline traces the drawn disk and has to land on the pixels
+  the shader marched, while an inset only has to sit inside a half
+- `src/insets.ts` — where the two draggable insets sit and which one a pointer
+  is over: the panel sizes, each side's band, the boxes and their grip corners,
+  the hit-test and the drag's scale (pure, tested). Pure in the frame's CSS
+  size and the knobs' values, which is what lets the grip hit-test run from a
+  pointer handler, outside the render loop. It owns the panel geometry rather
+  than hud.ts, because the layout and the hit box must agree with what is drawn
+  to the pixel — and that keeps it clear of the DOM-only module, so a test can
+  import it
 - `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
@@ -324,50 +222,32 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   target scales; the HUD canvas keeps true DPR, so overlays stay sharp over
   a half-res scene. Only the low preset touches the march itself (shorter
   step budget, coarser arc length — a softer photon ring for a linear
-  saving). The default preset is byte-identical to the pre-cap renderer.
+  saving). The default preset is byte-identical to the pre-cap renderer
 - `src/camera.ts` — orbit controls (plus the `claimed` hook that lets a HUD
   handle take a pointerdown before it becomes an orbit drag)
-- `src/edu.ts` — educational-overlay math: unlensed world→screen projection
-  matching the shader's ray construction, proper-time rates for the static
-  camera and circular orbiters, equatorial Kerr effective potential, Bardeen
-  photon-orbit radii and the impact parameters of those orbits (which bound
-  the shadow's width, hence `shadowHorizonRatio` — how much wider than the
-  hole the black disk is, the shadow-edge callout's number), the equatorial
-  embedding profile z(r) —
-  Flamm's paraboloid at a = 0, integrated with the rim's inverse-square-root
-  singularity split off in closed form — `Trail`, the fixed-size ring
-  buffer of (position, time) samples behind the orbit trails, and the
-  shadow-edge finder: the on-screen capture boundary, located by bisecting
-  CPU rays launched exactly as the shader launches them, exposed as a
-  generator yielding per trace so the render loop can drain it against a
-  time budget, plus the callout geometry: which disk lobe is beamed toward
-  the camera (from the same prograde `uCircCart` the shader's disk shift is
-  built on) and how nearly a star sits behind the hole (pure, tested)
+- `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
   funnel, orbit trails, dashed shadow outline, and the callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
   other, with all copy in one `CALLOUT_COPY` table — every line of it fixed
   but the shadow's ratio, which `setShadowSpin` rewrites per spin; DOM-only,
-  verified by eye).
-  `drawTrails` takes the strip its paths belong to — the whole width normally,
-  one half when comparing (7d) — projects at that strip's aspect and clips to
-  it, so no side can draw a path across the divider.
-  The potential and embedding insets are drag-resizable from the corner facing
-  the scene: the resize is one `ctx.scale` around the whole panel rather than a
-  reflow, so the plots keep the proportions they were tuned at and only the
-  grip itself is drawn at constant screen size. Both take their spin as an
-  argument and draw one spacetime, which is what let 7c place a copy per side
-  without either of them learning that compare mode exists — the placement,
-  the per-side spin and the grip hit-testing all stay in main.ts. The HUD canvas
-  is `pointer-events: none` so camera drags reach the GL canvas, which means the
-  grips can never receive a pointer event themselves — main.ts hit-tests them
-  and claims the pointerdown through `attachControls`' `claimed` hook
-- `test/compare.test.ts` — checks the two viewports come out exactly equal in
-  width across odd/even frames, gutters and offsets, that they fill the region
-  and stay symmetric about its midpoint, that they are integers even after a
-  fractional quality scale, and that both halves' centres clear the panel
-  column at a narrow window (the regression the x0 offset exists for)
+  verified by eye). `drawTrails` takes the strip its paths belong to — the
+  whole width normally, one half when comparing (7d) — projects at that
+  strip's aspect and clips to it, so no side can draw a path across the
+  divider. The insets' resize is one `ctx.scale` around the whole panel rather
+  than a reflow, so the plots keep the proportions they were tuned at and only
+  the grip itself is drawn at constant screen size. Both insets take their spin
+  as an argument and draw one spacetime, which is what let 7c place a copy per
+  side without either of them learning that compare mode exists — the
+  placement and the per-side spin stay in main.ts, the layout and hit-testing
+  in insets.ts. The HUD canvas is `pointer-events: none` so camera drags reach
+  the GL canvas, which means the grips can never receive a pointer event
+  themselves — main.ts hit-tests them and claims the pointerdown through
+  `attachControls`' `claimed` hook
+
+### `test/`
+
 - `test/kerr.test.ts` — closed-form checks (horizon/ISCO/E/L identities),
   a = 0 deflection match against lens.ts, photons held on the a = 0.9
   prograde/retrograde circular photon orbits, frame-dragging capture
@@ -389,6 +269,11 @@ an Einstein ring; the far-side jet base wraps around the shadow):
 - `test/astro.test.ts` — unit conversions against known values (Sgr A*
   horizon), T ∝ ṁ^(1/4) M^(-1/4) scalings, tidal-radius values and the
   ~1.1e8 M☉ Hills mass, flare rise/peak/t^(-5/3) decay
+- `test/tde.test.ts` — timelike stepper holds a circular orbit at its exact
+  period (norm conserved), raise∘lower = id, disruption at r_t with a
+  bound/unbound energy spread, bound debris loops out and falls back while
+  unbound escapes, swallowed-whole above the Hills mass, exact E
+  conservation along debris geodesics
 - `test/edu.test.ts` — screen projection against hand-built frustum points
   (center, top edge with y flip, behind-camera cull, aspect scaling), clock
   rates tied to the rendering tetrad's u^t, effective potential cross-checked
@@ -398,11 +283,19 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   Schwarzschild angular radius (sin θ = 3√3·√(1−2/r)/r, circular to 1e-6,
   and at the app's widescreen aspect), the Kerr D-shape's x-offset with
   y-symmetry, the looks-away valid=false path, and incremental ≡ one-shot
-- `test/tde.test.ts` — timelike stepper holds a circular orbit at its exact
-  period (norm conserved), raise∘lower = id, disruption at r_t with a
-  bound/unbound energy spread, bound debris loops out and falls back while
-  unbound escapes, swallowed-whole above the Hills mass, exact E
-  conservation along debris geodesics
+- `test/compare.test.ts` — checks the two viewports come out exactly equal in
+  width across odd/even frames, gutters and offsets, that they fill the region
+  and stay symmetric about its midpoint, that they are integers even after a
+  fractional quality scale, and that both halves' centres clear the panel
+  column at a narrow window (the regression the x0 offset exists for)
+- `test/insets.test.ts` — checks neither half's inset band crosses the divider,
+  that both insets stay bottom-anchored and grow inward at every scale, that
+  the grip sits on the corner facing the middle of the screen and its halo
+  forgives 5 px and not 6, that the funnel wins an overlapping grab because it
+  is drawn last, that a hidden inset cannot be grabbed, and that the drag
+  averages its two axes and clamps to the readable range. The widths at which
+  the two insets touch are pinned as numbers: 1435 px while comparing, 852 px
+  in single view
 
 ## Slice roadmap
 
@@ -418,7 +311,7 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    geodesic debris streams and a t^(-5/3) flare ✅
 6. **Educational overlays** — clocks, potentials, physical-vs-artistic knob
    labels, embedding diagram, orbit trails, shadow/photon-ring annotation,
-   callout mode (detailed sub-slice plan in `PLAN-slice-6.md`) ✅
+   callout mode ✅
    - 6a HUD infrastructure + knob provenance badges ✅
    - 6b clocks — gravitational + velocity time dilation ✅
    - 6c effective-potential inset — barrier, ISCO minimum, live TDE energies ✅
@@ -436,35 +329,10 @@ an Einstein ring; the far-side jet base wraps around the shadow):
      star passes nearly behind the hole ✅
 7. **Schwarzschild vs Kerr** — a split-screen mode that renders a = 0 and the
    spin slider's a side by side from one camera, so frame dragging shows up by
-   contrast rather than by explanation
+   contrast rather than by explanation ✅
    - 7a split-screen scene: two viewports, one FBO, per-side spin ✅
    - 7b shadow outline traced per side (the circle vs the D-shape) ✅
    - 7c potential & embedding insets per side, each at its half's spin ✅
    - 7d orbit trails per side — the left ring closes, the right one walks ✅
 
-**Shadow-edge sizing.** The callout quotes how much wider the black disk is
-than the hole, and that ratio is a function of spin: the horizon shrinks as `a`
-climbs while the shadow barely does. It had been fixed at "about 2.6×", which
-is right only at a = 0 (a bug that predated slice 7 and lived in single view,
-fixed after it). `edu.ts`'s `shadowHorizonRatio` now supplies it per spin, and
-`hud.ts`'s `setShadowSpin` rewrites the line when the slider moves.
-
-The ratio is analytic and spin-only, deliberately not measured off the traced
-outline. The shadow's width across the equatorial plane is bounded by the two
-equatorial photon orbits, whose impact parameters `photonImpactParameter` gives
-in closed form; `b = L/E` is conserved along a null geodesic, so this is the
-shadow's true size, free of the camera. Reading it off `findShadowEdge` instead
-would have dragged in the camera's distance and pitch, and the number would
-drift as the user zoomed. (An earlier note here quoted 2.49× / 3.23× / 4.11×
-"measured off the tracer at the default camera". Those came from a flat-space
-`camDist·sinθ` that drops the `√(1 − 2/r)` redshift factor, so each ran ~4% low;
-the exact values are 2.598× at a = 0, 3.370× at a = 0.9 and 4.283× at a = 0.998,
-reaching 4.5× at a = 1.) `test/edu.test.ts` ties the two together: at a distant
-camera the traced outline's equatorial extremes match `photonImpactParameter` to
-0.2%, so the quoted number and the drawn shape are the same shadow.
-
-Two things the copy's "about" is carrying. The ratio is measured edge-on, and
-tilting toward the pole rounds the shadow out and widens it by up to ~6% at
-extreme spin — far less than the 2.6→4.5 spread across spin itself, and the
-pitch limit is the only place it shows. The shadow is also a D at high spin, so
-its "width" is the widest way across, not a diameter.
+The roadmap is complete. There is no slice 8 queued.

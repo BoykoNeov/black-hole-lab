@@ -1,5 +1,38 @@
 # Slice 6 plan — Educational overlays
 
+> **Archived — historical.** Slice 6 shipped in full (6a–6g); this is the plan
+> it was built from, not a description of what was built. It is kept for the
+> record of *why* the sub-slices were cut the way they were. For what the
+> overlays actually do, read `README.md` and the code; for the design rationale
+> that survived, `docs/DESIGN.md`.
+>
+> **Do not trust the physics prose below.** The sub-slice breakdown, file lists
+> and ground rules held up, but the hand-derived physics did not: five claims
+> were confirmed wrong during implementation, and every one would have shipped a
+> visible lie. Where the plan and the code disagree, the code has been right 5/5
+> times — it reasons against the `src/kerr.ts` oracles (`circEL`, `ksRadius`,
+> `buildStaticTetrad`) and the shader, while the plan reasons in prose. The
+> known-bad claims:
+>
+> - **6c, V_eff:** the plan's `gamma = 1 - 2/r + L²/r² - 2L²/r³` drops the
+>   `a²/r²` term. Correct is `(L² + a²)/r²`; the plan's form disagrees with the
+>   `circEL` oracle by ~1% at a = 0.7–0.9, the fixed one matches to 1e-9.
+> - **6d, embedding:** "spin flattens the throat" is backwards. z(6) = 5.66 at
+>   a = 0 against 6.31 at a = 0.9 — the wall is locally gentler, but r+ drops
+>   from 2 to 1.436 and the added range sits where the integrand diverges.
+> - **6g, `approachingSign`:** "the sign flips at yaw + π" — it does not.
+>   `cameraBasis` builds `right = cross(fwd, +y)`, so camPos and right flip
+>   together; the approaching lobe is *always* screen-left.
+> - **6g, jet copy:** "~16× brighter than its twin" is the δ² value at 45°,
+>   but the shader cubes the shift (~65× at 45°, ~1900× nose-on, clamped to
+>   ~180×). Shipped as words, not a number.
+> - **6g, counter-jet copy:** "clamped for visibility" is backwards — `jetEmit`
+>   clamps the *bright* jet's g at 1.6, compressing contrast rather than
+>   lifting the far one.
+>
+> The tell for a sixth: any claim carrying a *number* or a *direction/sign*.
+> Deliberate deviations from this plan are flagged in code comments at each site.
+
 This plan breaks slice 6 ("educational overlays") into seven small sub-slices,
 **6a–6g**, each independently shippable. It is written to be executed by an AI
 model working one sub-slice at a time. Do them in order: 6a is infrastructure
