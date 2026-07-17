@@ -162,6 +162,74 @@ float ksRadius(vec3 p) {
   return sqrt(0.5 * (q + sqrt(q * q + 4.0 * uSpin * uSpin * p.y * p.y)));
 }
 
+// ---------- analytic capture: the fate the march cannot afford ----------
+// Mirrors kerr.ts rayConstants/radialPotential/rayCaptured; keep them in sync.
+// The oracle there is the tested one, and test/edu.test.ts pins this criterion
+// as the edge the march CONVERGES to as its budget grows.
+
+// Carter's q = Q/E^2. The textbook form divides by sin^2(theta), which a
+// face-on camera sits exactly on; the Lagrange identity cancels it away and
+// leaves this polynomial, regular everywhere. See kerr.ts for the derivation.
+float carterQ(vec3 p, vec3 mv, float mt) {
+  float r2 = ksRadius(p) * ksRadius(p);
+  float a2 = uSpin * uSpin;
+  float qE2 = (p.y * p.y / r2) * ((r2 + a2) * (mv.x * mv.x + mv.z * mv.z) - a2 * mt * mt)
+            - 2.0 * p.y * mv.y * (p.x * mv.x + p.z * mv.z)
+            + (r2 - p.y * p.y) * mv.y * mv.y;
+  return qE2 / (mt * mt);
+}
+
+// R(r)/E^2 = r^4 + c2 r^2 + 2k r - a^2 q. The constant term is -a^2 q in
+// closed form; assembling it as (a^2-a*lambda)^2 - a^2 k instead would cancel
+// away three of float32's seven digits right at the critical curve.
+float radialPotential(float r, float lambda, float q) {
+  float a = uSpin;
+  float k = (lambda - a) * (lambda - a) + q;
+  float c2 = 2.0 * a * a - 2.0 * a * lambda - k;
+  return ((r * r + c2) * r + 2.0 * k) * r - a * a * q;
+}
+
+float cbrt1(float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }
+
+// Does this ray end on the horizon? Exactly, and without a single step.
+//
+// A ray needs ~(1/gamma) ln(1/delta) half-orbits to settle its fate at offset
+// delta from the critical curve, so the march NEVER resolves the edge — the
+// steps diverge there, whatever the budget. But fate is not an integration
+// result: lambda and q fix it. The ray plunges iff R stays positive from the
+// camera down to r+. R(r+) >= 0 and R(camera) > 0, so a turning point can only
+// show up as a dip through a local minimum, and the minima are the roots of
+// R'/4 = r^3 + (c2/2) r + k/2.
+bool capturedByConstants(float lambda, float q, float rCam) {
+  float a = uSpin;
+  float k = (lambda - a) * (lambda - a) + q;
+  float pc = 0.5 * (2.0 * a * a - 2.0 * a * lambda - k);
+  float sc = 0.5 * k;
+
+  float roots[3];
+  int n = 1;
+  float disc = 0.25 * sc * sc + (pc * pc * pc) / 27.0;
+  if (pc >= 0.0 || disc > 0.0) {
+    float rt = sqrt(max(disc, 0.0));
+    roots[0] = cbrt1(-0.5 * sc + rt) + cbrt1(-0.5 * sc - rt);
+    roots[1] = roots[0];
+    roots[2] = roots[0];
+  } else {
+    float m = 2.0 * sqrt(-pc / 3.0);
+    float th = acos(clamp((3.0 * sc) / (pc * m), -1.0, 1.0)) / 3.0;
+    roots[0] = m * cos(th);
+    roots[1] = m * cos(th - 2.0943951023931953);
+    roots[2] = m * cos(th - 4.1887902047863905);
+    n = 3;
+  }
+  for (int i = 0; i < 3; i++) {
+    if (i >= n) break;
+    if (roots[i] > uHorizon && roots[i] < rCam
+        && radialPotential(roots[i], lambda, q) < 0.0) return false;
+  }
+  return true;
+}
+
 // f = 2r^3/(r^4 + a^2 y^2) and the spatial null vector l (l_t = 1).
 void ksFL(vec3 p, out float f, out vec3 l) {
   float a = uSpin;
@@ -563,13 +631,18 @@ void main() {
     vec3 mv = mC.yzw;
     vec3 p = uCamPos;
     float lam = p.z * mv.x - p.x * mv.z; // conserved axial momentum
+    // The launch is where the constants are exact — nothing has drifted yet.
+    float lambdaC = -lam / mt;
+    float qC = carterQ(p, mv, mt);
+    float rCam = ksRadius(p);
     float rStop = uHorizon + 0.02;
     bool crossings = uDiskOn > 0.5 || uGasOn > 0.5;
 
     bool escaped = false;
+    bool settled = false; // the march reached a verdict of its own
     haveSky = false;
     for (int i = 0; i < ${MARCH_MAX_STEPS}; i++) {
-      if (i >= uMaxSteps) break; // budget spent = winding: falls through as captured
+      if (i >= uMaxSteps) break; // budget spent — the analytic fate decides below
       float r = ksRadius(p);
       vec3 dp1, dm1;
       geoDeriv(p, mv, mt, dp1, dm1);
@@ -606,19 +679,23 @@ void main() {
       p = pN;
       mv = mvN;
       float rN = ksRadius(p);
-      if (rN < rStop || isnan(rN)) break; // fell through the horizon: captured
+      if (rN < rStop || isnan(rN)) { settled = true; break; } // through the horizon
       if (rN > 64.0 && dot(p, mv) > 0.0) {
         escaped = true;
+        settled = true;
         break;
       }
-      if (thru < 0.012) break; // disk is opaque here anyway
+      if (thru < 0.012) { settled = true; break; } // disk is opaque here anyway
     }
-    // Loop exhaustion = winding at the photon shell: leave as captured. What
-    // that costs is set by the photon orbit's Lyapunov exponent, and at high
-    // spin it is not small: the prograde orbit's gamma falls to 0.19 at
-    // a = 0.998, so its rays linger and blow this budget while still outside
-    // the true shadow, painting ~50px of extra black on that edge in a
-    // sky-lit view. See docs/DESIGN.md, "what gamma costs the renderer".
+
+    // Loop exhaustion means the ray was still winding at the photon shell — it
+    // is NOT evidence of capture, and taking it as such is what painted ~50px
+    // of escaping light black on the a = 0.998 prograde edge. No budget can fix
+    // that: reaching a verdict by marching costs ~(1/gamma) ln(1/delta)
+    // half-orbits, which diverges at the edge, and gamma there is 0.19. So do
+    // not ask the march. lambda and q already know, and cost nothing.
+    // See docs/DESIGN.md, "what gamma costs the renderer".
+    if (!settled && !capturedByConstants(lambdaC, qC, rCam)) escaped = true;
 
     if (escaped) {
       vec3 dpF, dmF;

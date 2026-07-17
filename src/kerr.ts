@@ -577,3 +577,110 @@ export function traceRayKerr(
     H: hamiltonian(p, a, mt, mv),
   };
 }
+
+// ---------- analytic capture: the fate a march cannot afford ----------
+
+/**
+ * A ray's two conserved impact parameters, the pair that fixes its fate.
+ *
+ * lambda = L_z/E is prograde-positive (the hole spins about +y, and prograde
+ * is world azimuth DECREASING, so the axial Killing vector d/dphi contributes
+ * +lam = z m_x - x m_z). q = Q/E^2 is Carter's constant. Both are quotients,
+ * so the overall sign of m drops out and it does not matter that m is the
+ * TIME-REVERSED tangent: E = nu*m_t and L_z = -nu*m_phi flip together.
+ */
+export interface RayConstants {
+  lambda: number;
+  q: number;
+}
+
+/**
+ * lambda and q from a launch point and covariant momentum.
+ *
+ * The textbook Q = p_theta^2 + cos^2(th) (L_z^2/sin^2(th) - a^2 E^2) is
+ * singular on the spin axis, which a face-on camera sits exactly on. It need
+ * not be. Kerr-Schild shares r and theta with Boyer-Lindquist and mixes only
+ * t and phi with r, so p_theta is the same covector in both, and the Cartesian
+ * map x,z = (coeffs in r,phi)*sin(th), y = r cos(th) gives it directly:
+ *     p_theta = cot(th) (x m_x + z m_z) - r sin(th) m_y.
+ * Squaring that and adding cot^2(th) m_phi^2 lets the Lagrange identity
+ *     (x m_x + z m_z)^2 + (z m_x - x m_z)^2 = (x^2 + z^2)(m_x^2 + m_z^2)
+ * collect the two cot^2 terms, and x^2 + z^2 = (r^2+a^2) sin^2(th) cancels the
+ * sin^2 out of the denominator for good. What is left is a polynomial, regular
+ * everywhere outside r = 0 — no axis case, no epsilon.
+ */
+export function rayConstants(pos: V3, mCov: V4, a: number): RayConstants {
+  const [x, y, z] = pos;
+  const [mt, mx, my, mz] = mCov;
+  const r = ksRadius(pos, a);
+  const r2 = r * r;
+  const a2 = a * a;
+  const qE2 =
+    ((y * y) / r2) * ((r2 + a2) * (mx * mx + mz * mz) - a2 * mt * mt) -
+    2 * y * my * (x * mx + z * mz) +
+    (r2 - y * y) * my * my;
+  return { lambda: -(z * mx - x * mz) / mt, q: qE2 / (mt * mt) };
+}
+
+/**
+ * The Kerr radial potential R(r)/E^2 = (r^2+a^2-a*lambda)^2 - Delta*k, with
+ * k = (lambda-a)^2 + q. Sigma^2 (dr/dlambda)^2 = R, so a ray only lives where
+ * R >= 0 and turns around where it vanishes. Expanded, it is a quartic with no
+ * cubic term: r^4 + c2 r^2 + 2k r - a^2 q.
+ *
+ * That constant term is worth the algebra it took. Expanding the square gives
+ * it as (a^2 - a*lambda)^2 - a^2 k, which near the critical curve is a
+ * difference of two nearly equal numbers — at a = 0.998 it is 1.188 - 1.185,
+ * three of float32's seven digits gone exactly where the shader needs them. It
+ * cancels in closed form: a^2(a-lambda)^2 - a^2[(lambda-a)^2 + q] = -a^2 q.
+ *
+ * Even in the overall sign of the momentum, so the backward ray the lab traces
+ * and the forward photon it stands for share one potential.
+ */
+export function radialPotential(r: number, lambda: number, q: number, a: number): number {
+  const k = (lambda - a) * (lambda - a) + q;
+  const c2 = 2 * a * a - 2 * a * lambda - k;
+  return ((r * r + c2) * r + 2 * k) * r - a * a * q;
+}
+
+/** Real roots of the depressed cubic t^3 + p t + s. */
+function cubicRealRoots(p: number, s: number): number[] {
+  const disc = (s * s) / 4 + (p * p * p) / 27;
+  if (p >= 0 || disc > 0) {
+    const rt = Math.sqrt(Math.max(disc, 0));
+    return [Math.cbrt(-s / 2 + rt) + Math.cbrt(-s / 2 - rt)];
+  }
+  const m = 2 * Math.sqrt(-p / 3);
+  const th = Math.acos(Math.min(1, Math.max(-1, (3 * s) / (p * m)))) / 3;
+  return [0, 1, 2].map((j) => m * Math.cos(th - (2 * Math.PI * j) / 3));
+}
+
+/**
+ * Whether a ray launched inward from camPos ends on the horizon — exactly, and
+ * without integrating a single step.
+ *
+ * This is what the march budget cannot buy. A ray near the photon shell needs
+ * ~(1/gamma) ln(1/delta) half-orbits to resolve its fate at offset delta from
+ * the critical curve, so the steps needed DIVERGE at the edge and no finite
+ * budget (or step rule) ever reaches it. But fate is not an integration
+ * result: it is fixed by lambda and q alone. The ray plunges iff R stays
+ * positive all the way down — one turning point above the horizon and it
+ * reflects and escapes instead.
+ *
+ * R(r+) = (r+^2 + a^2 - a*lambda)^2 >= 0 and R(rCam) > 0 (the ray is there),
+ * so any roots between them come in pairs and R must dip through a local
+ * minimum to reach them. Testing the sign of R at its interior critical points
+ * therefore settles it, and the critical points are the roots of the cubic
+ * R'/4 = r^3 + (c2/2) r + k/2.
+ */
+export function rayCaptured(camPos: V3, mCov: V4, a: number): boolean {
+  const { lambda, q } = rayConstants(camPos, mCov, a);
+  const k = (lambda - a) * (lambda - a) + q;
+  const c2 = 2 * a * a - 2 * a * lambda - k;
+  const rCam = ksRadius(camPos, a);
+  const rPlus = horizonRadius(a);
+  for (const rc of cubicRealRoots(c2 / 2, k / 2)) {
+    if (rc > rPlus && rc < rCam && radialPotential(rc, lambda, q, a) < 0) return false;
+  }
+  return true;
+}

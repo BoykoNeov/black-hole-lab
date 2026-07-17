@@ -16,6 +16,9 @@ import {
   plungeRates,
   plungeUBL,
   plungeUKS,
+  radialPotential,
+  rayCaptured,
+  rayConstants,
   rk4Step,
   traceRayKerr,
   uCircCart,
@@ -413,6 +416,138 @@ describe("exact shift helpers", () => {
         expect(gtt * ut + gtp * ut * om).toBeCloseTo(-E, 10);
         expect(gtp * ut + gpp * ut * om).toBeCloseTo(L, 10);
       }
+    }
+  });
+});
+
+/**
+ * A ray from an equatorial camera on +z, offset (dx, dy) in its image plane.
+ * dy = 0 keeps it in the disk plane, where q = 0 and lambda is the whole story.
+ * dx < 0 is the PROGRADE side: lam = z m_x there, so lambda = -lam/mt > 0.
+ */
+function camRay(a: number, dist: number, dx: number, dy: number): { pos: V3; m: V4 } {
+  const pos: V3 = [0, 0, dist];
+  const tet = buildStaticTetrad(pos, a, [1, 0, 0], [0, 1, 0], [0, 0, -1]);
+  const inv = 1 / Math.hypot(dx, dy, 1);
+  const m: V4 = [0, 0, 0, 0];
+  for (let i = 0; i < 4; i++) {
+    m[i] =
+      dx * inv * tet.rightCov[i] +
+      dy * inv * tet.upCov[i] +
+      inv * tet.fwdCov[i] -
+      tet.uCov[i];
+  }
+  return { pos, m };
+}
+
+/** Bardeen's equatorial photon orbits: prograde takes arccos(-a). */
+const rPhPro = (a: number) => 2 * (1 + Math.cos((2 / 3) * Math.acos(-a)));
+const rPhRetro = (a: number) => 2 * (1 + Math.cos((2 / 3) * Math.acos(a)));
+const lambdaCrit = (r: number, a: number) =>
+  -(r * r * r - 3 * r * r + a * a * r + a * a) / (a * (r - 1));
+
+describe("analytic capture — the fate a march cannot afford", () => {
+  it("recovers lambda and q as constants of the motion", () => {
+    // The real test of the Carter formula: trace a ray that winds hard past the
+    // hole and re-read its constants from the far end's position and momentum.
+    // The residual is RELATIVE and belongs to the stepper, not the formula —
+    // 4000 RK4 steps drift the momentum by ~1e-6 of itself, and rayConstants
+    // only reports what it is handed. Pinning it absolutely would be pinning
+    // the integrator's error budget in the Carter constant's test.
+    for (const a of [0, 0.5, 0.998]) {
+      // b ~ 8.7 at dist 25: outside even the retrograde critical 6.99 of
+      // a = 0.998, so every one of these escapes at every spin and the trace
+      // has a clean far end to re-read the constants from.
+      for (const [dx, dy] of [
+        [-0.34, 0.07],
+        [0.33, -0.1],
+        [0.06, 0.35],
+      ]) {
+        const { pos, m } = camRay(a, 25, dx, dy);
+        const at0 = rayConstants(pos, m, a);
+        const t = traceRayKerr(pos, m, a, { rEscape: 64, maxSteps: 4000 });
+        expect(t.escaped).toBe(true);
+        const at1 = rayConstants(t.pos, [t.mt, ...t.mv] as V4, a);
+        expect(Math.abs(at1.lambda / at0.lambda - 1)).toBeLessThan(1e-5);
+        expect(Math.abs(at1.q / at0.q - 1)).toBeLessThan(1e-5);
+      }
+    }
+  });
+
+  it("stays regular on the spin axis, where the textbook Q divides by zero", () => {
+    // A face-on camera sits exactly at sin(theta) = 0. The cancelled form has
+    // no case for it and no epsilon; it simply has to be finite and conserved.
+    const pos: V3 = [0, 25, 0];
+    const tet = buildStaticTetrad(pos, 0.9, [1, 0, 0], [0, 0, 1], [0, -1, 0]);
+    const m: V4 = [0, 0, 0, 0];
+    const inv = 1 / Math.hypot(0.2, 1);
+    for (let i = 0; i < 4; i++) {
+      m[i] = 0.2 * inv * tet.rightCov[i] + inv * tet.fwdCov[i] - tet.uCov[i];
+    }
+    const at0 = rayConstants(pos, m, 0.9);
+    expect(Number.isFinite(at0.q)).toBe(true);
+    expect(Number.isFinite(at0.lambda)).toBe(true);
+    const t = traceRayKerr(pos, m, 0.9, { rEscape: 64, maxSteps: 4000 });
+    const at1 = rayConstants(t.pos, [t.mt, ...t.mv] as V4, 0.9);
+    expect(Math.abs(at1.q / at0.q - 1)).toBeLessThan(1e-5);
+  });
+
+  it("puts the equatorial capture edge on Bardeen's photon orbit", () => {
+    // Where capture flips, lambda must be the closed-form critical impact
+    // parameter of the photon orbit that edge belongs to: +2.09 prograde and
+    // -6.99 retrograde at a = 0.998, the textbook +2/-7 at extremal.
+    for (const a of [0.5, 0.9, 0.998]) {
+      for (const side of [-1, 1]) {
+        let lo = 0.001;
+        let hi = 0.6;
+        for (let i = 0; i < 60; i++) {
+          const mid = 0.5 * (lo + hi);
+          if (rayCaptured(...(({ pos, m }) => [pos, m, a] as const)(camRay(a, 25, side * mid, 0)))) {
+            lo = mid;
+          } else hi = mid;
+        }
+        const { pos, m } = camRay(a, 25, side * 0.5 * (lo + hi), 0);
+        const r = side < 0 ? rPhPro(a) : rPhRetro(a);
+        expect(rayConstants(pos, m, a).lambda).toBeCloseTo(lambdaCrit(r, a), 6);
+      }
+    }
+  });
+
+  it("puts Schwarzschild's edge at b = sqrt(27)", () => {
+    // a = 0 has no frame dragging to split the two, and the potential's double
+    // root is the textbook 3*sqrt(3) at r = 3.
+    expect(radialPotential(3, Math.sqrt(27), 0, 0)).toBeCloseTo(0, 9);
+    let lo = 0.001;
+    let hi = 0.6;
+    for (let i = 0; i < 60; i++) {
+      const mid = 0.5 * (lo + hi);
+      const { pos, m } = camRay(0, 25, mid, 0);
+      if (rayCaptured(pos, m, 0)) lo = mid;
+      else hi = mid;
+    }
+    const { pos, m } = camRay(0, 25, 0.5 * (lo + hi), 0);
+    expect(Math.abs(rayConstants(pos, m, 0).lambda)).toBeCloseTo(Math.sqrt(27), 6);
+  });
+
+  it("agrees with the 4000-step trace on every ray it can afford to settle", () => {
+    // The tracer is only an oracle where it is not itself budget-starved, so
+    // this sweeps rays and skips the band the 4000-step trace cannot resolve
+    // either: the ones it leaves unescaped while the analytic fate says they
+    // get out. Everywhere else the two must agree ray for ray.
+    for (const a of [0, 0.5, 0.998]) {
+      let checked = 0;
+      for (let i = -40; i <= 40; i++) {
+        for (const dy of [0, 0.06, -0.13]) {
+          const dx = 0.012 * i;
+          const { pos, m } = camRay(a, 25, dx, dy);
+          const analytic = rayCaptured(pos, m, a);
+          const traced = !traceRayKerr(pos, m, a, { rEscape: 64, maxSteps: 4000 }).escaped;
+          if (traced && !analytic) continue; // the tracer's own budget, not a disagreement
+          expect(analytic, `a=${a} dx=${dx} dy=${dy}`).toBe(traced);
+          checked++;
+        }
+      }
+      expect(checked).toBeGreaterThan(230);
     }
   });
 });

@@ -7,6 +7,7 @@ import {
   horizonRadius,
   iscoRadius,
   ksRadius,
+  rayCaptured,
   traceRayKerr,
   uCircCart,
 } from "../src/kerr";
@@ -396,7 +397,11 @@ describe("photonOrbitLyapunov against traced rays", () => {
  * a = 0.998 this returns 53.5px against 51px measured on the rendered frame
  * through tools/visual/harness.mjs, leaving nothing for precision to explain.
  */
-function edgeNdcAt(a: number, side: number, maxSteps: number): number {
+function edgeNdcBy(
+  a: number,
+  side: number,
+  fate: (camPos: V3, m: V4) => boolean
+): number {
   const cam = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 30 });
   const tanHalfFov = Math.tan((30 * Math.PI) / 360);
   const aspect = 1280 / 800;
@@ -408,8 +413,7 @@ function edgeNdcAt(a: number, side: number, maxSteps: number): number {
     for (let i = 0; i < 4; i++) {
       m[i] = vx * inv * tet.rightCov[i] + inv * tet.fwdCov[i] - tet.uCov[i];
     }
-    // rEscape 64 is the shader's own escape radius, not this app's camDist + 40
-    return !traceRayKerr(cam.pos, m, a, { rEscape: 64, maxSteps }).escaped;
+    return fate(cam.pos, m);
   };
   let lo = 0;
   let hi = 0.05;
@@ -423,6 +427,15 @@ function edgeNdcAt(a: number, side: number, maxSteps: number): number {
     else hi = mid;
   }
   return 0.5 * (lo + hi);
+}
+
+function edgeNdcAt(a: number, side: number, maxSteps: number): number {
+  // rEscape 64 is the shader's own escape radius, not this app's camDist + 40
+  return edgeNdcBy(
+    a,
+    side,
+    (camPos, m) => !traceRayKerr(camPos, m, a, { rEscape: 64, maxSteps }).escaped
+  );
 }
 
 describe("the march budget's cost, against gamma", () => {
@@ -464,6 +477,79 @@ describe("the march budget's cost, against gamma", () => {
       expect(cases[i].gamma).toBeLessThan(cases[i - 1].gamma); // gamma falls
       expect(cases[i].px).toBeGreaterThan(cases[i - 1].px); // the lie grows
     }
+  });
+});
+
+/**
+ * ...and how the renderer stops paying it.
+ *
+ * Everything above is the cost of deciding fate BY MARCHING. Fate is not an
+ * integration result: lambda and q fix it, and rayCaptured reads them off the
+ * launch momentum and asks whether the radial potential has a turning point
+ * above the horizon. No steps, so no exponent, so no lie — and nothing for a
+ * bigger budget to buy, which is the point. The tests above still pass because
+ * the marched edge still moves; this is what the shader consults instead.
+ */
+describe("the analytic edge, which the budget cannot move", () => {
+  const PX = 1280 / 2;
+  const analyticEdge = (a: number, side: number) =>
+    edgeNdcBy(a, side, (camPos, m) => rayCaptured(camPos, m, a));
+
+  it("is the edge the march converges TO, from outside, as the budget grows", () => {
+    // The strongest form of the claim, and the one that says the criterion is
+    // right rather than merely stable: spend more and the marched edge walks
+    // monotonically IN and lands on the analytic one. It never crosses it. The
+    // gap is all false shadow, and it goes to zero — at a = 0.998 prograde,
+    // 54.1px -> 14.0px -> 0.61px -> 0.00px for 320 -> 1k -> 4k -> 20k steps.
+    const an = analyticEdge(0.998, -1);
+    const gaps = [320, 1000, 4000, 20000].map((ms) => (edgeNdcAt(0.998, -1, ms) - an) * PX);
+    for (let i = 1; i < gaps.length; i++) {
+      expect(gaps[i]).toBeLessThan(gaps[i - 1]);
+      expect(gaps[i]).toBeGreaterThan(-0.05); // approached from outside, never overshot
+    }
+    expect(gaps[gaps.length - 1]).toBeLessThan(0.05);
+  });
+
+  it("lands on the converged march at every spin and both edges", () => {
+    // 20000 steps is past where even the a = 0.998 prograde edge has settled.
+    for (const [a, side] of [
+      [0, +1],
+      [0, -1],
+      [0.9, +1],
+      [0.9, -1],
+      [0.998, +1],
+      [0.998, -1],
+    ] as const) {
+      const px = (analyticEdge(a, side) - edgeNdcAt(a, side, 20000)) * PX;
+      expect(Math.abs(px), `a=${a} side=${side}`).toBeLessThan(0.05);
+    }
+  });
+
+  it("is closer to the truth than the 4000-step outline the overlay draws", () => {
+    // A consequence worth pinning: 6f's traced D is not exact either. It runs
+    // at 4000 steps, which still leaves it ~0.6px outside the true edge at
+    // a = 0.998 prograde — a hundredth of the shader's error, and the reason
+    // the overlay was right to call the renderer out, but not zero.
+    const resid = (edgeNdcAt(0.998, -1, 4000) - analyticEdge(0.998, -1)) * PX;
+    expect(resid).toBeGreaterThan(0.3);
+    expect(resid).toBeLessThan(1);
+  });
+
+  it("does not move when the budget does — the whole point", () => {
+    // The march's edge is a function of maxSteps (that IS the bug). This one is
+    // not a function of anything the renderer can afford: same number at 320,
+    // at 4000, and at a budget far too small to leave the camera.
+    for (const a of [0, 0.9, 0.998]) {
+      for (const side of [-1, +1]) {
+        const edge = analyticEdge(a, side);
+        expect(edge).toBeGreaterThan(0);
+        // it never consulted a step count to begin with
+        expect(analyticEdge(a, side)).toBe(edge);
+      }
+    }
+    // and the thing it replaces demonstrably does move
+    expect(Math.abs(edgeNdcAt(0.998, -1, MARCH_MAX_STEPS) - edgeNdcAt(0.998, -1, 4000)) * PX)
+      .toBeGreaterThan(45);
   });
 });
 
