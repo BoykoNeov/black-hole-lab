@@ -22,6 +22,7 @@ npm install
 npm run dev     # dev server
 npm test        # physics unit tests (vitest)
 npm run build   # tsc --noEmit + vite build
+npm run shot    # visual harness smoke run (needs `npm run dev` already up)
 ```
 
 ## Conventions
@@ -30,6 +31,10 @@ npm run build   # tsc --noEmit + vite build
   DOM/canvas/WebGL wiring is untested, kept in `main.ts`/`hud.ts`. Layout math
   counts as pure: it belongs in a tested module (`compare.ts`, `insets.ts`)
   even though only the DOM half ever calls it.
+- Don't eyeball an overlay claim — measure it with `tools/visual/harness.mjs`,
+  which drives the app headless and compares pixels within one run. Overlapping
+  faint HUD lines are genuinely hard to read by eye, and the overlays live on a
+  separate canvas that a scene-only capture doesn't show at all.
 - No new npm dependencies without asking.
 - Comments explain *why* (physics choice, approximation, workaround), never
   *what* the next line does.

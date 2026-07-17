@@ -336,3 +336,70 @@ black disk, which stays readable and is the honest signal that the window is out
 of room. Single view passes the full canvas: its shadow label rides at the
 disk's mid-height, nowhere near the panels, and bounding it would move labels
 this change never touched.
+
+## The visual harness — measuring instead of remembering
+
+`tools/visual/` exists because every visual check before it was rebuilt from
+scratch. Playwright had been a devDependency for a while with nothing using it,
+so each session that wanted to see the thing rediscovered the same handful of
+traps — and rediscovered them by hitting them.
+
+### Why it does not diff against stored images
+
+The obvious harness stores reference PNGs and compares. It would fail
+constantly and teach us to ignore it. WebGL output is not bit-exact across
+drivers, and the scene animates on its own: stars orbit, gas spirals, the trail
+buffer rolls. Two runs are never the same frame, so a pixel-golden diff reports
+the clock as often as a regression.
+
+Every check here instead compares pixels against other pixels *from the same
+run*, which is exactly what the overlay claims need anyway. `stripDiff` leans on
+compare mode's premise — the halves share one camera and are exactly equal in
+width, so their projections are identical and the only thing that can differ is
+the spin; a non-zero distance is proof a per-side overlay is two renders and not
+one buffer drawn twice. `drift` leans on orbits — a closed one retraces its
+pixels forever, a precessing one keeps finding new ones. Neither needs a
+reference image, so neither can rot into one.
+
+The residual in `drift` is never zero and the floor is not portable: a = 0
+measures 0.41 headless here against a ~0.2 noted on a real GPU, while a walking
+node sits near 0.94 in both. Read the gap, sampled in the same run — a number
+copied out of a previous one is measuring a different machine.
+
+### Both canvases, frozen in the same frame
+
+The renderer's `__wantShot` hook takes the HUD alongside the scene, and that
+pairing is the point. The HUD is cleared and redrawn every frame, so a reader
+that grabbed it from outside afterwards would pair overlays against a scene from
+an earlier frame — and then every measurement across the two would be reading
+the time between them rather than the thing it named. The first draft did
+exactly that: `stripDiff` read its two halves from different frames and returned
+0.883 where one frame gives 0.931, the difference being the scene moving.
+
+The hook also publishes the layout it drew with, rather than the harness
+re-deriving it. `COMPARE_X0` is measured from the panel's rect at runtime and
+the CSS-to-target quality scale is local to `main.ts`; anything computing those
+from a distance is copying two numbers that move. The harness pins quality to
+`high` for the same reason in reverse — there the scene target and the HUD are
+the same size, so every measurement lives in one coordinate space instead of
+reconciling two.
+
+### What it deliberately does not do
+
+It does not start or stop the dev server: killing a process tree on Windows is
+fiddly enough that it would be the first thing to break, and a clear error
+beats a flaky teardown. It does not assert across the control surface — those
+assertions would rot with the UI and pay for nothing. It never uses playwright's
+`channel: "chrome"` or a real `userDataDir`, so `close()` can never reach a
+browser a person is actually using.
+
+Its own pixel math runs in the page rather than in node, which is what keeps
+`pngjs`/`pixelmatch` off the dependency list: shipping ImageData to node would
+mean decoding PNGs there, and that is a dependency bought for twenty lines of
+loop.
+
+One trap it cannot remove, only respect: 6f's outline is debounced 250 ms and
+then traced across frames at ~3 ms each — a full one is ~540 ms of tracing at
+a = 0.998, so about three seconds at 60 fps. `settle()` defaults above that.
+Shoot early and you get a half-traced outline, which looks exactly like a broken
+overlay and is the most convincing wrong answer in here.

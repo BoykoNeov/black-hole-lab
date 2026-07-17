@@ -302,6 +302,25 @@ argument, and what the split deliberately does *not* hold constant, is in
   the two insets touch are pinned as numbers: 1435 px while comparing, 852 px
   in single view
 
+### `tools/`
+
+Not part of the app, not run by `npm test` or `npm run build`. Plain `.mjs`
+rather than TypeScript — these need node APIs, the repo has no `@types/node`,
+and `tsconfig` covers `src` + `test`.
+
+- `tools/visual/harness.mjs` — drives the lab in headless chromium (playwright,
+  already a devDependency) and measures what it drew. Captures the scene canvas,
+  the HUD canvas and a composite of the two, all frozen from one frame, and
+  offers the measurements that make an overlay claim checkable rather than
+  eyeballed: `stripDiff` (compare mode's halves against each other) and `drift`
+  (one strip against itself over time). Assumes `npm run dev` is already
+  serving; writes PNGs outside the repo. See `docs/DESIGN.md` for why it
+  measures instead of diffing against stored images.
+- `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
+  lab, capture a non-blank composited frame and measure it, and doubles as the
+  worked example of the intended shape: capture once, then measure that frame
+  as many ways as you like.
+
 ## Slice roadmap
 
 1. **Lensed sky** — shadow, photon ring, Einstein-ring star warping, HDR bloom ✅

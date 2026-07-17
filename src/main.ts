@@ -1528,10 +1528,31 @@ function render() {
 
   // dev hook: __wantShot captures the canvas synchronously before the
   // drawing buffer is cleared (headless screenshots miss slow WebGL frames)
-  const w = window as unknown as { __wantShot?: boolean; __shot?: string };
+  const w = window as unknown as {
+    __wantShot?: boolean;
+    __shot?: string;
+    __shotHud?: string;
+    __layout?: unknown;
+  };
   if (w.__wantShot) {
     w.__wantShot = false;
     w.__shot = canvas.toDataURL("image/png");
+    // The HUD is taken in the same frame as the scene, not read live from
+    // outside: it is cleared and redrawn every frame, so a reader that grabbed
+    // it afterwards would pair overlays with a scene from an earlier one, and
+    // any measurement across the two would be reading the time between them.
+    w.__shotHud = hudCtx.canvas.toDataURL("image/png");
+    // Published with the shot rather than re-derived outside: COMPARE_X0 is
+    // measured from the panel's rect at runtime and the quality scale between
+    // CSS and target px is local to this module, so anything reading these
+    // numbers from a distance would be copying two things that move.
+    w.__layout = {
+      compare: params.compare,
+      gl: { w: canvas.width, h: canvas.height },
+      hud: { w: hudCtx.canvas.width, h: hudCtx.canvas.height },
+      css: { w: canvas.clientWidth, h: canvas.clientHeight },
+      split, // scene-target px, x/w only — y is gl.viewport's, which the HUD flips
+    };
   }
 
   if (firstFrame) {
