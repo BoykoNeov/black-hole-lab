@@ -203,6 +203,45 @@ describe("Kerr geodesic integrator", () => {
     expect(traceRayKerr([r0, 0, 0], outside, 0, { rEscape: 2000 }).escaped).toBe(true);
   });
 
+  it("winds further the closer a ray passes to the critical angle", () => {
+    const r0 = 25;
+    const t = buildStaticTetrad([r0, 0, 0], 0, [0, 0, 1], [0, 1, 0], [-1, 0, 0]);
+    const thc = thetaCrit(r0);
+    let prev = 0;
+    for (const d of [0.1, 0.03, 0.01, 0.003, 0.001]) {
+      const res = traceRayKerr(
+        [r0, 0, 0],
+        launchM(t, [Math.sin(thc + d), 0, Math.cos(thc + d)]),
+        0,
+        { rEscape: 2000 }
+      );
+      expect(res.escaped).toBe(true);
+      expect(res.winding).toBeGreaterThan(prev); // the log divergence at b_c
+      prev = res.winding;
+    }
+    expect(prev).toBeGreaterThan(1.5); // rounded the hole and come back out
+  });
+
+  it("a = 0 winding doesn't care how the camera is turned", () => {
+    // Spherical symmetry: the same launch angle from the same radius is the
+    // same ray whichever way the frame faces. The swept position angle is the
+    // only winding candidate that sees this — accumulated azimuth about +y
+    // would read the two cameras differently (the second one's rays swing
+    // through that axis), which is why the tracer reports this one.
+    const th = thetaCrit(25) + 0.01;
+    const w = (pos: V3, right: V3, up: V3, fwd: V3): number => {
+      const t = buildStaticTetrad(pos, 0, right, up, fwd);
+      const m = launchM(t, [Math.sin(th), 0, Math.cos(th)]);
+      const res = traceRayKerr(pos, m, 0, { rEscape: 2000 });
+      expect(res.escaped).toBe(true);
+      return res.winding;
+    };
+    const edge = w([25, 0, 0], [0, 0, 1], [0, 1, 0], [-1, 0, 0]);
+    const axis = w([0, 25, 0], [1, 0, 0], [0, 0, 1], [0, -1, 0]);
+    expect(edge).toBeGreaterThan(1); // a ray worth comparing, not a straight one
+    expect(axis).toBeCloseTo(edge, 9);
+  });
+
   it("holds photons on the prograde and retrograde circular photon orbits", () => {
     const a = 0.9;
     const cases = [

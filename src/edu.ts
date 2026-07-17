@@ -141,6 +141,49 @@ export function photonImpactParameter(a: number, prograde: boolean): number {
 }
 
 /**
+ * Lyapunov exponent of the equatorial circular photon orbit, per half-orbit
+ * (Delta phi = pi) — the rate at which that orbit sheds light, and so the
+ * ladder spacing of the photon ring: a ray passing the critical impact
+ * parameter b_c by db swings ~(1/gamma) ln(1/db) extra half-turns before it
+ * leaves, and each successive subring is thinner than the last by e^(-gamma).
+ *
+ * Near the double root r~ of the radial potential R(r) = (r^2+a^2-ab)^2 -
+ * Delta (b-a)^2, R ~ 1/2 R''(r~) (r-r~)^2, so with r^2 dr/dlambda = sqrt(R)
+ * and r^2 dphi/dlambda = Phi(r) the r^2 cancels and the deviation grows in
+ * azimuth at rate sqrt(R''/2)/|Phi|. One half-orbit is Delta phi = pi, hence
+ *
+ *     gamma = pi sqrt(R''(r~)/2) / |Phi(r~)|,
+ *     R''  = 12 r~^2 + 4a^2 - 4ab - 2(b-a)^2,
+ *     Phi  = (b - a) + (a/Delta)(r~^2 + a^2 - ab).
+ *
+ * Phi is written below in a rationalized form. R(r~) = 0 is exactly what
+ * defines the orbit, so r~^2 + a^2 - ab = +sqrt(Delta)|b - a| (the sign
+ * verified at a = 0 and both senses at a = 0.9), giving
+ *
+ *     Phi = (b - a) + a |b - a| / sqrt(Delta),
+ *
+ * which needs no special case as the prograde orbit merges with the horizon:
+ * Delta -> 0 sends |Phi| -> Inf and gamma -> 0 rather than through 0/0.
+ *
+ * a = 0 gives exactly pi either sense (the textbook e^(-pi) ~ 1/23 per
+ * half-orbit). Spin splits it hard — 1.22 prograde against 4.00 retrograde at
+ * a = 0.9, 0.19 against 4.08 at a = 0.998 — so at high spin the prograde edge
+ * of the ring barely fades between subrings while the retrograde edge collapses
+ * them below a pixel. This is a per-edge equatorial number, NOT one value
+ * around the whole ring: off the equatorial plane the orbits are Carter-Q
+ * spherical ones with their own exponents, so callers must say which edge they
+ * are quoting. Confirmed against ray-traced winding fits in edu.test.ts.
+ */
+export function photonOrbitLyapunov(a: number, prograde: boolean): number {
+  const r = photonOrbitRadius(a, prograde);
+  const b = photonImpactParameter(a, prograde);
+  const delta = r * r - 2 * r + a * a;
+  const rpp = 12 * r * r + 4 * a * a - 4 * a * b - 2 * (b - a) * (b - a);
+  const phi = b - a + (a * Math.abs(b - a)) / Math.sqrt(Math.max(delta, 0));
+  return (Math.PI * Math.sqrt(Math.max(rpp, 0) / 2)) / Math.abs(phi);
+}
+
+/**
  * How much wider the black disk is than the hole: the shadow's width across
  * the equatorial plane over the horizon's diameter 2 r+. The two equatorial
  * photon orbits bound that width — their impact parameters are the shadow's

@@ -440,6 +440,25 @@ export interface KerrTraceResult {
   /** Unit final travel direction (valid when escaped). */
   dir: V3;
   crossings: KerrCrossing[];
+  /**
+   * Total angle swept by the position direction over the whole trace, in
+   * half-turns (pi rad each) — how far around the hole the ray actually went.
+   *
+   * This is the winding the photon-ring ladder is measured in, and the
+   * definition is load-bearing rather than a matter of taste. The two
+   * alternatives both fail on geometry the lab really renders: counting
+   * equatorial (y) crossings is degenerate for an edge-on camera's in-plane
+   * rays, which never cross and are exactly where the equatorial Lyapunov
+   * exponent lives; accumulating azimuth about the spin axis breaks for rays
+   * that swing near the axis, where the azimuth is ill-defined. The swept
+   * position angle is frame-independent and needs neither a plane nor an axis.
+   * At a = 0, where spherical symmetry means every view must return the same
+   * exponent, only this one does: an edge-on and a face-on fit agree to five
+   * decimals (3.14570 both, against pi = 3.14159 — the ~0.1% high bias is the
+   * stepper's discretization, systematic across every spin and both edges).
+   * See test/kerr.test.ts and the Lyapunov cross-check in test/edu.test.ts.
+   */
+  winding: number;
   steps: number;
   /** Final position and covariant spatial momentum (for diagnostics). */
   pos: V3;
@@ -473,12 +492,23 @@ export function traceRayKerr(
 
   let escaped = false;
   let steps = 0;
+  let swept = 0;
   for (; steps < maxSteps; steps++) {
     const r = ksRadius(p, a);
     const d = derivs(p, a, mt, mv);
     const speed = Math.hypot(d.dp[0], d.dp[1], d.dp[2]);
     const h = stepLength(r) / Math.max(speed, 1e-9);
     const next = rk4Step(p, mv, a, mt, h);
+
+    // Angle between successive position vectors, via atan2(|cross|, dot): the
+    // steps are small, and acos of a dot product loses half its digits there.
+    const cx = p[1] * next.p[2] - p[2] * next.p[1];
+    const cy = p[2] * next.p[0] - p[0] * next.p[2];
+    const cz = p[0] * next.p[1] - p[1] * next.p[0];
+    swept += Math.atan2(
+      Math.hypot(cx, cy, cz),
+      p[0] * next.p[0] + p[1] * next.p[1] + p[2] * next.p[2]
+    );
 
     if (p[1] * next.p[1] < 0) {
       const fr = p[1] / (p[1] - next.p[1]);
@@ -525,6 +555,7 @@ export function traceRayKerr(
     escaped,
     dir: [d.dp[0] / sp, d.dp[1] / sp, d.dp[2] / sp],
     crossings,
+    winding: swept / Math.PI,
     steps,
     pos: p,
     mv,

@@ -6,8 +6,10 @@ import {
   horizonRadius,
   iscoRadius,
   ksRadius,
+  traceRayKerr,
   uCircCart,
 } from "../src/kerr";
+import type { V4 } from "../src/kerr";
 import {
   DOPPLER_R,
   TRAIL_MIN_DT,
@@ -21,6 +23,7 @@ import {
   findShadowEdge,
   findShadowEdgeIncremental,
   photonImpactParameter,
+  photonOrbitLyapunov,
   photonOrbitRadius,
   projectToScreen,
   shadowExtremes,
@@ -224,6 +227,154 @@ describe("photonImpactParameter", () => {
     const bp = photonImpactParameter(0.998, true);
     const br = photonImpactParameter(0.998, false);
     expect(bc - bp).toBeGreaterThan(1.5 * (Math.abs(br) - bc));
+  });
+});
+
+describe("photonOrbitLyapunov", () => {
+  it("is exactly pi at a = 0, either sense", () => {
+    // Schwarzschild's e^(-pi) ~ 1/23 demagnification per half-orbit, the one
+    // value in this function with a textbook closed form to check against.
+    expect(photonOrbitLyapunov(0, true)).toBeCloseTo(Math.PI, 12);
+    expect(photonOrbitLyapunov(0, false)).toBeCloseTo(Math.PI, 12);
+  });
+
+  it("splits hard with spin — prograde slower, retrograde faster", () => {
+    // Frame dragging makes the prograde orbit long-lived (its subrings barely
+    // fade) and the retrograde one more unstable than Schwarzschild's.
+    expect(photonOrbitLyapunov(0.9, true)).toBeCloseTo(1.216, 3);
+    expect(photonOrbitLyapunov(0.9, false)).toBeCloseTo(4.004, 3);
+    expect(photonOrbitLyapunov(0.998, true)).toBeCloseTo(0.194, 3);
+    expect(photonOrbitLyapunov(0.998, false)).toBeCloseTo(4.08, 2);
+    for (let k = 1; k <= 40; k++) {
+      const a = k / 40;
+      expect(photonOrbitLyapunov(a, true)).toBeLessThan(Math.PI);
+      expect(photonOrbitLyapunov(a, false)).toBeGreaterThan(Math.PI);
+    }
+  });
+
+  it("stays total at extremality, where Phi diverges rather than dividing by 0", () => {
+    // Delta -> 0 as the prograde orbit merges with the horizon. The
+    // unrationalized Phi = (b-a) + (a/Delta)(r^2+a^2-ab) is 0/0 there; the
+    // rationalized one sends |Phi| -> Inf, so gamma -> 0 with no NaN.
+    expect(photonOrbitLyapunov(1, true)).toBe(0);
+    expect(Number.isFinite(photonOrbitLyapunov(1, false))).toBe(true);
+    for (const a of [0.9999, 0.999999, 1]) {
+      expect(Number.isNaN(photonOrbitLyapunov(a, true))).toBe(false);
+    }
+  });
+
+  it("falls monotonically toward 0 on the prograde side", () => {
+    let prev = Infinity;
+    for (let k = 0; k <= 40; k++) {
+      const g = photonOrbitLyapunov(k / 40, true);
+      expect(g).toBeLessThan(prev);
+      prev = g;
+    }
+  });
+});
+
+/**
+ * The linchpin: the closed-form exponent, the tracer's winding definition and
+ * the integrator all have to agree, and only a real trace can say so.
+ *
+ * Deviation from the critical ray grows as e^(gamma w) in winding w, so
+ * w = -(1/gamma) ln(s - s_c) + const and the slope of w against ln(s - s_c) is
+ * -1/gamma. Fitting the slope measures gamma with no need to fix how w is
+ * indexed — any constant offset cancels. Deviation is measured in NDC offset
+ * from the bisected edge rather than in b: it is locally linear in (b - b_c),
+ * it is the coordinate the overlay bisects in anyway, and it stays meaningful
+ * for a face-on camera (whose in-plane rays carry lambda = 0, making the axial
+ * impact parameter identically 0).
+ */
+function fitLyapunov(camPos: V3, right: V3, up: V3, fwd: V3, a: number, side: number): number {
+  const tanHalfFov = 0.4;
+  const tet = buildStaticTetrad(camPos, a, right, up, fwd);
+  const rEscape = Math.hypot(camPos[0], camPos[1], camPos[2]) + 40;
+  const trace = (s: number) => {
+    const vx = side * s * tanHalfFov;
+    const inv = 1 / Math.hypot(vx, 1);
+    const m: V4 = [0, 0, 0, 0];
+    for (let i = 0; i < 4; i++) {
+      m[i] = vx * inv * tet.rightCov[i] + inv * tet.fwdCov[i] - tet.uCov[i];
+    }
+    return traceRayKerr(camPos, m, a, { rEscape, maxSteps: 200000 });
+  };
+
+  let lo = 0;
+  let hi = 0.05;
+  while (hi <= 3 && !trace(hi).escaped) {
+    lo = hi;
+    hi *= 1.6;
+  }
+  for (let i = 0; i < 40; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (!trace(mid).escaped) lo = mid;
+    else hi = mid;
+  }
+  const sc = 0.5 * (lo + hi);
+
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let k = 1; k <= 16; k++) {
+    const off = 0.02 * Math.pow(0.55, k);
+    const r = trace(sc + off);
+    if (!r.escaped) continue;
+    xs.push(Math.log(off));
+    ys.push(r.winding);
+  }
+  const n = xs.length;
+  const mx = xs.reduce((s, v) => s + v, 0) / n;
+  const my = ys.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - mx) * (ys[i] - my);
+    den += (xs[i] - mx) * (xs[i] - mx);
+  }
+  return -den / num;
+}
+
+describe("photonOrbitLyapunov against traced rays", () => {
+  // Spin axis +y, disk in y = 0: this camera sits in the disk plane, so its
+  // ndcY = 0 rays stay equatorial and probe the equatorial orbits the closed
+  // form describes.
+  const EDGE: [V3, V3, V3] = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+  ];
+  const CAM: V3 = [0, 0, 25];
+
+  /**
+   * The fit lands a few tenths of a percent HIGH of the closed form, on every
+   * spin and both edges (+0.13% at a = 0, +0.1% retrograde and +0.6% prograde
+   * at a = 0.9). That bias is the stepper's, not the formula's: stepLength
+   * takes finite RK4 steps along a trajectory whose deviation is growing
+   * exponentially, which overstates the growth slightly. It is systematic and
+   * one-sided, so this asserts the sign rather than papering over it with a
+   * symmetric tolerance — a fit that came in LOW would mean something new.
+   */
+  const expectFit = (fitted: number, closed: number) => {
+    expect(fitted / closed).toBeGreaterThan(0.999);
+    expect(fitted / closed).toBeLessThan(1.02);
+  };
+
+  it("reproduces pi at a = 0, from either edge", () => {
+    expectFit(fitLyapunov(CAM, ...EDGE, 0, +1), Math.PI);
+    expectFit(fitLyapunov(CAM, ...EDGE, 0, -1), Math.PI);
+  });
+
+  it("reproduces both edges at a = 0.9", () => {
+    // Which screen side is which sense is the renderer's convention, not the
+    // oracle's: prograde matter runs world azimuth DECREASING (see kerr.ts), so
+    // for this camera the -x side of the screen is the prograde edge. Its b_c
+    // is the small one (2.84 against 6.83), which is what flattens the D.
+    const pro = fitLyapunov(CAM, ...EDGE, 0.9, -1);
+    const retro = fitLyapunov(CAM, ...EDGE, 0.9, +1);
+    expectFit(pro, photonOrbitLyapunov(0.9, true));
+    expectFit(retro, photonOrbitLyapunov(0.9, false));
+    // the headline contrast: the prograde edge sheds light ~3x slower
+    expect(retro / pro).toBeGreaterThan(3);
   });
 });
 
