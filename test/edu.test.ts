@@ -29,6 +29,7 @@ import {
   vEff,
 } from "../src/edu";
 import type { ShadowEdge, V3 } from "../src/edu";
+import { COMPARE_SPIN_LEFT } from "../src/compare";
 
 const T = Math.tan((60 * Math.PI) / 360); // tan(fov/2) at fov = 60°
 
@@ -233,6 +234,14 @@ describe("shadowHorizonRatio", () => {
     expect(shadowHorizonRatio(0)).toBeCloseTo(2.598, 3);
     // a = 1: width (2 + 7) over 2
     expect(shadowHorizonRatio(1)).toBeCloseTo(4.5, 12);
+  });
+
+  // Compare mode's left half is pinned at a = 0, so its callout's ratio is a
+  // constant and hud.ts bakes the rendered string into fixed copy. This is the
+  // seam between that copy and this oracle: the label rounds to one decimal,
+  // so what it claims is this string, not the float above.
+  it("renders '2.6' at the spin compare mode holds fixed", () => {
+    expect(shadowHorizonRatio(COMPARE_SPIN_LEFT).toFixed(1)).toBe("2.6");
   });
 
   it("climbs monotonically with spin", () => {

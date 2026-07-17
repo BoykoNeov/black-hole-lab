@@ -17,7 +17,7 @@ import {
 } from "./edu";
 import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
 import type { CameraBasis } from "./camera";
-import { splitMidpoint } from "./compare";
+import { COMPARE_SPIN_LEFT, splitMidpoint } from "./compare";
 import { EMBED_H, EMBED_W, POTENTIAL_H, POTENTIAL_W } from "./insets";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
@@ -820,6 +820,21 @@ export const CALLOUT_COPY = {
       "about 2.6× as wide as the horizon",
     ],
   },
+  // Compare mode's a = 0 half. Fixed copy where `shadow` is rewritten per
+  // spin, because a = 0 is exactly what the mode holds constant — so the ratio
+  // is a constant too (6√3/4), and a second key buys the second side its own
+  // copy and its own width memo without the table having to know about strips.
+  //
+  // Word-for-word the slider side's otherwise, title included: the pair is
+  // read for the one thing that differs, and the divider's chips already name
+  // which spacetime is which.
+  shadowSchw: {
+    title: "shadow edge",
+    body: [
+      "no light from inside ever reaches you —",
+      `about ${shadowHorizonRatio(COMPARE_SPIN_LEFT).toFixed(1)}× as wide as the horizon`,
+    ],
+  },
   photonRing: {
     title: "photon ring",
     body: [
@@ -1090,6 +1105,11 @@ function calloutWidth(ctx: CanvasRenderingContext2D, key: CalloutKey): number {
  * normally, but one half of the split when comparing (slice 7b). A label
  * describing one spacetime must not drift across the divider and appear to
  * caption the other — the strip is what stops it.
+ *
+ * floorY is how far down the text may reach — the canvas's height normally,
+ * but the top of the insets where they are drawn, since they are opaque and
+ * land on top of this layer. It is not a height: callers that have something
+ * below the text pass where that something starts.
  */
 export function drawCallouts(
   ctx: CanvasRenderingContext2D,
@@ -1097,7 +1117,7 @@ export function drawCallouts(
   n: number,
   x0: number,
   w: number,
-  h: number
+  floorY: number
 ): void {
   ctx.save();
   let placed = 0;
@@ -1119,7 +1139,7 @@ export function drawCallouts(
 
     let ty = Math.min(
       Math.max(it.ay + it.dy, 14),
-      Math.max(h - bh - CALLOUT_EDGE_PAD, 14)
+      Math.max(floorY - bh - CALLOUT_EDGE_PAD, 14)
     );
     for (let j = 0; j < placed; j++) {
       if (bl >= laidR[j] || bl + bw <= laidL[j]) continue; // no horizontal overlap

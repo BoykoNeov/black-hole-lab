@@ -150,10 +150,11 @@ full per-pixel geodesic renderer, and it is close to free because the two
 half-width draws cover the pixel count the single one did.
 
 Each half gets its own traced shadow outline (7b), its own potential inset and
-funnel at its own spin (7c), and its own orbit trails (7d) — the left ring
-closes, the right one walks. What the mode cannot show honestly it hides rather
-than fakes: gas and TDE debris are stateful and integrated at one spin, so they
-are dropped from both halves, and the clocks and callouts stay off. The full
+funnel at its own spin (7c), its own orbit trails (7d) — the left ring closes,
+the right one walks — and its own shadow-edge label, reading 2.6× against 4.3×
+at a = 0.998. What the mode cannot show honestly it hides rather than fakes: gas
+and TDE debris are stateful and integrated at one spin, so they are dropped from
+both halves, and the clocks and the rest of the callout layer stay off. The full
 argument, and what the split deliberately does *not* hold constant, is in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-7--schwarzschild-vs-kerr).
 
@@ -231,8 +232,12 @@ argument, and what the split deliberately does *not* hold constant, is in
   funnel, orbit trails, dashed shadow outline, and the callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
   other, with all copy in one `CALLOUT_COPY` table — every line of it fixed
-  but the shadow's ratio, which `setShadowSpin` rewrites per spin; DOM-only,
-  verified by eye). `drawTrails` takes the strip its paths belong to — the
+  but the slider shadow's ratio, which `setShadowSpin` rewrites per spin;
+  compare mode's a = 0 twin, `shadowSchw`, is fixed copy because a = 0 is what
+  the mode holds constant. `drawCallouts` takes a floor rather than a height:
+  the top of the insets where they are shown, since they are opaque and drawn
+  over this layer. DOM-only, verified by eye). `drawTrails` takes the strip its
+  paths belong to — the
   whole width normally, one half when comparing (7d) — projects at that
   strip's aspect and clips to it, so no side can draw a path across the
   divider. The insets' resize is one `ctx.scale` around the whole panel rather
@@ -334,5 +339,7 @@ argument, and what the split deliberately does *not* hold constant, is in
    - 7b shadow outline traced per side (the circle vs the D-shape) ✅
    - 7c potential & embedding insets per side, each at its half's spin ✅
    - 7d orbit trails per side — the left ring closes, the right one walks ✅
+   - 7e shadow-edge label per side — 2.6× against 4.3×, the outlines' contrast
+     as a number ✅
 
 The roadmap is complete. There is no slice 8 queued.

@@ -258,18 +258,40 @@ captioning the other spacetime with a path that is not its. In single view the
 strip is the whole canvas, so the same clip is a no-op rather than a
 compare-only branch.
 
-### Labels not duplicated onto the a = 0 half
+### 7e — the ring labelled once, the shadow per side
 
 The photon-ring callout is emitted once, against the slider's outline, and the
 callout layout is bounded to that side's strip so it cannot slide across the
 divider and appear to caption the other spacetime.
 
-The shadow-edge callout is dropped in compare mode outright, because its copy
-sizes the shadow against the horizon at one spin and compare mode has two on
-screen at once. Re-emitting it per side, each half with its own ratio, would
-make the ratio's spin dependence the very thing the split shows; it is not wired
-up, because two shadow callouts need a per-strip copy and width memo, which the
-`CalloutKey`-keyed table does not have.
+The shadow-edge callout is emitted twice, one per half, and that duplication is
+the point: 2.6× on the left against 4.3× on the right at a = 0.998 is the same
+contrast the circle and the D draw, said as a number. It could not be, while the
+copy quoted a flat 2.6× at every spin — that was one number sizing the shadow
+against a horizon at one spin, with two on screen, and two labels word-for-word
+alike would only have crowded the shape they sat on. `shadowHorizonRatio(a)` is
+what unlocked it.
+
+The cost this section used to predict — a per-strip copy and width memo the
+`CalloutKey`-keyed table has nowhere to put — never arrived, because a = 0 is
+exactly what the mode holds fixed. The left half's ratio is therefore a
+*constant*, so `shadowSchw` is ordinary fixed copy filed under a key of its own,
+and a key already owns its own copy and its own memo. Only the slider's entry is
+still rewritten per spin.
+
+The pair is word-for-word identical but for the ratio, title included: the
+number is then the only thing there is to read across the divider, which is the
+same reason `splitViewports` hands both halves equal widths. The chips on the
+divider already name the spacetimes. At a ≈ 0 both halves honestly read 2.6×,
+because there both halves honestly *are* Schwarzschild.
+
+**What the split did change is where the label hangs.** Single view puts it off
+the shadow's left edge; a half has no room for that — the block is ~190 px
+against ~130 px of sky between the strip's edge and the disk, so the layout's
+clamp flips it back over the black disk whose shape the split exists to show.
+Both halves hang it below the disk instead. The ring already anchors upward, so
+below keeps the two apart; and the two bottom extremes share a y — one camera,
+one frame — so the two ratios land level with each other, a divider apart.
 
 ### Known limitation: the insets need room
 
@@ -283,3 +305,16 @@ room and only overlaps below 852 px. Both thresholds are pinned in
 The grips are the remedy and already work per side. The panels are deliberately
 not auto-shrunk to fit: a clamp that silently overrides a drag is worse than an
 overlap the user can see and fix.
+
+That bargain does not extend to the label 7e hangs below the disk, which lands
+in the band the insets anchor in — and they are opaque and drawn *after* the
+callout layer, so a label reaching into one is not crowded but overdrawn,
+illegible under a wireframe rather than visibly in the way. At 1440×790 — an
+ordinary laptop, with both insets on — it was. So `drawCallouts` takes a floor
+instead of a height, and the caller passes the top of the shown insets on that
+side; the `ty` clamp it already ran turns that into "no text below here" for
+free. Below ~880 px the label rides up off its natural place and sits on the
+black disk, which stays readable and is the honest signal that the window is out
+of room. Single view passes the full canvas: its shadow label rides at the
+disk's mid-height, nowhere near the panels, and bounding it would move labels
+this change never touched.

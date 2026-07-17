@@ -263,6 +263,30 @@ const insetView: InsetView = {
   shown: { pot: false, embed: false },
 };
 
+/**
+ * How far down a callout's text may reach on one side, in CSS px.
+ *
+ * The insets are bottom-anchored, opaque, and drawn after the callout layer,
+ * so a label reaching into their band is not merely crowded — it is overdrawn
+ * by a wireframe. Only compare mode hangs a label below the disk (see
+ * SHADOW_LABEL_DY), and only there can that band be reached: single view's
+ * shadow label rides at the disk's mid-height, a long way clear, so it keeps
+ * the full canvas and this cannot move a label the split didn't put there.
+ *
+ * The higher of the two tops when both are shown: they are different heights
+ * and the label is centred between them, so the taller one is the bound.
+ */
+function calloutFloorY(side: InsetSide | null): number {
+  const ch = canvas.clientHeight;
+  if (!params.compare) return ch;
+  const iv = viewNow();
+  let floorY = ch;
+  for (const id of ["pot", "embed"] as InsetId[]) {
+    if (iv.shown[id]) floorY = Math.min(floorY, insetBox(iv, id, side).y);
+  }
+  return floorY;
+}
+
 /** insetView, refreshed from the canvas and the knobs it follows. */
 function viewNow(): InsetView {
   insetView.width = canvas.clientWidth;
@@ -491,9 +515,31 @@ for (let i = 0; i < CALLOUT_MAX; i++)
 const calloutExt: ShadowExtremes = {
   leftX: 0, leftY: 0, rightX: 0, rightY: 0, topX: 0, topY: 0, bottomX: 0, bottomY: 0,
 };
+// The a = 0 half's shadow label (compare only) lays out in its own strip, so
+// it gets its own extremes and its own one-item list rather than sharing the
+// buffers above — those hold the slider side's, and both are live at once.
+const calloutExtSchw: ShadowExtremes = {
+  leftX: 0, leftY: 0, rightX: 0, rightY: 0, topX: 0, topY: 0, bottomX: 0, bottomY: 0,
+};
+const calloutItemsSchw: CalloutItem[] = [
+  { key: "shadowSchw", ax: 0, ay: 0, dx: 0, dy: 0, alpha: 1 },
+];
 const calloutProj: Projected = { x: 0, y: 0, z: 0, visible: false };
 const calloutAlign: Alignment = { angle: 0, behind: false };
 const calloutQ: V3 = [0, 0, 0];
+
+/**
+ * How far below the shadow's bottom edge its label hangs in compare mode.
+ *
+ * Single view hangs it off the shadow's LEFT edge; a half-width strip has no
+ * room for that. The block is ~190 px and a half leaves only ~130 px of sky
+ * left of the disk, so the layout's clamp would flip it back over the black
+ * disk — hiding the circle-vs-D shape the split exists to show. Below, there
+ * is room on both halves: the photon ring already anchors upward, and the two
+ * bottom extremes share a y (one camera, one frame), so the two ratios land
+ * level with each other across the divider, which is the comparison.
+ */
+const SHADOW_LABEL_DY = 46;
 /** Height at which the jet labels tap the beam: past the shader's fade-in at
  *  |y| = 2.6 and well short of its fade-out at 46. */
 const JET_MARK_Y = 14;
@@ -1144,20 +1190,29 @@ function render() {
   const ndcPxX = (x: number) => sliderX0 + ((x + 1) / 2) * sliderW;
   const ndcPxY = (y: number) => ((1 - y) / 2) * ch;
 
-  // The Schwarzschild half's outline (7b). Drawn but not labelled: the copy
-  // would be word-for-word the slider side's, and the divider's chips already
-  // say which spacetime this is. What it is here to show is its SHAPE — a
-  // circle against the Kerr half's D — and two identical labels would only
-  // crowd that.
+  // The Schwarzschild half's outline (7b), and its own ratio label with it.
+  // The label was worth nothing while the copy quoted 2.6× at every spin —
+  // two labels word-for-word alike, crowding the shape they sat on. Now that
+  // the ratio is read per spin, the pair says 2.6× here against 4.3× across
+  // the divider: the same contrast the circle and the D draw, as a number.
   if (shadowOn && params.compare && shadowSchw.edge && shadowSchw.edge.valid) {
-    drawShadowOutline(
-      hudCtx,
-      shadowSchw.edge,
-      hudX(split.left),
-      hudW(split.left),
-      ch,
-      shadowSchw.fresh ? 1 : 0.35
-    );
+    const schwX0 = hudX(split.left);
+    const schwW = hudW(split.left);
+    // stale outline, stale anchor — faded together, the same as the slider's
+    const schwAlpha = shadowSchw.fresh ? 1 : 0.35;
+    drawShadowOutline(hudCtx, shadowSchw.edge, schwX0, schwW, ch, schwAlpha);
+    shadowExtremes(shadowSchw.edge, calloutExtSchw);
+    const it = calloutItemsSchw[0];
+    it.ax = schwX0 + ((calloutExtSchw.bottomX + 1) / 2) * schwW;
+    it.ay = ((1 - calloutExtSchw.bottomY) / 2) * ch;
+    it.dy = SHADOW_LABEL_DY;
+    it.alpha = schwAlpha;
+    // Laid out in the left strip, so it cannot slide across the divider and
+    // caption the spin it is here to be the control for. Its own call rather
+    // than an entry in the list below: that list is bounded to the slider's
+    // strip, and the two are disjoint, so neither needs to know about the
+    // other's blocks.
+    drawCallouts(hudCtx, calloutItemsSchw, 1, schwX0, schwW, calloutFloorY("left"));
   }
 
   const shadowEdge = shadowSlider.edge;
@@ -1172,10 +1227,19 @@ function render() {
     shadowExtremes(shadowEdge!, calloutExt);
     // Emitted first, so that with only the 6f overlay on they keep the exact
     // positions they had before 6g gave them neighbours to make room for.
-    // The shadow-edge label still sits out compare mode: it sizes the shadow
-    // against the horizon at one spin, and there are two on screen there.
-    if (!params.compare) {
-      setShadowSpin(params.spin);
+    setShadowSpin(params.spin);
+    if (params.compare) {
+      // Below the disk, not off its left edge — see SHADOW_LABEL_DY. The a = 0
+      // half's twin is emitted above, into its own strip.
+      emit(
+        "shadow",
+        ndcPxX(calloutExt.bottomX),
+        ndcPxY(calloutExt.bottomY),
+        0,
+        SHADOW_LABEL_DY,
+        edgeAlpha
+      );
+    } else {
       emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, edgeAlpha);
     }
     // The photon ring converges onto the shadow edge from OUTSIDE (its last
@@ -1305,7 +1369,14 @@ function render() {
   // slide a label across the divider onto the a = 0 half, which it does not
   // describe.
   if (nCallouts > 0)
-    drawCallouts(hudCtx, calloutItems, nCallouts, sliderX0, sliderW, ch);
+    drawCallouts(
+      hudCtx,
+      calloutItems,
+      nCallouts,
+      sliderX0,
+      sliderW,
+      calloutFloorY(params.compare ? "right" : null)
+    );
 
   // Also single-spin: every rate below is evaluated at params.spin, which is
   // only the right half's story.
