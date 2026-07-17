@@ -51,6 +51,7 @@ import {
   drawTrails,
   initHud,
   resizeHud,
+  setShadowSpin,
   type CalloutItem,
   type CalloutKey,
   type ClockEntry,
@@ -1238,11 +1239,12 @@ function render() {
     shadowExtremes(shadowEdge!, calloutExt);
     // Emitted first, so that with only the 6f overlay on they keep the exact
     // positions they had before 6g gave them neighbours to make room for.
-    // The shadow-edge label sits out compare mode: its copy sizes the shadow
-    // against the horizon's diameter, and that ratio is a function of spin —
-    // true on the a = 0 half, false on the other.
-    if (!params.compare)
+    // The shadow-edge label still sits out compare mode: it sizes the shadow
+    // against the horizon at one spin, and there are two on screen there.
+    if (!params.compare) {
+      setShadowSpin(params.spin);
       emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, edgeAlpha);
+    }
     // The photon ring converges onto the shadow edge from OUTSIDE (its last
     // subring IS the boundary), so its anchor sits just off the outline.
     emit(

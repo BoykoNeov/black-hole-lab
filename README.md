@@ -234,12 +234,13 @@ Two labels are deliberately not duplicated onto the a = 0 half. The photon-ring
 callout is emitted once, against the slider's outline, and the callout layout
 is now bounded to that side's strip so it cannot slide across the divider and
 appear to caption the other spacetime. The shadow-edge callout is dropped in
-compare mode outright, because its copy sizes the shadow against the horizon's
-diameter and that ratio is a function of spin: measured off this repo's own
-tracer at the default camera it is 2.49× at a = 0, 3.23× at a = 0.9 and 4.11×
-at a = 0.998. The label's flat "about 2.6×" is a pre-existing single-view bug
-(it is wrong at high spin with compare mode switched off); it is recorded here
-rather than fixed inside slice 7.
+compare mode outright, because its copy sizes the shadow against the horizon at
+one spin and compare mode has two on screen at once. (That copy quoted a flat
+"about 2.6×" at every spin until `shadowHorizonRatio` made it a function of `a`
+— see the shadow-edge sizing note below. Re-emitting it per side, each half
+with its own ratio, would make the ratio's spin dependence the very thing the
+split shows; it is not wired up, because two shadow callouts need a per-strip
+copy and width memo, which the `CalloutKey`-keyed table does not have.)
 
 Slice 3 adds matter in motion, all sampled **along the same per-pixel
 geodesics** rather than as unlensed billboards, so every piece of matter is
@@ -328,8 +329,11 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   handle take a pointerdown before it becomes an orbit drag)
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static
-  camera and circular orbiters, equatorial Kerr effective potential and
-  Bardeen photon-orbit radii, the equatorial embedding profile z(r) —
+  camera and circular orbiters, equatorial Kerr effective potential, Bardeen
+  photon-orbit radii and the impact parameters of those orbits (which bound
+  the shadow's width, hence `shadowHorizonRatio` — how much wider than the
+  hole the black disk is, the shadow-edge callout's number), the equatorial
+  embedding profile z(r) —
   Flamm's paraboloid at a = 0, integrated with the rim's inverse-square-root
   singularity split off in closed form — `Trail`, the fixed-size ring
   buffer of (position, time) samples behind the orbit trails, and the
@@ -343,7 +347,9 @@ an Einstein ring; the far-side jet base wraps around the shadow):
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
   funnel, orbit trails, dashed shadow outline, and the callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
-  other, with all copy in one `CALLOUT_COPY` table; DOM-only, verified by eye).
+  other, with all copy in one `CALLOUT_COPY` table — every line of it fixed
+  but the shadow's ratio, which `setShadowSpin` rewrites per spin; DOM-only,
+  verified by eye).
   `drawTrails` takes the strip its paths belong to — the whole width normally,
   one half when comparing (7d) — projects at that strip's aspect and clips to
   it, so no side can draw a path across the divider.
@@ -436,9 +442,29 @@ an Einstein ring; the far-side jet base wraps around the shadow):
    - 7c potential & embedding insets per side, each at its half's spin ✅
    - 7d orbit trails per side — the left ring closes, the right one walks ✅
 
-Known bug, predating slice 7 and living in single view: the shadow-edge
-callout says the shadow is "about 2.6× the horizon's diameter" at every spin.
-That holds only at a = 0 — the horizon shrinks with spin while the shadow
-barely does, so the true ratio climbs to ~4.1× at a = 0.998 (measured off
-`findShadowEdge`; see the slice 7 notes above). The copy needs to either state
-the ratio for the current spin or stop quoting a number.
+**Shadow-edge sizing.** The callout quotes how much wider the black disk is
+than the hole, and that ratio is a function of spin: the horizon shrinks as `a`
+climbs while the shadow barely does. It had been fixed at "about 2.6×", which
+is right only at a = 0 (a bug that predated slice 7 and lived in single view,
+fixed after it). `edu.ts`'s `shadowHorizonRatio` now supplies it per spin, and
+`hud.ts`'s `setShadowSpin` rewrites the line when the slider moves.
+
+The ratio is analytic and spin-only, deliberately not measured off the traced
+outline. The shadow's width across the equatorial plane is bounded by the two
+equatorial photon orbits, whose impact parameters `photonImpactParameter` gives
+in closed form; `b = L/E` is conserved along a null geodesic, so this is the
+shadow's true size, free of the camera. Reading it off `findShadowEdge` instead
+would have dragged in the camera's distance and pitch, and the number would
+drift as the user zoomed. (An earlier note here quoted 2.49× / 3.23× / 4.11×
+"measured off the tracer at the default camera". Those came from a flat-space
+`camDist·sinθ` that drops the `√(1 − 2/r)` redshift factor, so each ran ~4% low;
+the exact values are 2.598× at a = 0, 3.370× at a = 0.9 and 4.283× at a = 0.998,
+reaching 4.5× at a = 1.) `test/edu.test.ts` ties the two together: at a distant
+camera the traced outline's equatorial extremes match `photonImpactParameter` to
+0.2%, so the quoted number and the drawn shape are the same shadow.
+
+Two things the copy's "about" is carrying. The ratio is measured edge-on, and
+tilting toward the pole rounds the shadow out and widens it by up to ~6% at
+extreme spin — far less than the 2.6→4.5 spread across spin itself, and the
+pitch limit is the only place it shows. The shadow is also a D at high spin, so
+its "width" is the widest way across, not a diameter.

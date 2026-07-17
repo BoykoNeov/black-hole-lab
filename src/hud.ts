@@ -12,6 +12,7 @@ import {
   embeddingZAt,
   photonOrbitRadius,
   projectToScreen,
+  shadowHorizonRatio,
   vEff,
 } from "./edu";
 import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
@@ -829,7 +830,8 @@ export const CALLOUT_COPY = {
     title: "shadow edge",
     body: [
       "no light from inside ever reaches you —",
-      "about 2.6× the horizon's diameter",
+      // rewritten per spin by setShadowSpin; the 2.6 only holds at a = 0
+      "about 2.6× as wide as the horizon",
     ],
   },
   photonRing: {
@@ -925,9 +927,30 @@ export const CALLOUT_COPY = {
       "every side at once, smearing it to a ring",
     ],
   },
-} as const;
+};
 
 export type CalloutKey = keyof typeof CALLOUT_COPY;
+
+/**
+ * Point the shadow-edge copy at a spin. How much wider the shadow is than the
+ * hole is a function of a — 2.6× at a = 0 but 4.3× at a = 0.998, because the
+ * horizon shrinks with spin while the shadow barely does — so that one line is
+ * rewritten when the slider moves. It is the only entry in the table that is
+ * not fixed copy; the ratio itself is edu.ts's, measured against the same
+ * photon orbits the traced outline lands on.
+ *
+ * Kept off the draw path: the HUD redraws every frame while the spin changes
+ * only on a drag. Rewriting the line invalidates its measured width, hence the
+ * memo drop — today the first body line is the longest either way, but sizing
+ * a box to copy it no longer holds is not a bet worth leaving in.
+ */
+let shadowSpin = NaN;
+export function setShadowSpin(a: number): void {
+  if (a === shadowSpin) return;
+  shadowSpin = a;
+  CALLOUT_COPY.shadow.body[1] = `about ${shadowHorizonRatio(a).toFixed(1)}× as wide as the horizon`;
+  calloutW.delete("shadow");
+}
 
 /**
  * Leader-line label: a dot on the subject, a line out to a title + body text

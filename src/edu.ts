@@ -123,6 +123,40 @@ export function photonOrbitRadius(a: number, prograde: boolean): number {
   return 2 * (1 + Math.cos((2 / 3) * Math.acos(prograde ? -a : a)));
 }
 
+/**
+ * Impact parameter b = L/E of the equatorial circular photon orbit, signed
+ * with the prograde sense positive. Setting R(r) = R'(r) = 0 for equatorial
+ * null geodesics gives b = (±r√Δ − 2a)/(r − 2), which is 0/0 at r = 2 — a
+ * radius the prograde orbit really does cross, at a = 1/√2 — so we use the
+ * form rationalized against (r√Δ ± 2a), finite for every a. a = 0 gives ±3√3
+ * (the Schwarzschild b_c); a = 1 gives +2 prograde and −7 retrograde.
+ */
+export function photonImpactParameter(a: number, prograde: boolean): number {
+  const r = photonOrbitRadius(a, prograde);
+  // Δ = 0 at the a = 1 prograde orbit, where r+ and r_ph both reach 1
+  const rtD = r * Math.sqrt(Math.max(r * r - 2 * r + a * a, 0));
+  const num = r * r * r + a * a * (r + 2);
+  return prograde ? num / (rtD + 2 * a) : -num / (rtD - 2 * a);
+}
+
+/**
+ * How much wider the black disk is than the hole: the shadow's width across
+ * the equatorial plane over the horizon's diameter 2 r+. The two equatorial
+ * photon orbits bound that width — their impact parameters are the shadow's
+ * extremes in the plane, and frame dragging pulls the prograde one in far
+ * more than it pushes the retrograde one out (2.11 vs 7.00 at a = 0.998),
+ * which is what flattens the D.
+ *
+ * 2.60 at a = 0, rising to 4.5 at a = 1 — the horizon shrinks with spin while
+ * the shadow barely does. Measured edge-on, and the callout quoting it says
+ * "about": tilting toward the pole rounds the shadow out and widens this by
+ * up to ~6% at extreme spin, far less than the spread across spin itself.
+ */
+export function shadowHorizonRatio(a: number): number {
+  const width = photonImpactParameter(a, true) - photonImpactParameter(a, false);
+  return width / (2 * horizonRadius(a));
+}
+
 /** Uniformly spaced samples of the equatorial embedding surface, z(r[0]) = 0. */
 export interface EmbeddingProfile {
   /** Boyer–Lindquist radius, r[0] = r+ and r[n-1] = rMax. */

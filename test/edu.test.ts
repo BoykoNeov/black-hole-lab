@@ -20,9 +20,11 @@ import {
   equatorialPoint,
   findShadowEdge,
   findShadowEdgeIncremental,
+  photonImpactParameter,
   photonOrbitRadius,
   projectToScreen,
   shadowExtremes,
+  shadowHorizonRatio,
   staticRate,
   vEff,
 } from "../src/edu";
@@ -192,6 +194,63 @@ describe("photonOrbitRadius", () => {
   it("is dragged inward when prograde and outward when retrograde", () => {
     expect(photonOrbitRadius(0.5, true)).toBeLessThan(3);
     expect(photonOrbitRadius(0.5, false)).toBeGreaterThan(3);
+  });
+});
+
+describe("photonImpactParameter", () => {
+  it("matches the known closed-form values", () => {
+    // a = 0: both orbits sit at r = 3 with the Schwarzschild b_c = 3√3
+    expect(photonImpactParameter(0, true)).toBeCloseTo(3 * Math.sqrt(3), 12);
+    expect(photonImpactParameter(0, false)).toBeCloseTo(-3 * Math.sqrt(3), 12);
+    // a = 1: the extremal limits, +2 prograde and -7 retrograde
+    expect(photonImpactParameter(1, true)).toBeCloseTo(2, 12);
+    expect(photonImpactParameter(1, false)).toBeCloseTo(-7, 12);
+  });
+
+  it("stays finite where the prograde orbit crosses r = 2", () => {
+    // At a = 1/√2 the prograde orbit sits exactly at r = 2, where the
+    // unrationalized b = (r√Δ − 2a)/(r − 2) is 0/0. b = 5/√2 there.
+    const a = 1 / Math.sqrt(2);
+    expect(photonOrbitRadius(a, true)).toBeCloseTo(2, 12);
+    expect(photonImpactParameter(a, true)).toBeCloseTo(5 / Math.sqrt(2), 12);
+  });
+
+  it("squeezes the prograde side harder than it pushes the retrograde out", () => {
+    // The asymmetry that makes the shadow a D rather than an offset circle:
+    // measured off the a = 0 value, the prograde side comes in ~1.7x further
+    // than the retrograde side goes out.
+    const bc = 3 * Math.sqrt(3);
+    const bp = photonImpactParameter(0.998, true);
+    const br = photonImpactParameter(0.998, false);
+    expect(bc - bp).toBeGreaterThan(1.5 * (Math.abs(br) - bc));
+  });
+});
+
+describe("shadowHorizonRatio", () => {
+  it("is 1.5√3 at a = 0 and 4.5 at a = 1", () => {
+    // a = 0: width 6√3 over the horizon's diameter 4 — the textbook 2.6×
+    expect(shadowHorizonRatio(0)).toBeCloseTo(1.5 * Math.sqrt(3), 12);
+    expect(shadowHorizonRatio(0)).toBeCloseTo(2.598, 3);
+    // a = 1: width (2 + 7) over 2
+    expect(shadowHorizonRatio(1)).toBeCloseTo(4.5, 12);
+  });
+
+  it("climbs monotonically with spin", () => {
+    let prev = -Infinity;
+    for (let k = 0; k <= 40; k++) {
+      const ratio = shadowHorizonRatio(k / 40);
+      expect(ratio).toBeGreaterThan(prev);
+      prev = ratio;
+    }
+  });
+
+  it("runs away from the flat 2.6 the callout used to quote", () => {
+    // The bug this function exists to fix: one number for every spin. It is
+    // right at a = 0 and stays right for a while (out to a ≈ 0.3 the shadow
+    // and the horizon both barely move, which is why it went unnoticed), but
+    // the horizon then shrinks with spin while the shadow does not.
+    expect(shadowHorizonRatio(0.9)).toBeGreaterThan(3.3);
+    expect(shadowHorizonRatio(0.998)).toBeGreaterThan(4.2);
   });
 });
 
@@ -372,6 +431,36 @@ describe("findShadowEdge", () => {
     expect(yields).toBeGreaterThan(8 * 16);
     expect(r.value.valid).toBe(true);
     expect(Array.from(r.value.pts)).toEqual(Array.from(oneShot.pts));
+  });
+
+  it("puts its equatorial extremes where photonImpactParameter says", () => {
+    // What ties the shadow-edge callout's ratio to the picture: the ratio is
+    // analytic (photon-orbit impact parameters), the outline is traced ray by
+    // ray, and they have to be the same shadow. b = L/E is conserved along a
+    // null geodesic, so a distant camera reads it off the launch angle alone,
+    // b = r sinθ/√(1 − 2/r); at r = 300 the frame-dragging correction this
+    // drops is O(a/r²) ≈ 1e-5.
+    const a = 0.9;
+    const dist = 300;
+    const b = cameraBasis({ yaw: 0.6, pitch: 0, dist, fovDeg: 60 });
+    const tet = buildStaticTetrad(b.pos, a, b.right, b.up, b.fwd);
+    // nAz = 4 lands on ψ = 0 and ψ = π exactly. Pitch 0 puts the screen's x
+    // axis in the equatorial plane, and the outline's mirror symmetry about
+    // that axis puts its x extremes right there.
+    const edge = findShadowEdge(b.pos, tet, a, T, 1, 4);
+    expect(edge.valid).toBe(true);
+    const bOf = (s: number) => (dist * Math.sin(Math.atan(s * T))) / Math.sqrt(1 - 2 / dist);
+    const asc = (p: number, q: number) => p - q;
+    const traced = [bOf(Math.abs(edge.pts[0])), bOf(Math.abs(edge.pts[4]))].sort(asc);
+    // Compared as a set: which screen side is prograde is the D-shape test's
+    // business, not this one's.
+    const want = [
+      photonImpactParameter(a, true),
+      Math.abs(photonImpactParameter(a, false)),
+    ].sort(asc);
+    for (let i = 0; i < 2; i++) {
+      expect(Math.abs(traced[i] - want[i]) / want[i]).toBeLessThan(0.01);
+    }
   });
 });
 
