@@ -19,6 +19,7 @@
 /** Vite's default, and the fifteen it climbs through when the default is busy. */
 export const PORTS = Array.from({ length: 16 }, (_, i) => 5173 + i);
 
+/** Must match index.html's <title>: that is what identifies a server as ours. */
 export const TITLE = "Black Hole Lab";
 
 /**
