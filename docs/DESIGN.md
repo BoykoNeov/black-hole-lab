@@ -393,6 +393,16 @@ assertions would rot with the UI and pay for nothing. It never uses playwright's
 `channel: "chrome"` or a real `userDataDir`, so `close()` can never reach a
 browser a person is actually using.
 
+It does check that the page is this app before measuring it, because the port
+is not proof of identity. Vite takes the next free port when its default is
+busy, so whichever project starts first owns 5173 and every later one climbs —
+which means the default the harness ships with points at *a* vite server, not
+necessarily *this* one. Measuring the wrong app is a silent, expensive failure:
+without the check the first symptom is `getComputedStyle: parameter 1 is not of
+type 'Element'` thrown from the first-paint wait, which reads as a bug in the
+harness rather than as pointing at someone else's page. It cost a run to find
+on a machine with two labs open at once.
+
 Its own pixel math runs in the page rather than in node, which is what keeps
 `pngjs`/`pixelmatch` off the dependency list: shipping ImageData to node would
 mean decoding PNGs there, and that is a dependency bought for twenty lines of

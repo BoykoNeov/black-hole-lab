@@ -239,6 +239,21 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
     );
   }
 
+  // Check it is actually the lab before waiting on the lab's own elements.
+  // The port is not proof of identity: vite takes the next free port when its
+  // default is busy, so a second project started first owns 5173 and this
+  // would happily measure that instead. Without this the first failure is
+  // "getComputedStyle: parameter 1 is not of type 'Element'" from the wait
+  // below, which sends you looking for a bug in here.
+  const title = await page.title();
+  if (title !== "Black Hole Lab") {
+    await browser.close();
+    throw new Error(
+      `${BASE_URL} is serving "${title}", not Black Hole Lab — another vite ` +
+        `project has this port. Point LAB_URL at the right one.`
+    );
+  }
+
   // The overlay hides until the shader has compiled and drawn once, so this is
   // first paint rather than merely "loaded".
   await page.waitForFunction(
