@@ -393,15 +393,21 @@ assertions would rot with the UI and pay for nothing. It never uses playwright's
 `channel: "chrome"` or a real `userDataDir`, so `close()` can never reach a
 browser a person is actually using.
 
-It does check that the page is this app before measuring it, because the port
-is not proof of identity. Vite takes the next free port when its default is
-busy, so whichever project starts first owns 5173 and every later one climbs —
-which means the default the harness ships with points at *a* vite server, not
-necessarily *this* one. Measuring the wrong app is a silent, expensive failure:
-without the check the first symptom is `getComputedStyle: parameter 1 is not of
-type 'Element'` thrown from the first-paint wait, which reads as a bug in the
-harness rather than as pointing at someone else's page. It cost a run to find
-on a machine with two labs open at once.
+It does find its own server, and that is not the same as taking a port on
+faith. Vite takes the next free port when its default is busy, so whichever
+project starts first owns 5173 and every later one climbs; on a machine running
+three vite projects this lab has no fixed port at all, and a hardcoded 5173 is
+a coin flip about whose app gets measured. So the harness scans 5173–5188 for
+the one whose title is this lab's, and any match will do — vite transforms from
+disk per request, so even a server left up for days serves current code.
+
+Measuring the wrong app is a silent, expensive failure. Before the check the
+first symptom was `getComputedStyle: parameter 1 is not of type 'Element'`
+thrown out of the first-paint wait, which reads as a bug in the harness rather
+than as pointing at someone else's page. The title check survives as the guard
+on an explicit `LAB_URL`, which is the only way left to aim at the wrong thing.
+Both were found on a machine with two other labs up, holding 5173 while this
+one had climbed to 5174 — which is the ordinary case here, not a strange one.
 
 Its own pixel math runs in the page rather than in node, which is what keeps
 `pngjs`/`pixelmatch` off the dependency list: shipping ImageData to node would

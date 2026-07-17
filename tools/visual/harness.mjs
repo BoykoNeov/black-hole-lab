@@ -27,7 +27,47 @@ import { chromium } from "playwright";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
-export const BASE_URL = process.env.LAB_URL ?? "http://localhost:5173";
+/** Set to skip discovery and use one server. Otherwise the ports are scanned. */
+export const LAB_URL = process.env.LAB_URL ?? null;
+
+/**
+ * Vite's default, and the fifteen it climbs through when the default is busy.
+ *
+ * Scanning rather than assuming 5173, because the port says nothing about
+ * which project answers on it: vite takes the next free one, so whichever
+ * project was started first owns 5173 and this lab lands wherever it lands.
+ * A machine running three of these has no fixed port for any of them.
+ */
+const PORTS = Array.from({ length: 16 }, (_, i) => 5173 + i);
+
+const TITLE = "Black Hole Lab";
+
+/**
+ * The first port serving this lab. Any of them will do — vite transforms from
+ * disk per request, so even a server left running for days serves current code.
+ */
+async function discover() {
+  const found = await Promise.all(
+    PORTS.map(async (port) => {
+      try {
+        const res = await fetch(`http://localhost:${port}/`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        return new RegExp(`<title>${TITLE}</title>`).test(await res.text()) ? port : null;
+      } catch {
+        return null; // nothing listening, or not http — either way, not us
+      }
+    })
+  );
+  const port = found.find((p) => p !== null);
+  if (!port)
+    throw new Error(
+      `no ${TITLE} dev server found on ports ${PORTS[0]}-${PORTS[PORTS.length - 1]} — ` +
+        `start one with \`npm run dev\` (this harness does not start a server), ` +
+        `or set LAB_URL if it is somewhere else`
+    );
+  return `http://localhost:${port}`;
+}
 
 /** Global rule: temp artifacts live outside the repo, never in the git tree. */
 export const OUT_DIR = process.env.LAB_OUT ?? "M:/claud_projects/temp/blackhole-shots";
@@ -224,33 +264,33 @@ export function savePng(dataUrl, name) {
  * on a reused page, so a second viewpoint means a second lab.
  */
 export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
+  const base = LAB_URL ?? (await discover());
   const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   const page = await context.newPage();
   await page.addInitScript(installLab);
 
   try {
-    await page.goto(BASE_URL, { waitUntil: "domcontentloaded", timeout: 15_000 });
+    await page.goto(base, { waitUntil: "domcontentloaded", timeout: 15_000 });
   } catch (err) {
     await browser.close();
     throw new Error(
-      `cannot reach the lab at ${BASE_URL} — start it with \`npm run dev\` ` +
+      `cannot reach the lab at ${base} — start it with \`npm run dev\` ` +
         `(this harness does not start a server). Cause: ${err.message}`
     );
   }
 
-  // Check it is actually the lab before waiting on the lab's own elements.
-  // The port is not proof of identity: vite takes the next free port when its
-  // default is busy, so a second project started first owns 5173 and this
-  // would happily measure that instead. Without this the first failure is
-  // "getComputedStyle: parameter 1 is not of type 'Element'" from the wait
-  // below, which sends you looking for a bug in here.
+  // Discovery already matched on this, so this only bites an explicit LAB_URL
+  // pointed at the wrong project — which is the case worth a real message,
+  // since otherwise the first failure is "getComputedStyle: parameter 1 is not
+  // of type 'Element'" out of the first-paint wait below, and that reads as a
+  // bug in here rather than as measuring somebody else's page.
   const title = await page.title();
-  if (title !== "Black Hole Lab") {
+  if (title !== TITLE) {
     await browser.close();
     throw new Error(
-      `${BASE_URL} is serving "${title}", not Black Hole Lab — another vite ` +
-        `project has this port. Point LAB_URL at the right one.`
+      `${base} is serving "${title}", not ${TITLE} — another vite project has ` +
+        `this port. Point LAB_URL at the right one, or unset it to scan.`
     );
   }
 
@@ -270,6 +310,7 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
 
   const lab = {
     page,
+    url: base,
 
     /**
      * Freeze one frame — scene, overlays and the geometry they were drawn

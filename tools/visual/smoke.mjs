@@ -28,6 +28,8 @@ const MIN_LIT = 5000;
 
 const lab = await openLab({ controls: { spin: 0.9 } });
 try {
+  // Which server, not just which port: several vite projects share this range.
+  console.log(`lab found at ${lab.url}\n`);
   const layout = await lab.capture();
   check(
     "renderer publishes its layout",

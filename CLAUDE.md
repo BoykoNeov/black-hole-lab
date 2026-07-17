@@ -22,7 +22,8 @@ npm install
 npm run dev     # dev server
 npm test        # physics unit tests (vitest)
 npm run build   # tsc --noEmit + vite build
-npm run shot    # visual harness smoke run (needs `npm run dev` already up)
+npm run shot    # visual harness smoke run (needs `npm run dev` already up;
+                # finds its port itself — vite climbs past other projects)
 ```
 
 ## Conventions

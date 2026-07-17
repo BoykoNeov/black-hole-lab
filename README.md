@@ -313,9 +313,11 @@ and `tsconfig` covers `src` + `test`.
   the HUD canvas and a composite of the two, all frozen from one frame, and
   offers the measurements that make an overlay claim checkable rather than
   eyeballed: `stripDiff` (compare mode's halves against each other) and `drift`
-  (one strip against itself over time). Assumes `npm run dev` is already
-  serving; writes PNGs outside the repo. See `docs/DESIGN.md` for why it
-  measures instead of diffing against stored images.
+  (one strip against itself over time). Needs `npm run dev` already serving —
+  it finds it by scanning 5173–5188 for the port answering as this lab, since
+  vite climbs past whatever else is running, so no port is reliably ours
+  (`LAB_URL` overrides). Writes PNGs outside the repo. See `docs/DESIGN.md` for
+  why it measures instead of diffing against stored images.
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame
