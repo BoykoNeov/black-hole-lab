@@ -337,6 +337,118 @@ of room. Single view passes the full canvas: its shadow label rides at the
 disk's mid-height, nowhere near the panels, and bounding it would move labels
 this change never touched.
 
+## Slice 8 — what gamma costs the renderer
+
+The photon ring is not one feature. It is a ladder: light that looped the hole
+once, then twice, then forever, each image thinner than the last by a fixed
+factor. That factor is `e^-gamma`, with gamma the Lyapunov exponent of the
+unstable circular photon orbit — how fast the orbit sheds what it holds.
+`edu.ts`'s `photonOrbitLyapunov` gives it in closed form, per half-orbit, and it
+is exactly `pi` at a = 0: the textbook `e^-pi ~ 1/23`.
+
+Spin splits it hard, and asymmetrically. Frame dragging makes the prograde orbit
+long-lived — gamma falls to 1.22 at a = 0.9 and 0.19 at a = 0.998 — while the
+retrograde orbit becomes *more* unstable than Schwarzschild's, 4.00 and 4.08.
+So Schwarzschild's ladder is symmetric and collapses after one rung, and Kerr's
+is lopsided: rungs that barely converge on one edge, gone instantly on the other.
+
+The slice set out to draw that ladder. It found something better first.
+
+### The same number says where the picture lies
+
+Gamma does not only space the rings. It sets how long light lingers near the
+photon orbit — and therefore how many RK4 steps a ray needs before it resolves
+into "escaped" or "captured". The scene shader affords `MARCH_MAX_STEPS` of
+them, and a ray that spends the budget is left as captured. Where gamma is
+large that is free: the light is gone long before the budget is. Where gamma is
+small it is not, and the renderer paints escaping light black.
+
+Measured on the frame with `tools/visual/harness.mjs`, at a = 0.998, sky-lit,
+fov 30: the rendered black disk runs **51 px past the traced outline on the
+prograde edge**, and 0 px on the retrograde one. At a = 0 the two agree to a
+pixel. The rendered shadow is circular there; the true one is a D. The step
+budget fills in the D's flat side.
+
+That is a one-sided error, which is the whole tell — a projection bug would move
+both edges. The cost tracks gamma and nothing else:
+
+| edge | gamma | false shadow |
+|---|---|---|
+| a = 0, both | 3.14 | 0.2 px |
+| a = 0.9 retrograde | 4.00 | 0.0 px |
+| a = 0.998 retrograde | 4.08 | 0.0 px |
+| a = 0.9 prograde | 1.22 | 23 px |
+| a = 0.998 prograde | 0.19 | 53 px |
+
+### It is the budget, not float32
+
+The obvious second suspect is the shader's float32 against the oracle's float64,
+and the first draft of this section blamed both. It is neither honest nor true:
+the two were separated before the claim was written. Re-running the same
+float64 tracer at `MARCH_MAX_STEPS` instead of 4000 — budget the only variable —
+reproduces **53.5 px** against the 51 px measured on the rendered frame. There
+is nothing left for precision to explain, and `test/edu.test.ts` pins it.
+
+This matters for what you would do about it. A precision-limited edge would not
+be fixed by a bigger budget; a budget-limited one would. But see below.
+
+### Why the budget stays at 320
+
+Raising it pays badly, and gamma is again the reason. The rungs sit at `e^-gamma`
+of each other, so at a = 0.998 prograde (`e^-0.19 = 0.82`) they barely converge:
+each extra rung buys ~18% off the error and costs ~280 more steps. Sub-pixel
+would need thousands of steps — a global per-pixel cost, paid by every frame at
+every spin, to fix one edge at a setting almost nobody visits. The budget is a
+performance trade that at high spin has no good side, so it stays, and the lab
+says so rather than pretending otherwise.
+
+### What the lab does instead
+
+Nothing new is drawn. 6f's outline already shows the discrepancy — the orange D
+sitting inside the black disk is the renderer being caught — and it is the one
+that is right, because it traces to 4000 steps. What changed is that the code
+and docs no longer claim otherwise: `findShadowEdgeIncremental` used to say the
+outline "matches the rendered black disk by construction". It matches its
+*launch geometry* by construction. The integration is where they part.
+
+Two scoping notes the copy has to carry. The 51 px is a **sky-lit** number: a
+culled ray still keeps whatever disk light it crossed on the way in, so with the
+disk on those pixels render as disk rather than black and the D survives — the
+error is worst where there is nothing else to fill it. And gamma is a per-edge
+equatorial number, never one value around the ring: off the equatorial plane the
+orbits are Carter-Q spherical ones with their own exponents.
+
+### The winding number is a definition, not a detail
+
+Measuring any of this needs to know how far around a ray went, and the three
+candidates are not interchangeable. Counting equatorial-plane crossings — which
+`traceRayKerr` already did — is degenerate for an edge-on camera's in-plane
+rays, which never cross, and those are exactly where the equatorial gamma lives.
+Accumulating azimuth about the spin axis fails for rays that swing near that
+axis, where azimuth is ill-defined. The angle swept by the position direction
+needs neither a plane nor an axis, and at a = 0 — where spherical symmetry means
+every view must agree — it is the only one that does: edge-on and face-on fits
+return 3.14570 apiece, against azimuth's 3.14570 and 3.17941. So that is what
+the tracer reports.
+
+Quote gamma, or "each ring is `e^-gamma` of the last" — never an absolute
+subring index. The winding is a swept angle measured from the camera, so it
+carries a camera-distance offset: the rung the lab calls 1 is just lensing at
+100 px out, not the literature's first subring. The *spacing* is invariant and
+the offset is not, which is why the tests fit a slope and never an intercept.
+
+### The fits sit high, and the tests say so
+
+Recovering gamma from traced rays — fitting winding against `ln(offset)`, whose
+slope is `-1/gamma` — lands a few tenths of a percent above the closed form,
+every spin, both edges. That is the stepper: finite RK4 steps along a trajectory
+whose deviation is growing exponentially overstate the growth. It is systematic
+and one-sided, so `edu.test.ts` asserts the sign of the bias rather than hiding
+it inside a symmetric tolerance. A fit that came in *low* would mean something
+new, and the test is written to notice.
+
+---
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

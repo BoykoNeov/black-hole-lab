@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cameraBasis } from "../src/camera";
 import {
+  MARCH_MAX_STEPS,
   buildStaticTetrad,
   circEL,
   horizonRadius,
@@ -375,6 +376,94 @@ describe("photonOrbitLyapunov against traced rays", () => {
     expectFit(retro, photonOrbitLyapunov(0.9, false));
     // the headline contrast: the prograde edge sheds light ~3x slower
     expect(retro / pro).toBeGreaterThan(3);
+  });
+});
+
+/**
+ * What gamma costs the renderer.
+ *
+ * The scene shader marches at most MARCH_MAX_STEPS and leaves a ray that spends
+ * them as captured. Whether that is free depends on the SAME exponent that
+ * spaces the photon ring: reaching a given winding costs a number of steps set
+ * by gamma, so where gamma is small the light lingers, blows the budget while
+ * still outside the true shadow, and gets painted as shadow.
+ *
+ * findShadowEdge traces with maxSteps 4000, so it finds the true edge — which
+ * is why the traced outline and the rendered black disk part company at high
+ * spin, on the prograde edge only. This pins the effect with the ONLY variable
+ * being the budget (both sides float64, same tracer, same geometry), which is
+ * how it was shown to be the budget rather than the shader's float32: at
+ * a = 0.998 this returns 53.5px against 51px measured on the rendered frame
+ * through tools/visual/harness.mjs, leaving nothing for precision to explain.
+ */
+function edgeNdcAt(a: number, side: number, maxSteps: number): number {
+  const cam = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 30 });
+  const tanHalfFov = Math.tan((30 * Math.PI) / 360);
+  const aspect = 1280 / 800;
+  const tet = buildStaticTetrad(cam.pos, a, cam.right, cam.up, cam.fwd);
+  const captured = (s: number) => {
+    const vx = side * s * tanHalfFov * aspect;
+    const inv = 1 / Math.hypot(vx, 1);
+    const m: V4 = [0, 0, 0, 0];
+    for (let i = 0; i < 4; i++) {
+      m[i] = vx * inv * tet.rightCov[i] + inv * tet.fwdCov[i] - tet.uCov[i];
+    }
+    // rEscape 64 is the shader's own escape radius, not this app's camDist + 40
+    return !traceRayKerr(cam.pos, m, a, { rEscape: 64, maxSteps }).escaped;
+  };
+  let lo = 0;
+  let hi = 0.05;
+  while (hi <= 3 && captured(hi)) {
+    lo = hi;
+    hi *= 1.6;
+  }
+  for (let i = 0; i < 44; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (captured(mid)) lo = mid;
+    else hi = mid;
+  }
+  return 0.5 * (lo + hi);
+}
+
+describe("the march budget's cost, against gamma", () => {
+  // ndcX spans -1..1 across the WIDTH, so a horizontal offset is ndc * w/2.
+  const PX = 1280 / 2;
+  const fakeShadowPx = (a: number, side: number) =>
+    (edgeNdcAt(a, side, MARCH_MAX_STEPS) - edgeNdcAt(a, side, 4000)) * PX;
+
+  it("costs nothing at a = 0, where light leaves the photon orbit fast", () => {
+    // gamma = pi both edges: a ray is gone long before the budget runs out, so
+    // the rendered disk and the traced outline agree (measured: 1px apart).
+    expect(Math.abs(fakeShadowPx(0, +1))).toBeLessThan(1);
+    expect(Math.abs(fakeShadowPx(0, -1))).toBeLessThan(1);
+  });
+
+  it("costs nothing on the retrograde edge at any spin", () => {
+    // gamma RISES with spin here (4.08 at a = 0.998) — the retrograde orbit is
+    // more unstable than Schwarzschild's, so this edge only gets easier.
+    expect(Math.abs(fakeShadowPx(0.9, +1))).toBeLessThan(1);
+    expect(Math.abs(fakeShadowPx(0.998, +1))).toBeLessThan(1);
+  });
+
+  it("paints tens of px of false shadow on the prograde edge at high spin", () => {
+    // gamma -> 0.19 at a = 0.998: the light lingers, the budget runs out first,
+    // and the ray is left as captured while still outside the true shadow. The
+    // sign matters — the edge can only ever move OUTWARD, never in.
+    expect(fakeShadowPx(0.9, -1)).toBeGreaterThan(15);
+    expect(fakeShadowPx(0.998, -1)).toBeGreaterThan(45);
+  });
+
+  it("tracks gamma: the flatter the exponent, the more it fakes", () => {
+    // The claim the DESIGN.md writeup rests on — one number both spaces the
+    // ring and sets where the renderer runs out.
+    const cases = [0, 0.5, 0.9, 0.998].map((a) => ({
+      gamma: photonOrbitLyapunov(a, true),
+      px: fakeShadowPx(a, -1),
+    }));
+    for (let i = 1; i < cases.length; i++) {
+      expect(cases[i].gamma).toBeLessThan(cases[i - 1].gamma); // gamma falls
+      expect(cases[i].px).toBeGreaterThan(cases[i - 1].px); // the lie grows
+    }
   });
 });
 

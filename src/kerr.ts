@@ -427,6 +427,19 @@ export function stepLength(r: number): number {
   return Math.min(Math.max((0.16 * r * r) / (r + 14), 0.02), 4);
 }
 
+/**
+ * The scene shader's march budget: the hard cap on its per-pixel RK4 loop, and
+ * the step count the medium/high quality presets spend. Lives here so the GLSL
+ * (which interpolates it into its loop bound), main.ts's presets and the tests
+ * cannot drift apart — the number is only meaningful if all three agree.
+ *
+ * A ray that spends it is left as captured rather than escaping, which is not
+ * free: see the shadow-edge budget test in test/edu.test.ts and the DESIGN.md
+ * section on what gamma costs the renderer. Raising it is a real (and at high
+ * spin, badly-paying) performance trade, not a bug fix.
+ */
+export const MARCH_MAX_STEPS = 320;
+
 export interface KerrCrossing {
   /** BL radius of the equatorial crossing. */
   r: number;

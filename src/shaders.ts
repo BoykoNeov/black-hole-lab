@@ -1,5 +1,6 @@
 /** All GLSL (WebGL2 / ES 3.0) shader sources for the slice-4 pipeline. */
 
+import { MARCH_MAX_STEPS } from "./kerr";
 import { GAS_COUNT, STAR_COUNT } from "./matter";
 import { TDE_MAX } from "./tde";
 
@@ -567,7 +568,7 @@ void main() {
 
     bool escaped = false;
     haveSky = false;
-    for (int i = 0; i < 320; i++) {
+    for (int i = 0; i < ${MARCH_MAX_STEPS}; i++) {
       if (i >= uMaxSteps) break; // budget spent = winding: falls through as captured
       float r = ksRadius(p);
       vec3 dp1, dm1;
@@ -612,7 +613,12 @@ void main() {
       }
       if (thru < 0.012) break; // disk is opaque here anyway
     }
-    // loop exhaustion = winding at the photon shell: leave as captured
+    // Loop exhaustion = winding at the photon shell: leave as captured. What
+    // that costs is set by the photon orbit's Lyapunov exponent, and at high
+    // spin it is not small: the prograde orbit's gamma falls to 0.19 at
+    // a = 0.998, so its rays linger and blow this budget while still outside
+    // the true shadow, painting ~50px of extra black on that edge in a
+    // sky-lit view. See docs/DESIGN.md, "what gamma costs the renderer".
 
     if (escaped) {
       vec3 dpF, dmF;

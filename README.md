@@ -158,13 +158,41 @@ both halves, and the clocks and the rest of the callout layer stay off. The full
 argument, and what the split deliberately does *not* hold constant, is in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-7--schwarzschild-vs-kerr).
 
+### The photon ring's ladder, and what it costs the renderer (slice 8)
+
+The photon ring is a ladder of images — light that looped the hole once, twice,
+forever — each thinner than the last by `e^(−γ)`, with γ the Lyapunov exponent
+of the unstable photon orbit (`edu.ts`'s `photonOrbitLyapunov`). It is exactly
+π at a = 0, and spin splits it hard and asymmetrically: 0.19 on the prograde
+edge at a = 0.998 against 4.08 on the retrograde one.
+
+The same γ says where the picture stops being true. It sets how long light
+lingers near the photon orbit, hence how many march steps a ray needs to resolve
+as escaped — and the shader affords `MARCH_MAX_STEPS` of them, leaving a spent
+ray as captured. Where γ is small, escaping light gets painted black: at
+a = 0.998, sky-lit, **the rendered black disk runs ~50 px past the true shadow
+edge on the prograde edge** and 0 px on the retrograde one, so the render shows
+a circle where the truth is a D. At a = 0 the two agree to a pixel.
+
+6f's traced outline is the one that is right (it traces to 4000 steps); where it
+sits inside the black disk, the renderer is the thing in error. Nothing new is
+drawn — the discrepancy was already on screen, only mislabelled. Why the budget
+stays where it is, and how the step budget was separated from float32 rather
+than guessed at, are in
+[`docs/DESIGN.md`](docs/DESIGN.md#slice-8--what-gamma-costs-the-renderer).
+
 ## File map
 
 ### `src/`
 
 - `src/kerr.ts` — Kerr physics oracle: closed forms (horizon, ISCO, circular
   E/L/Ω, plunge 4-velocity), Kerr–Schild metric (raise/lower), static
-  tetrad, Hamiltonian geodesic RK4 (pure, tested; the GLSL mirrors it)
+  tetrad, Hamiltonian geodesic RK4 (pure, tested; the GLSL mirrors it). Each
+  trace reports its `winding` — the angle its position direction swept, in
+  half-turns — which is how far around the hole the ray actually went, and the
+  measure the photon-ring ladder is spaced in. Also owns `MARCH_MAX_STEPS`, the
+  shader's march budget: the GLSL interpolates it into its loop bound and
+  `main.ts`'s quality presets spend it, so the three cannot drift apart
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -186,12 +214,16 @@ argument, and what the split deliberately does *not* hold constant, is in
   embedding profile z(r) — Flamm's paraboloid at a = 0, integrated with the
   rim's inverse-square-root singularity split off in closed form — `Trail`,
   the fixed-size ring buffer of (position, time) samples behind the orbit
-  trails, and the shadow-edge finder: the on-screen capture boundary, located
-  by bisecting CPU rays launched exactly as the shader launches them, exposed
-  as a generator yielding per trace so the render loop can drain it against a
-  time budget, plus the callout geometry: which disk lobe is beamed toward
-  the camera (from the same prograde `uCircCart` the shader's disk shift is
-  built on) and how nearly a star sits behind the hole (pure, tested)
+  trails, `photonOrbitLyapunov` — how fast the photon orbit sheds light, which
+  spaces the ring's ladder at `e^(−γ)` and *also* sets where the shader's march
+  budget runs out and paints escaping light black — and the shadow-edge finder:
+  the true capture boundary, located by bisecting CPU rays launched exactly as
+  the shader launches them but integrated far past its budget, exposed as a
+  generator yielding per trace so the render loop can drain it against a time
+  budget (at high spin this is *not* the edge on screen — see slice 8), plus the
+  callout geometry: which disk lobe is beamed toward the camera (from the same
+  prograde `uCircCart` the shader's disk shift is built on) and how nearly a
+  star sits behind the hole (pure, tested)
 - `src/compare.ts` — slice 7's split-screen layout math: the two equal
   viewports, their midpoint, and each side's name (pure, tested). Both halves
   get exactly the same width — the gutter absorbs the odd pixel — because
@@ -369,5 +401,13 @@ and `tsconfig` covers `src` + `test`.
    - 7d orbit trails per side — the left ring closes, the right one walks ✅
    - 7e shadow-edge label per side — 2.6× against 4.3×, the outlines' contrast
      as a number ✅
+8. **The photon ring's ladder** — γ, the unstable photon orbit's Lyapunov
+   exponent: the `e^(−γ)` spacing of the ring's nested images, π at a = 0 and
+   split 0.19/4.08 across the two edges at a = 0.998. Set out to draw the
+   ladder; found that the same γ sets how many march steps a ray needs, so
+   where it is small the shader's budget runs out and paints escaping light as
+   shadow (~50 px of it on the prograde edge at a = 0.998, sky-lit; 0 px at
+   a = 0). No new overlay — 6f's outline already showed it, against docs that
+   claimed the two agreed ✅
 
-The roadmap is complete. There is no slice 8 queued.
+The roadmap is complete. There is no slice 9 queued.

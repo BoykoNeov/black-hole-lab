@@ -376,11 +376,21 @@ export interface ShadowEdge {
 /**
  * The exact shadow edge for the current camera, spin and lens, one screen
  * azimuth per yield. Rays launch precisely as the scene shader launches them
- * (same static tetrad, same ndc → direction map), so the outline matches the
- * rendered black disk by construction — no far-field or small-angle
+ * (same static tetrad, same ndc → direction map) — no far-field or small-angle
  * approximation, and the Kerr D-shape comes out for free. Along each azimuth
  * the capture/escape transition is bracketed by geometric growth from ndc
  * radius 0.05 and bisected 16 times, pinning it to a few 1e-6 in ndc.
+ *
+ * This is the TRUE edge, which at high spin is not the one on screen. The
+ * launch geometry is shared with the shader, but the integration is not: this
+ * traces to maxSteps 4000 while the shader stops at MARCH_MAX_STEPS and leaves
+ * a spent ray as captured. Near the prograde photon orbit at a = 0.998 the
+ * Lyapunov exponent falls to 0.19, so light lingers there and blows that budget
+ * while still outside the true shadow — and the renderer paints it black. The
+ * outline then runs ~50px INSIDE the rendered disk on that edge (0px at a = 0,
+ * 0px retrograde at any spin; measured on the frame with the harness and pinned
+ * in edu.test.ts). Where they differ, this is right and the picture is wrong;
+ * see docs/DESIGN.md, "what gamma costs the renderer".
  *
  * Cost is ~20 traces per azimuth, ~1000 per outline — and a single trace is
  * the atomic unit of work, from ~0.1 ms in the easy cases to milliseconds for

@@ -1,4 +1,4 @@
-import { buildStaticTetrad, ksRadius, type V3 } from "./kerr";
+import { MARCH_MAX_STEPS, buildStaticTetrad, ksRadius, type V3 } from "./kerr";
 import { tempNorm } from "./disk";
 import {
   bandLabel,
@@ -114,10 +114,13 @@ const MAX_DPR = 1.5;
 // pyramid is left alone at every tier: it runs on quarter-res and down, so it
 // is not where the time goes.
 type Quality = "low" | "medium" | "high";
+// medium/high spend the shader's whole march budget; only low shortens it, and
+// MARCH_MAX_STEPS is the loop's own bound, so raising these past it does
+// nothing. They share the constant rather than repeating 320 for that reason.
 const QUALITY: Record<Quality, { scale: number; maxSteps: number; stepScale: number }> = {
-  low: { scale: 0.5, maxSteps: 160, stepScale: 1.6 },
-  medium: { scale: 0.72, maxSteps: 320, stepScale: 1.0 },
-  high: { scale: 1.0, maxSteps: 320, stepScale: 1.0 },
+  low: { scale: 0.5, maxSteps: MARCH_MAX_STEPS / 2, stepScale: 1.6 },
+  medium: { scale: 0.72, maxSteps: MARCH_MAX_STEPS, stepScale: 1.0 },
+  high: { scale: 1.0, maxSteps: MARCH_MAX_STEPS, stepScale: 1.0 },
 };
 
 // rAF is already vsync-capped, so a limit at or above the refresh rate is a
