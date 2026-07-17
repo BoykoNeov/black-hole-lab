@@ -18,6 +18,7 @@ import {
 import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
 import type { CameraBasis } from "./camera";
 import { splitMidpoint } from "./compare";
+import { EMBED_H, EMBED_W, POTENTIAL_H, POTENTIAL_W } from "./insets";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
@@ -211,16 +212,6 @@ export function drawClocks(
 // ---------- resizable insets ----------
 
 /**
- * Uniform scale bounds for the draggable insets. The floor is where the 9px
- * axis labels stop being readable; the ceiling is roughly a third of a 1080p
- * height, past which an inset stops being an inset.
- */
-export const INSET_SCALE_MIN = 0.6;
-export const INSET_SCALE_MAX = 2.4;
-/** Side of the corner grip's hit box, in CSS px. */
-export const GRIP_SIZE = 15;
-
-/**
  * Corner grip for a resizable inset, at (cx, cy). Drawn in screen space at a
  * constant size rather than inside the panel's scale transform: a grab target
  * that shrank along with the panel would be hardest to hit exactly when you
@@ -253,8 +244,6 @@ export function drawResizeGrip(
 
 // ---------- effective-potential inset (6c) ----------
 
-export const POTENTIAL_W = 300;
-export const POTENTIAL_H = 182;
 /** r window of the plot. 0 (not r+) so the horizon band is visible. */
 const POT_RMAX = 20;
 /** V_eff window — fixed, so sliding L visibly raises and lowers the curve. */
@@ -510,9 +499,6 @@ function drawPotentialBody(
 }
 
 // ---------- embedding diagram, "the funnel" (6d) ----------
-
-export const EMBED_W = 260;
-export const EMBED_H = 200;
 
 /**
  * Fixed viewing tilt, as a rigid rotation of the surface about the screen's

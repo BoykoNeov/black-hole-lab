@@ -27,19 +27,11 @@ import {
   sideLabel,
   splitViewports,
   type Rect,
-  type Split,
 } from "./compare";
 import {
   EMBED_GAS,
-  EMBED_H,
   EMBED_STARS,
   EMBED_TDE,
-  EMBED_W,
-  GRIP_SIZE,
-  INSET_SCALE_MAX,
-  INSET_SCALE_MIN,
-  POTENTIAL_H,
-  POTENTIAL_W,
   clearHud,
   drawCallouts,
   drawClocks,
@@ -79,6 +71,19 @@ import {
   type ShadowEdge,
   type ShadowExtremes,
 } from "./edu";
+import {
+  INSET_MARGIN,
+  INSET_SPEC,
+  dragScale,
+  gripUnder,
+  insetBox,
+  insetSides,
+  sameGrip,
+  type Grip,
+  type InsetId,
+  type InsetSide,
+  type InsetView,
+} from "./insets";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
 import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
 import {
@@ -227,154 +232,82 @@ const params = {
 };
 
 // ---------- resizable insets ----------
+// The layout and hit-test math is insets.ts; this is the DOM half of it.
+//
 // The HUD canvas is pointer-events:none so that camera drags pass straight
 // through it to #view — which also means the insets' own grips never receive a
 // pointer event. So the hit-testing lives here, on the GL canvas, and claims
 // the pointerdown before the camera turns it into an orbit drag.
 
-const INSET_MARGIN = 12;
-/** Left edge of the potential inset: clear of the opaque #panel column. */
-const POT_X = 280;
 /**
- * Left edge of compare mode's split region, in CSS px — clear of the same
- * opaque column, so neither half's hole ends up behind it. Measured once
- * rather than hardcoded like POT_X: #panel is position:fixed at a fixed
- * width, so its right edge never moves with the window, and reading it keeps
- * this honest if the panel's CSS width ever changes.
+ * Left edge of compare mode's split region, in CSS px — clear of the opaque
+ * #panel column, so neither half's hole ends up behind it. Measured once
+ * rather than hardcoded like insets.ts's POT_X: #panel is position:fixed at a
+ * fixed width, so its right edge never moves with the window, and reading it
+ * keeps this honest if the panel's CSS width ever changes.
  */
 const COMPARE_X0 =
   Math.ceil(
     (document.getElementById("panel") as HTMLDivElement).getBoundingClientRect().right
   ) + INSET_MARGIN;
-/** Grab forgiveness outside the grip's corner, in CSS px. */
-const GRIP_HALO = 5;
 
-type InsetId = "pot" | "embed";
-interface InsetSpec {
-  /** Size at scale 1. */
-  W: number;
-  H: number;
-  /** Signs pointing from the grip corner into the panel body. Both insets are
-   *  bottom-anchored and grip the top corner facing the middle of the screen,
-   *  so both grow up-and-inward. */
-  inX: number;
-  inY: number;
-  cursor: string;
-}
-const INSET_SPEC: Record<InsetId, InsetSpec> = {
-  pot: { W: POTENTIAL_W, H: POTENTIAL_H, inX: -1, inY: 1, cursor: "nesw-resize" },
-  embed: { W: EMBED_W, H: EMBED_H, inX: 1, inY: 1, cursor: "nwse-resize" },
+// One long-lived view rather than a fresh object per call: insetBox runs per
+// inset per side every frame, and everything else the insets redraw is
+// preallocated for the same reason.
+const insetView: InsetView = {
+  width: 0,
+  height: 0,
+  x0: COMPARE_X0,
+  compare: false,
+  scale: { pot: 1, embed: 1 },
+  shown: { pot: false, embed: false },
 };
 
-const insetScale = (id: InsetId) => (id === "pot" ? params.potScale : params.embedScale);
-
-/** Which half of compare mode an inset belongs to; null = the single view. */
-type InsetSide = "left" | "right";
-
-/**
- * Compare mode's two halves in CSS px. The render loop builds its own copy in
- * scene-target px to hand to gl.viewport; this one is re-derived from
- * clientWidth rather than divided back out of it, which the 7b outline may not
- * do — that traces the drawn disk and has to land on the very pixels the
- * shader marched. An inset only has to sit *inside* a half, so a rounding
- * pixel either way is invisible, and being pure in clientWidth lets the grip
- * hit-test call this from a pointer handler, outside the render loop.
- */
-function splitCss(): Split {
-  const w = Math.max(canvas.clientWidth - COMPARE_X0, 0);
-  return splitViewports(COMPARE_X0, w, canvas.clientHeight, COMPARE_GUTTER);
+/** insetView, refreshed from the canvas and the knobs it follows. */
+function viewNow(): InsetView {
+  insetView.width = canvas.clientWidth;
+  insetView.height = canvas.clientHeight;
+  insetView.compare = params.compare;
+  insetView.scale.pot = params.potScale;
+  insetView.scale.embed = params.embedScale;
+  insetView.shown.pot = params.eduPotential;
+  insetView.shown.embed = params.eduEmbed;
+  return insetView;
 }
-
-/**
- * The horizontal band an inset anchors in: the frame at large, or in compare
- * mode the one viewport whose spacetime it plots (7c). Both insets keep the
- * single view's convention inside that band — potential against the left edge,
- * funnel against the right — so a half reads like a small copy of the whole.
- */
-function insetBand(side: InsetSide | null): { left: number; right: number } {
-  if (side === null) return { left: POT_X, right: canvas.clientWidth - INSET_MARGIN };
-  const r = splitCss()[side];
-  return { left: r.x + INSET_MARGIN, right: r.x + r.w - INSET_MARGIN };
-}
-
-/** The sides an inset draws on: both halves while comparing, else one frame. */
-const insetSides = (): (InsetSide | null)[] => (params.compare ? ["left", "right"] : [null]);
 
 /** The spin a side is showing, and the radii already derived from it. */
 const sideSpin = (side: InsetSide | null) =>
   side === "left" ? COMPARE_SPIN_LEFT : params.spin;
 const sideCtx = (side: InsetSide | null) => (side === "left" ? spinCtxSchw : spinCtx);
 
-/** Top-left of an inset and the corner its grip sits on, in CSS px. */
-function insetBox(
-  id: InsetId,
-  side: InsetSide | null
-): { x: number; y: number; gx: number; gy: number } {
-  const s = INSET_SPEC[id];
-  const w = s.W * insetScale(id);
-  const h = s.H * insetScale(id);
-  const band = insetBand(side);
-  const x = id === "pot" ? band.left : band.right - w;
-  const y = canvas.clientHeight - h - INSET_MARGIN;
-  return { x, y, gx: id === "pot" ? x + w : x, gy: y };
-}
-
-function insetShown(id: InsetId): boolean {
-  return id === "pot" ? params.eduPotential : params.eduEmbed;
-}
-
-/** Which grip is under (px, py), if any. Embedding first: it is drawn last. */
-function gripUnder(px: number, py: number): { id: InsetId; side: InsetSide | null } | null {
-  for (const id of ["embed", "pot"] as InsetId[]) {
-    if (!insetShown(id)) continue;
-    for (const side of insetSides()) {
-      const b = insetBox(id, side);
-      const s = INSET_SPEC[id];
-      const dx = (px - b.gx) * s.inX;
-      const dy = (py - b.gy) * s.inY;
-      if (dx >= -GRIP_HALO && dx <= GRIP_SIZE && dy >= -GRIP_HALO && dy <= GRIP_SIZE) {
-        return { id, side };
-      }
-    }
-  }
-  return null;
-}
-
-const sameGrip = (
-  g: { id: InsetId; side: InsetSide | null } | null,
-  id: InsetId,
-  side: InsetSide | null
-) => g !== null && g.id === id && g.side === side;
-
-// The scale is per inset, NOT per side: either grip resizes both halves' copies
-// together. Letting the sides be sized apart would put a difference into the
-// one picture whose whole job is to isolate what the spin does — the same
-// reason splitViewports hands both viewports exactly equal widths.
 let insetDrag: { id: InsetId; startScale: number; x0: number; y0: number } | null = null;
-let gripHot: { id: InsetId; side: InsetSide | null } | null = null;
+let gripHot: Grip | null = null;
 
 function insetClaim(e: PointerEvent): boolean {
-  const hit = gripUnder(e.clientX, e.clientY);
+  const hit = gripUnder(viewNow(), e.clientX, e.clientY);
   if (!hit) return false;
-  insetDrag = { id: hit.id, startScale: insetScale(hit.id), x0: e.clientX, y0: e.clientY };
+  insetDrag = {
+    id: hit.id,
+    startScale: insetView.scale[hit.id],
+    x0: e.clientX,
+    y0: e.clientY,
+  };
   canvas.setPointerCapture(e.pointerId);
   return true;
 }
 
 canvas.addEventListener("pointermove", (e) => {
   if (!insetDrag) {
-    gripHot = gripUnder(e.clientX, e.clientY);
+    gripHot = gripUnder(viewNow(), e.clientX, e.clientY);
     canvas.style.cursor = gripHot ? INSET_SPEC[gripHot.id].cursor : "";
     return;
   }
-  const s = INSET_SPEC[insetDrag.id];
-  // Away from the panel body along both axes grows it; average the two so the
-  // aspect stays locked and the grip tracks the cursor's diagonal.
-  const ds =
-    0.5 *
-    ((-s.inX * (e.clientX - insetDrag.x0)) / s.W +
-      (-s.inY * (e.clientY - insetDrag.y0)) / s.H);
-  const v = Math.min(INSET_SCALE_MAX, Math.max(INSET_SCALE_MIN, insetDrag.startScale + ds));
+  const v = dragScale(
+    insetDrag.id,
+    insetDrag.startScale,
+    e.clientX - insetDrag.x0,
+    e.clientY - insetDrag.y0
+  );
   if (insetDrag.id === "pot") params.potScale = v;
   else params.embedScale = v;
 });
@@ -1396,7 +1329,9 @@ function render() {
     drawClocks(hudCtx, clockEntries, nClocks, canvas.clientWidth - 12, 12);
   }
 
-  if (insetShown("pot")) {
+  const iv = viewNow();
+
+  if (iv.shown.pot) {
     // The TDE is stateful and compare mode draws it on neither half, so its
     // marks go with it: a dot riding a curve for a spacetime it was never
     // stepped in is exactly the kind of borrowed matter the mode refuses.
@@ -1414,9 +1349,9 @@ function render() {
     // The axis window is a fixed constant, so the two panels are directly
     // comparable by eye — no per-side rescaling can forge a difference the
     // spin did not make, which is the same bargain the equal-width split makes.
-    for (const side of insetSides()) {
+    for (const side of insetSides(iv.compare)) {
       const sctx = sideCtx(side);
-      const box = insetBox("pot", side);
+      const box = insetBox(iv, "pot", side);
       drawPotential(
         hudCtx,
         box.x,
@@ -1444,13 +1379,13 @@ function render() {
     }
   }
 
-  if (insetShown("embed")) {
+  if (iv.shown.embed) {
     // One funnel per side (7c). Two of these cannot be overlaid into a single
     // panel the way two V_eff curves could — a wireframe surface drawn twice
     // over itself is a mesh nobody can read — so per-side is what carries both
     // spins here, and the potential inset follows it rather than splitting the
     // two overlays' conventions.
-    for (const side of insetSides()) {
+    for (const side of insetSides(iv.compare)) {
       const a = sideSpin(side);
       const sctx = sideCtx(side);
       // Only bodies the renderer is actually showing get a dot, so the funnel
@@ -1486,7 +1421,7 @@ function render() {
           push(ksRadius(b.p, params.spin), Math.atan2(b.p[2], b.p[0]), EMBED_TDE);
         }
       }
-      const box = insetBox("embed", side);
+      const box = insetBox(iv, "embed", side);
       drawEmbedding(
         hudCtx,
         box.x,
