@@ -499,7 +499,8 @@ black disk is what caught it. But it is not exact: 4000 steps still leave it
 shader's old error and invisible on the frame, but it is not zero, and
 `edu.test.ts` pins it rather than rounding it away. The renderer is now the more
 accurate of the two. Pointing `findShadowEdge` at `rayCaptured` would make the
-outline exact and drop ~540 ms of tracing per outline; not done here.
+outline exact and drop ~540 ms of tracing per outline; not done here — done in
+slice 9, below.
 
 The code-level claim that started all this stands corrected either way:
 `findShadowEdgeIncremental` used to say the outline "matches the rendered black
@@ -536,6 +537,100 @@ it inside a symmetric tolerance. A fit that came in *low* would mean something
 new, and the test is written to notice.
 
 ---
+
+## Slice 9 — the ladder, drawn; the outline, exact
+
+Slice 8 built a criterion and used it in one place. This slice found the
+criterion had a hole, then used it in two more.
+
+### The criterion was blind to the launch direction
+
+`rayCaptured` asked whether the radial potential dips negative anywhere between
+the horizon and the camera. For a ray moving inward that is the whole story:
+the first negative minimum below it is a turning point, and it reflects. But
+the test never looked at which way the ray was going, so a ray moving
+*outward* with a clean potential below it was called captured — a ray pointed
+straight away from the hole, λ = q = 0, R = r^4 > 0 everywhere, "captured".
+
+From the default camera it never showed. Such rays escape by marching long
+before the budget ends, so the shader never consulted the criterion for them,
+and the outline's bracket never launches a ray more than ~50° off the hole.
+But the orbit camera goes down to r = 3.2, and at a = 0.998 that is INSIDE the
+retrograde photon orbit at r = 3.9. A ray launched outward and retrograde from
+there climbs toward that orbit, and one of two things happens: R has a negative
+minimum at ~3.9, the ray turns and falls back down into a potential with no
+other turning point, and it is captured; or R stays positive there, and it
+leaves. The old test could not tell these apart because it never looked above
+the camera. Sweeping the sphere of launch directions from that position, the
+verdict changes on ~30% of them (746 of 2520 at a = 0.998; 1033 at a = 0, where
+r = 3.2 is just outside the photon sphere and nearly every outward ray leaves).
+
+The fix is one more clause, and it is exact: an outward ray is captured iff
+there is a negative minimum ABOVE the camera (R(∞) > 0 too, so a turning point
+up there is again a dip through a minimum) and none below. The sign of dr/dσ at
+launch is `grad(r) · dx/dσ` with the gradient `derivs` already differentiates
+f and l with. `test/kerr.test.ts` holds both branches to 20000-step traces from
+r = 3.2, and counts that both outcomes really occur. The shader mirrors it; the
+budget-exhausted rays it consults the criterion for are the ones winding at
+the retrograde orbit from inside, which is exactly the case that was wrong.
+
+### The outline is the criterion
+
+6f's outline traced 4000 RK4 steps per sample, ~1000 samples per outline, and
+was ~0.6 px outside the true edge at a = 0.998 prograde (the march's residual,
+pinned in `edu.test.ts` and kept pinned). Everything that made it expensive —
+the debounce, the per-trace generator, the frame budget that scaled with the
+measured frame interval, the faded stale outline, the harness's four-second
+`settle()` — existed because of that cost.
+
+It now asks `rayCaptured` per sample. A cubic solve instead of a march: the
+whole outline is well under a millisecond, so it is recomputed whenever the
+view changes and simply follows the camera under a drag. The sample count went
+to 96 azimuths and 24 bisections (1e-8 in ndc) because both were free. The
+generator, `findShadowEdgeIncremental`, the `fresh`/`deadline` state and the
+three `SHADOW_*` budget constants are gone; the outline has no stale state to
+fade. And the claim `findShadowEdgeIncremental` once made — "matches the
+rendered black disk by construction" — is finally true: the shader's fate test
+and the outline's are the same function of the launch geometry.
+
+### Drawing the ladder
+
+Slice 8 set out to draw the ladder and drew nothing. The ingredient it needed
+was already defined: `traceRayKerr`'s `winding`, the angle the ray's position
+direction sweeps, in half-turns. The shader now accumulates the same sum step
+by step (`atan(|p × p'|, p · p')`, gated behind the mode's uniform so the
+normal render pays nothing) and, in ladder mode, replaces the pixel's colour
+with a band per whole half-turn.
+
+Why the swept angle and not the equatorial crossing count is argued in slice 8
+and holds here for the same reason: it needs no plane and no axis. What it
+gives on screen is the honest version of the "n-th subring" picture. Band 0–1
+is the direct view; the 0/1 boundary is the Einstein ring of the point behind
+the hole; 1–2 is the far side seen once around; every further integer is
+another Einstein ring of the point behind the hole (odd) or behind the camera
+(even). Each band is `e^(−γ)` the width of the last, so the picture at a = 0
+is three bands and a hairline, and the prograde edge at a = 0.998 is a
+staircase with ~0.82 per step — that ratio is the whole point, and the legend
+quotes it per edge from `photonOrbitLyapunov`.
+
+Three choices in the colouring. The hue is the band but the *brightness* is the
+scene's own luminance, Reinhard-squashed, so the disk's crossings and the sky
+survive underneath and the view stays a view of the hole rather than a
+diagram of it. The integer boundaries get a constant-width hairline from
+`fwidth`, because the bands near the critical curve are sub-pixel and only the
+lines make them countable. And the band of rays still winding when the budget
+ends is its own colour, magenta, not a band number: their fate is exact and
+their colour in the normal view is not (slice 8's last scoping note), and this
+is the one place that band is drawn as what it is. On the frame it is the
+~50 px on the a = 0.998 prograde edge that slice 8 measured, now visible
+without a harness, and the acceptance test for whatever closes it
+(`docs/ROADMAP.md`, H1).
+
+The palette lives in `shaders.ts` as data, `LADDER_RUNGS`, and the GLSL is
+generated from it. The legend in `hud.ts` reads the same table, so a swatch
+cannot name a band the shader paints differently. The legend's own layout is
+`insets.ts`'s `legendBox`, tested, because a panel drawn at a position nothing
+checks is how the insets' grips ended up unreachable once already.
 
 ## The visual harness — measuring instead of remembering
 
@@ -614,11 +709,21 @@ Its own pixel math runs in the page rather than in node, which is what keeps
 mean decoding PNGs there, and that is a dependency bought for twenty lines of
 loop.
 
-One trap it cannot remove, only respect: 6f's outline is debounced 250 ms and
-then traced across frames at ~3 ms each — a full one is ~540 ms of tracing at
-a = 0.998, so about three seconds at 60 fps. `settle()` defaults above that.
-Shoot early and you get a half-traced outline, which looks exactly like a broken
-overlay and is the most convincing wrong answer in here.
+One trap it used to have to respect: 6f's outline was debounced 250 ms and
+then traced across frames at ~3 ms each — a full one was ~540 ms of tracing at
+a = 0.998, so about three seconds at 60 fps, and `settle()` defaulted above
+that. Since slice 9 the outline is exact and immediate, so `settle()` is only
+about the things that still take time: trails filling in, and the frame after a
+control change. Shoot too early and you get the frame before the change, which
+looks exactly like a broken control and is the most convincing wrong answer in
+here.
+
+It also cannot run where playwright's pinned chromium is not. Playwright
+refuses any build but the one its release wants, which a sandbox or a CI image
+may not carry; `LAB_CHROMIUM` points it at a preinstalled one instead. That
+build is still headless and still not anyone's profile, so the rule above
+holds. Under software GL a frame is tens of seconds rather than tens of
+milliseconds, and the smoke test's fixed waits are tuned for a GPU.
 
 ### The launcher reuses rather than stacks
 

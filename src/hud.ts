@@ -10,6 +10,7 @@ import {
   TRAIL_CAP_STAR,
   TRAIL_CAP_TDE,
   embeddingZAt,
+  photonOrbitLyapunov,
   photonOrbitRadius,
   projectToScreen,
   shadowHorizonRatio,
@@ -18,7 +19,8 @@ import {
 import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
 import type { CameraBasis } from "./camera";
 import { COMPARE_SPIN_LEFT, splitMidpoint } from "./compare";
-import { EMBED_H, EMBED_W, POTENTIAL_H, POTENTIAL_W } from "./insets";
+import { EMBED_H, EMBED_W, LEGEND_H, LEGEND_W, POTENTIAL_H, POTENTIAL_W } from "./insets";
+import { LADDER_RUNGS, LADDER_UNRESOLVED } from "./shaders";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
@@ -149,6 +151,9 @@ const CLOCK_SLOT = 78; // horizontal pitch, wide enough for the rate caption
 const CLOCK_PERIOD = 60;
 const CLOCK_CAPTION =
   "× = tick rate vs a far-away clock · deeper gravity and faster motion both make a clock tick slower";
+/** Height the clock row takes from its top, caption included, in CSS px —
+ *  what anything laid out beneath it (the ladder legend) has to clear. */
+export const CLOCKS_BLOCK_H = CLOCK_R * 2 + 44 + 8;
 
 /**
  * Row of clock faces anchored with its right edge at x, top at y. Draws the
@@ -1011,8 +1016,8 @@ export function drawCallout(
  * same layout pass as 6g's — with the disk annotated too, the shadow-edge
  * label and the near Doppler label land on top of each other otherwise.
  *
- * alpha < 1 marks a stale outline: the view moved and a replacement is being
- * traced a few azimuths per frame.
+ * alpha is kept for callers that dim the outline; since slice 9 the outline is
+ * exact and recomputed the frame the view changes, so nothing is ever stale.
  *
  * (x0, w) is the strip of the HUD the outline's NDC spans — the whole width
  * normally, one half of the split when comparing (slice 7b), which is why the
@@ -1042,6 +1047,75 @@ export function drawShadowOutline(
     else ctx.lineTo(x, y);
   }
   ctx.stroke();
+  ctx.restore();
+}
+
+// ---------- the photon ring's ladder legend (slice 9) ----------
+
+const LEGEND_ROW = 13;
+
+/**
+ * Names the ladder view's colours, and quotes the one number the picture is
+ * about: each rung is e^-gamma of the last, per edge, at this spin. The rung
+ * hues come from the same table the shader is generated from, so a swatch can
+ * never drift from the band it names. Captured pixels are black on the frame
+ * and get a row here so nobody reads the shadow as an unlabelled band.
+ *
+ * "Half-turns" is the winding kerr.ts defines — the angle the ray's position
+ * direction swept, measured from the camera — so band 1 is the far side seen
+ * once around, not the literature's first subring; the SPACING is what is
+ * invariant, hence the gammas.
+ */
+export function drawLadderLegend(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  a: number
+): void {
+  const toCss = (c: readonly number[]) =>
+    `rgb(${c.map((v) => Math.round(255 * Math.pow(Math.min(v, 1), 1 / 2.2))).join(",")})`;
+  ctx.save();
+  ctx.fillStyle = HUD_STYLE.panelBg;
+  ctx.strokeStyle = HUD_STYLE.panelBorder;
+  ctx.lineWidth = 1;
+  panelPath(ctx, x, y, LEGEND_W, LEGEND_H, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.font = HUD_STYLE.font;
+  ctx.fillStyle = HUD_STYLE.stroke;
+  ctx.fillText("photon-ring ladder — half-turns swept", x + 10, y + 14);
+
+  let ry = y + 30;
+  const row = (color: string, label: string) => {
+    ctx.fillStyle = color;
+    ctx.fillRect(x + 10, ry - 5, 14, 10);
+    ctx.fillStyle = HUD_STYLE.stroke;
+    ctx.font = HUD_STYLE.small;
+    ctx.fillText(label, x + 30, ry);
+    ry += LEGEND_ROW;
+  };
+  for (const r of LADDER_RUNGS) row(toCss(r.rgb), r.label);
+  row(toCss(LADDER_UNRESOLVED.rgb), LADDER_UNRESOLVED.label);
+  row("#000", "captured — no light gets out");
+
+  // The footer is the physics: how fast the rungs thin, per edge.
+  const pro = Math.exp(-photonOrbitLyapunov(a, true));
+  const retro = Math.exp(-photonOrbitLyapunov(a, false));
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.font = HUD_STYLE.small;
+  ry += 3;
+  ctx.fillText(`each rung × e^-γ of the last, at a = ${a.toFixed(3)}:`, x + 10, ry);
+  ry += LEGEND_ROW;
+  ctx.fillText(
+    a === 0
+      ? `${pro.toFixed(3)} on both edges (γ = π)`
+      : `${pro.toFixed(3)} prograde edge · ${retro.toFixed(3)} retrograde`,
+    x + 10,
+    ry
+  );
   ctx.restore();
 }
 

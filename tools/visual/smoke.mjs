@@ -46,8 +46,8 @@ try {
   check("scene layer is not blank", scene > MIN_LIT, `${scene} lit px`);
 
   // The whole reason the composite exists: overlays live on their own canvas
-  // and are invisible in a GL-only capture. Give 6f its outline first — it is
-  // debounced and then traced across frames, so an eager shot shows nothing.
+  // and are invisible in a GL-only capture. Turn 6f's outline on first and let
+  // a frame land with it — the outline itself is immediate since slice 9.
   await lab.set({ "edu-shadow": true });
   await lab.settle();
 

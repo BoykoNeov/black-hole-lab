@@ -164,3 +164,29 @@ export function dragScale(id: InsetId, startScale: number, dx: number, dy: numbe
   const ds = 0.5 * ((-s.inX * dx) / s.W + (-s.inY * dy) / s.H);
   return Math.min(INSET_SCALE_MAX, Math.max(INSET_SCALE_MIN, startScale + ds));
 }
+
+// ---------- the ladder legend (slice 9) ----------
+
+/** Size of the photon-ring ladder's legend panel, in CSS px. */
+export const LEGEND_W = 250;
+export const LEGEND_H = 168;
+
+/**
+ * Where the ladder legend sits: the top-right corner of the strip whose
+ * spacetime it captions — the frame in single view, each half while comparing
+ * (the gammas it quotes are per spin, so each half needs its own). `topInset`
+ * is whatever already occupies that corner, which today is the clock row in
+ * single view; the legend hangs below it rather than over it.
+ */
+export function legendBox(
+  view: InsetView,
+  side: InsetSide | null,
+  topInset: number
+): { x: number; y: number } {
+  const right =
+    side === null ? view.width - INSET_MARGIN : (() => {
+      const r = splitCss(view)[side];
+      return r.x + r.w - INSET_MARGIN;
+    })();
+  return { x: right - LEGEND_W, y: INSET_MARGIN + topInset };
+}

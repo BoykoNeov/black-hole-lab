@@ -23,7 +23,6 @@ import {
   embeddingZAt,
   equatorialPoint,
   findShadowEdge,
-  findShadowEdgeIncremental,
   photonImpactParameter,
   photonOrbitLyapunov,
   photonOrbitRadius,
@@ -525,14 +524,27 @@ describe("the analytic edge, which the budget cannot move", () => {
     }
   });
 
-  it("is closer to the truth than the 4000-step outline the overlay draws", () => {
-    // A consequence worth pinning: 6f's traced D is not exact either. It runs
-    // at 4000 steps, which still leaves it ~0.6px outside the true edge at
-    // a = 0.998 prograde — a hundredth of the shader's error, and the reason
-    // the overlay was right to call the renderer out, but not zero.
+  it("is what the overlay draws now — the 4000-step outline it replaced was not", () => {
+    // 6f's traced D used to run at 4000 steps, which still left it ~0.6px
+    // outside the true edge at a = 0.998 prograde — a hundredth of the
+    // shader's old error and the reason the overlay was right to call the
+    // renderer out, but not zero. That residual is the march's and stays
+    // pinned here; findShadowEdge no longer carries it, because it asks
+    // rayCaptured itself (checked azimuth by azimuth below).
     const resid = (edgeNdcAt(0.998, -1, 4000) - analyticEdge(0.998, -1)) * PX;
     expect(resid).toBeGreaterThan(0.3);
     expect(resid).toBeLessThan(1);
+
+    const cam = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 30 });
+    const tanHalfFov = Math.tan((30 * Math.PI) / 360);
+    const aspect = 1280 / 800;
+    const tet = buildStaticTetrad(cam.pos, 0.998, cam.right, cam.up, cam.fwd);
+    // nAz = 2 samples psi = 0 and pi: the +x and -x screen axes edgeNdcBy walks
+    const edge = findShadowEdge(cam.pos, tet, 0.998, tanHalfFov, aspect, 2);
+    expect(edge.valid).toBe(true);
+    expect(Math.abs(edge.pts[0] - analyticEdge(0.998, +1)) * PX).toBeLessThan(1e-3);
+    expect(Math.abs(-edge.pts[2] - analyticEdge(0.998, -1)) * PX).toBeLessThan(1e-3);
+    expect(Math.abs(edge.pts[1])).toBeLessThan(1e-12);
   });
 
   it("does not move when the budget does — the whole point", () => {
@@ -687,10 +699,12 @@ describe("findShadowEdge", () => {
     for (let k = 0; k < 8; k++) {
       radii.push(Math.hypot(edge.pts[2 * k], edge.pts[2 * k + 1]));
     }
-    for (const s of radii) expect(Math.abs(s - sExp)).toBeLessThan(1e-3);
+    // Exact since slice 9: the fate is read off the conserved constants, so the
+    // only slack left is the bisection's own (~1e-8 in ndc after 24 halvings).
+    for (const s of radii) expect(Math.abs(s - sExp)).toBeLessThan(1e-6);
     // Circularity: the spacetime is spherically symmetric, so any azimuthal
     // spread is numerical — a skewed tetrad or a wrong aspect/ndc map.
-    for (const s of radii) expect(Math.abs(s - radii[0])).toBeLessThan(1e-6);
+    for (const s of radii) expect(Math.abs(s - radii[0])).toBeLessThan(1e-7);
   });
 
   it("keeps the true angular size at a widescreen aspect", () => {
@@ -746,26 +760,6 @@ describe("findShadowEdge", () => {
     const tet = buildStaticTetrad(b.pos, 0.5, b.right, b.up, back);
     const edge = findShadowEdge(b.pos, tet, 0.5, T, 1, 8);
     expect(edge.valid).toBe(false);
-  });
-
-  it("computes the same outline incrementally as in one shot", () => {
-    // findShadowEdge drains the generator today, but this pins the contract:
-    // main.ts's sliced path and the tests must never diverge
-    const b = cameraBasis({ yaw: 0.6, pitch: 0.15, dist: 25, fovDeg: 60 });
-    const tet = buildStaticTetrad(b.pos, 0.7, b.right, b.up, b.fwd);
-    const oneShot = findShadowEdge(b.pos, tet, 0.7, T, 1, 8);
-    const gen = findShadowEdgeIncremental(b.pos, tet, 0.7, T, 1, 8);
-    let yields = 0;
-    let r = gen.next();
-    while (!r.done) {
-      yields++;
-      r = gen.next();
-    }
-    // one yield per trace — the slicing granularity main.ts's budget relies
-    // on: at least the 16 bisection traces for each of the 8 azimuths
-    expect(yields).toBeGreaterThan(8 * 16);
-    expect(r.value.valid).toBe(true);
-    expect(Array.from(r.value.pts)).toEqual(Array.from(oneShot.pts));
   });
 
   it("puts its equatorial extremes where photonImpactParameter says", () => {

@@ -16,6 +16,7 @@ import {
   plungeRates,
   plungeUBL,
   plungeUKS,
+  radialDirection,
   radialPotential,
   rayCaptured,
   rayConstants,
@@ -549,5 +550,55 @@ describe("analytic capture — the fate a march cannot afford", () => {
       }
       expect(checked).toBeGreaterThan(230);
     }
+  });
+  it("reads the launch direction off the momentum", () => {
+    // Straight at the hole is inward; straight away from it is outward — from
+    // the far camera and from the close one alike, at every spin.
+    for (const a of [0, 0.9, 0.998]) {
+      for (const dist of [25, 3.2]) {
+        const pos: V3 = [0, 0, dist];
+        const tet = buildStaticTetrad(pos, a, [1, 0, 0], [0, 1, 0], [0, 0, -1]);
+        expect(radialDirection(pos, launchM(tet, [0, 0, 1]), a)).toBe(-1);
+        expect(radialDirection(pos, launchM(tet, [0, 0, -1]), a)).toBe(1);
+      }
+    }
+  });
+
+  it("agrees with a long trace from INSIDE the retrograde photon orbit, outward launches included", () => {
+    // The orbit camera bottoms out at r = 3.2, which at a = 0.998 is inside the
+    // retrograde photon orbit (r = 3.9). Rays launched outward from there can
+    // wind at that orbit and reflect back down, or squeeze past it and leave;
+    // testing only the potential BELOW the camera called all of them captured.
+    // Sweep the whole sphere of launch directions and hold the verdict to a
+    // 20000-step trace wherever that trace settles.
+    const a = 0.998;
+    const pos: V3 = [0, 0, 3.2];
+    const tet = buildStaticTetrad(pos, a, [1, 0, 0], [0, 1, 0], [0, 0, -1]);
+    let outwardEscapes = 0;
+    let outwardCaptures = 0;
+    let checked = 0;
+    for (let i = 0; i < 36; i++) {
+      for (let j = 1; j < 18; j++) {
+        const az = (i / 36) * Math.PI * 2;
+        const el = (j / 18) * Math.PI;
+        const d: V3 = [Math.sin(el) * Math.cos(az), Math.cos(el), Math.sin(el) * Math.sin(az)];
+        const m = launchM(tet, d);
+        const analytic = rayCaptured(pos, m, a);
+        const t = traceRayKerr(pos, m, a, { rEscape: 64, maxSteps: 20000 });
+        const traced = !t.escaped;
+        if (traced && !analytic && t.steps >= 20000) continue; // still winding: no verdict to hold it to
+        expect(analytic, `az=${az.toFixed(2)} el=${el.toFixed(2)}`).toBe(traced);
+        checked++;
+        if (radialDirection(pos, m, a) > 0) {
+          if (analytic) outwardCaptures++;
+          else outwardEscapes++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(550);
+    // Both branches of the outward case really occur from here — a reflection
+    // off the orbit above and a clean getaway — so the test exercises the fix.
+    expect(outwardCaptures).toBeGreaterThan(10);
+    expect(outwardEscapes).toBeGreaterThan(100);
   });
 });

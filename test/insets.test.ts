@@ -4,6 +4,8 @@ import {
   INSET_MARGIN,
   INSET_SCALE_MAX,
   INSET_SCALE_MIN,
+  LEGEND_H,
+  LEGEND_W,
   POTENTIAL_W,
   POT_X,
   dragScale,
@@ -11,6 +13,7 @@ import {
   insetBand,
   insetBox,
   insetSides,
+  legendBox,
   sameGrip,
   splitCss,
   type InsetView,
@@ -210,5 +213,31 @@ describe("dragScale", () => {
     // exactly where it began rather than accumulating drift.
     expect(dragScale("pot", 1.5, 40, -40)).toBeGreaterThan(1.5);
     expect(dragScale("pot", 1.5, 0, 0)).toBe(1.5);
+  });
+});
+
+describe("legendBox", () => {
+  it("sits in the frame's top-right corner, inside the margin", () => {
+    const b = legendBox(view(), null, 0);
+    expect(b.x + LEGEND_W).toBe(1600 - INSET_MARGIN);
+    expect(b.y).toBe(INSET_MARGIN);
+  });
+
+  it("hangs below whatever already holds that corner", () => {
+    // the clock row in single view: the legend goes under it, not over it
+    const b = legendBox(view(), null, 92);
+    expect(b.y).toBe(INSET_MARGIN + 92);
+    expect(b.y + LEGEND_H).toBeLessThan(900);
+  });
+
+  it("keeps each half's legend inside that half while comparing", () => {
+    const v = view({ compare: true });
+    const { left, right } = splitCss(v);
+    const bl = legendBox(v, "left", 0);
+    const br = legendBox(v, "right", 0);
+    expect(bl.x).toBeGreaterThanOrEqual(left.x);
+    expect(bl.x + LEGEND_W).toBeLessThanOrEqual(left.x + left.w);
+    expect(br.x).toBeGreaterThanOrEqual(right.x);
+    expect(br.x + LEGEND_W).toBeLessThanOrEqual(right.x + right.w);
   });
 });

@@ -34,9 +34,11 @@ import {
   EMBED_TDE,
   clearHud,
   drawCallouts,
+  CLOCKS_BLOCK_H,
   drawClocks,
   drawCompareDivider,
   drawEmbedding,
+  drawLadderLegend,
   drawPotential,
   drawResizeGrip,
   drawShadowOutline,
@@ -61,7 +63,7 @@ import {
   circRate,
   embeddingProfile,
   equatorialPoint,
-  findShadowEdgeIncremental,
+  findShadowEdge,
   projectToScreen,
   shadowExtremes,
   staticRate,
@@ -78,6 +80,7 @@ import {
   gripUnder,
   insetBox,
   insetSides,
+  legendBox,
   sameGrip,
   type Grip,
   type InsetId,
@@ -224,6 +227,7 @@ const params = {
   // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
   eduCallouts: false,
   eduShadow: false,
+  eduLadder: false,
   eduTrails: false,
   eduClocks: false,
   eduPotential: false,
@@ -445,19 +449,15 @@ const trailGroupsSlider: TrailGroup[] = [
 ];
 const trailScratch: V3 = [0, 0, 0];
 
-// Shadow & photon-ring outline (6f). One outline is ~1000 CPU geodesic traces
-// — tens of milliseconds, never affordable inside a frame. So it recomputes
-// only when (spin, view, lens, aspect) changes, only once the camera has been
-// still for the debounce window, and even then a few azimuths per frame; the
-// previous outline stays up, faded, until the new one lands.
+// Shadow & photon-ring outline (6f). Each sample of it is a cubic solve
+// (kerr.ts rayCaptured), not a geodesic march, so a whole outline costs well
+// under a millisecond and is simply recomputed whenever (spin, view, lens,
+// aspect) changes — live under a drag, never stale, never faded. It used to be
+// ~1000 traces and ~540 ms at a = 0.998, debounced and time-sliced across
+// frames; see docs/DESIGN.md, slice 9.
 interface ShadowTrace {
   edge: ShadowEdge | null;
-  gen: Generator<number, ShadowEdge> | null;
-  /** True while `edge` is the outline OF the current view (not mid-drag). */
-  fresh: boolean;
-  /** performance.now() before which no recompute may start. */
-  deadline: number;
-  // The view this outline was traced for; any change invalidates it. NaN so
+  // The view this outline was computed for; any change recomputes it. NaN so
   // that the first frame always misses.
   spin: number;
   yaw: number;
@@ -468,9 +468,6 @@ interface ShadowTrace {
 }
 const makeShadowTrace = (): ShadowTrace => ({
   edge: null,
-  gen: null,
-  fresh: false,
-  deadline: 0,
   spin: NaN,
   yaw: NaN,
   pitch: NaN,
@@ -481,36 +478,16 @@ const makeShadowTrace = (): ShadowTrace => ({
 /**
  * Two outlines, because compare mode (7b) shows two spacetimes at once and an
  * outline is only ever the boundary of ONE of them. Each carries its own view
- * key: the halves differ in spin AND in aspect, so neither the trace nor the
- * cache can be shared. In single view only the slider's is used, and
- * shadowSchw stays untouched and empty.
+ * key: the halves differ in spin AND in aspect, so neither can be shared. In
+ * single view only the slider's is used, and shadowSchw stays untouched.
  */
 const shadowSlider = makeShadowTrace();
 const shadowSchw = makeShadowTrace();
-const SHADOW_DEBOUNCE_MS = 250;
-/**
- * Per-frame tracing budget. The generator yields per geodesic trace, because
- * that is the atomic unit of work: a near-critical ray at a = 0.998 can wind
- * thousands of RK4 steps (milliseconds by itself), so any fixed count of
- * azimuths — or even of traces — per frame would blow the HUD's ~3 ms rule
- * exactly where the outline is most interesting. A full outline is ~66 ms of
- * tracing at a = 0 and ~540 ms at a = 0.998, spread across frames.
- *
- * The budget scales with the measured frame interval (floor 3 ms, cap 30 ms):
- * at 60 fps that is the strict 3 ms rule, while on a machine already crawling
- * at software-rendering speeds a fixed 3 ms would stretch one outline over
- * minutes of wall time — there, a slice that is still ≤ ~6% of the frame it
- * rides on hitches nothing and finishes in seconds.
- */
-const SHADOW_MS_FLOOR = 3;
-const SHADOW_MS_CAP = 30;
-const SHADOW_FRAME_FRACTION = 0.15;
 
 // Callout mode (6g). Every anchor here is a straight-line projection of where
 // a thing IS; the lensed image the label names sits near it, not on it (the
 // checkbox tooltip and the ISCO copy both say so). All of it is cheap math
-// recomputed per frame, except the shadow-derived anchors, which ride 6f's
-// debounced outline and fade with it while it is stale.
+// recomputed per frame.
 const CALLOUT_MAX = 10;
 const calloutItems: CalloutItem[] = [];
 for (let i = 0; i < CALLOUT_MAX; i++)
@@ -661,6 +638,7 @@ bindCheckbox("compare", (v) => {
 });
 bindCheckbox("edu-callouts", (v) => (params.eduCallouts = v));
 bindCheckbox("edu-shadow", (v) => (params.eduShadow = v));
+bindCheckbox("edu-ladder", (v) => (params.eduLadder = v));
 bindCheckbox("edu-trails", (v) => (params.eduTrails = v));
 bindCheckbox("edu-clocks", (v) => (params.eduClocks = v));
 bindCheckbox("edu-potential", (v) => (params.eduPotential = v));
@@ -905,76 +883,47 @@ function render() {
   }
   if (tdeN > 0) tdeInfoArr[(tdeN - 1) * 4 + 2] = 0;
 
-  // 6f shadow outline: debounced, then traced a few azimuths per frame so the
-  // GL loop never waits on it. Callout mode (6g) shares the computed edge.
-  // The 6g layer is suppressed while comparing, so there it is the shadow
-  // checkbox alone that asks for an outline.
+  // 6f shadow outline, exact and cheap: recomputed whenever its view changes.
+  // Callout mode (6g) shares the computed edge. The 6g layer is suppressed
+  // while comparing, so there it is the shadow checkbox alone that asks for
+  // an outline.
   const shadowOn = params.eduShadow || (params.eduCallouts && !params.compare);
 
   /**
-   * Advance one side's outline, for up to `budgetMs`; returns the ms spent.
+   * Bring one side's outline up to date with the view.
    *
    * The aspect must be the one the SHADER used (uResolution's w/h for this
    * side's viewport), not the canvas's — in compare mode a half is far from
-   * the frame's shape, and an outline traced at the wrong aspect would be a
+   * the frame's shape, and an outline computed at the wrong aspect would be a
    * perfectly-computed boundary of a view nobody is looking at.
    */
-  const pumpShadow = (st: ShadowTrace, spin: number, view: Rect, budgetMs: number): number => {
+  const updateShadow = (st: ShadowTrace, spin: number, view: Rect) => {
     const aspect = view.w / view.h;
     if (
-      spin !== st.spin ||
-      camera.yaw !== st.yaw ||
-      camera.pitch !== st.pitch ||
-      camera.dist !== st.dist ||
-      camera.fovDeg !== st.fov ||
-      aspect !== st.aspect
+      spin === st.spin &&
+      camera.yaw === st.yaw &&
+      camera.pitch === st.pitch &&
+      camera.dist === st.dist &&
+      camera.fovDeg === st.fov &&
+      aspect === st.aspect
     ) {
-      st.spin = spin;
-      st.yaw = camera.yaw;
-      st.pitch = camera.pitch;
-      st.dist = camera.dist;
-      st.fov = camera.fovDeg;
-      st.aspect = aspect;
-      st.gen = null; // any in-flight outline belongs to a stale view
-      st.fresh = false;
-      // a drag changes the view every frame, pushing the deadline ahead of
-      // itself — tracing starts once the camera has been still this long
-      st.deadline = now0 + SHADOW_DEBOUNCE_MS;
+      return;
     }
-    if (!st.gen && !st.fresh && now0 >= st.deadline) {
-      // the static tetrad is spin-dependent, so each side launches its rays
-      // from its own — this is the camera as ITS spacetime sees it
-      const tet = buildStaticTetrad(basis.pos, spin, basis.right, basis.up, basis.fwd);
-      st.gen = findShadowEdgeIncremental(basis.pos, tet, spin, tanHalfFov, aspect);
-    }
-    if (!st.gen) return 0;
-    // at least one trace per frame so even a very slow machine progresses
-    const t0 = performance.now();
-    for (;;) {
-      const step = st.gen.next();
-      if (step.done) {
-        st.edge = step.value;
-        st.gen = null;
-        st.fresh = true;
-        break;
-      }
-      if (performance.now() - t0 >= budgetMs) break;
-    }
-    return performance.now() - t0;
+    st.spin = spin;
+    st.yaw = camera.yaw;
+    st.pitch = camera.pitch;
+    st.dist = camera.dist;
+    st.fov = camera.fovDeg;
+    st.aspect = aspect;
+    // the static tetrad is spin-dependent, so each side launches its rays
+    // from its own — this is the camera as ITS spacetime sees it
+    const tet = buildStaticTetrad(basis.pos, spin, basis.right, basis.up, basis.fwd);
+    st.edge = findShadowEdge(basis.pos, tet, spin, tanHalfFov, aspect);
   };
 
   if (shadowOn) {
-    // ONE frame's tracing budget, shared: compare mode has two outlines to
-    // find but no more of the frame to spend than single view ever had. The
-    // a = 0 side goes first because it is much the cheaper (~66 ms of tracing
-    // against ~540 ms at a = 0.998), so it lands within a few frames and then
-    // yields the whole budget to the slider's side.
-    let budget = Math.min(
-      Math.max(dtReal * 1000 * SHADOW_FRAME_FRACTION, SHADOW_MS_FLOOR),
-      SHADOW_MS_CAP
-    );
-    if (params.compare) budget -= pumpShadow(shadowSchw, COMPARE_SPIN_LEFT, split.left, budget);
-    pumpShadow(shadowSlider, params.spin, viewSlider, budget);
+    if (params.compare) updateShadow(shadowSchw, COMPARE_SPIN_LEFT, split.left);
+    updateShadow(shadowSlider, params.spin, viewSlider);
   }
 
   // Scene -> HDR target
@@ -1020,6 +969,7 @@ function render() {
     gl.uniform1f(U(progScene, "uJetsOn"), params.jets ? 1 : 0);
     gl.uniform1f(U(progScene, "uJetPower"), params.jetPower);
     gl.uniform1i(U(progScene, "uMaxSteps"), QUALITY[params.quality].maxSteps);
+    gl.uniform1f(U(progScene, "uLadder"), params.eduLadder ? 1 : 0);
     gl.uniform1f(U(progScene, "uStepScale"), QUALITY[params.quality].stepScale);
     gl.uniform1f(U(progScene, "uSpin"), spin);
     gl.uniform1f(U(progScene, "uHorizon"), ctx.rHor);
@@ -1201,15 +1151,13 @@ function render() {
   if (shadowOn && params.compare && shadowSchw.edge && shadowSchw.edge.valid) {
     const schwX0 = hudX(split.left);
     const schwW = hudW(split.left);
-    // stale outline, stale anchor — faded together, the same as the slider's
-    const schwAlpha = shadowSchw.fresh ? 1 : 0.35;
-    drawShadowOutline(hudCtx, shadowSchw.edge, schwX0, schwW, ch, schwAlpha);
+    drawShadowOutline(hudCtx, shadowSchw.edge, schwX0, schwW, ch, 1);
     shadowExtremes(shadowSchw.edge, calloutExtSchw);
     const it = calloutItemsSchw[0];
     it.ax = schwX0 + ((calloutExtSchw.bottomX + 1) / 2) * schwW;
     it.ay = ((1 - calloutExtSchw.bottomY) / 2) * ch;
     it.dy = SHADOW_LABEL_DY;
-    it.alpha = schwAlpha;
+    it.alpha = 1;
     // Laid out in the left strip, so it cannot slide across the divider and
     // caption the spin it is here to be the control for. Its own call rather
     // than an entry in the list below: that list is bounded to the slider's
@@ -1220,13 +1168,10 @@ function render() {
 
   const shadowEdge = shadowSlider.edge;
   const haveEdge = shadowOn && shadowEdge !== null && shadowEdge.valid;
-  // Faded while stale: the view moved on and the replacement outline is still
-  // being traced, so every anchor taken off it is a moment out of date.
-  const edgeAlpha = shadowSlider.fresh ? 1 : 0.35;
   if (haveEdge) {
     // valid=false (camera not aimed at the hole — unreachable with the orbit
     // camera) degrades to drawing nothing.
-    drawShadowOutline(hudCtx, shadowEdge!, sliderX0, sliderW, ch, edgeAlpha);
+    drawShadowOutline(hudCtx, shadowEdge!, sliderX0, sliderW, ch, 1);
     shadowExtremes(shadowEdge!, calloutExt);
     // Emitted first, so that with only the 6f overlay on they keep the exact
     // positions they had before 6g gave them neighbours to make room for.
@@ -1240,10 +1185,10 @@ function render() {
         ndcPxY(calloutExt.bottomY),
         0,
         SHADOW_LABEL_DY,
-        edgeAlpha
+        1
       );
     } else {
-      emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, edgeAlpha);
+      emit("shadow", ndcPxX(calloutExt.leftX), ndcPxY(calloutExt.leftY), -30, 46, 1);
     }
     // The photon ring converges onto the shadow edge from OUTSIDE (its last
     // subring IS the boundary), so its anchor sits just off the outline.
@@ -1253,7 +1198,7 @@ function render() {
       ndcPxY(calloutExt.topY) - 5,
       48,
       -46,
-      edgeAlpha
+      1
     );
   }
 
@@ -1302,7 +1247,7 @@ function render() {
         ndcPxY(calloutExt.topY * DOUBLED_NDC_SCALE),
         44,
         -34,
-        edgeAlpha
+        1
       );
       emit(
         "doubledBottom",
@@ -1310,7 +1255,7 @@ function render() {
         ndcPxY(calloutExt.bottomY * DOUBLED_NDC_SCALE),
         44,
         34,
-        edgeAlpha
+        1
       );
     }
 
@@ -1358,7 +1303,7 @@ function render() {
             ndcPxY(calloutExt.rightY),
             44,
             -50,
-            edgeAlpha
+            1
           );
           break; // one ring at a time is enough
         }
@@ -1404,6 +1349,22 @@ function render() {
   }
 
   const iv = viewNow();
+
+  // The ladder view's legend (slice 9): one per strip, since the gammas it
+  // quotes are per spin. Under the clock row when that is up, which it can
+  // only be in single view.
+  if (params.eduLadder) {
+    const topInset = params.eduClocks && !params.compare ? CLOCKS_BLOCK_H : 0;
+    if (params.compare) {
+      const l = legendBox(iv, "left", 0);
+      drawLadderLegend(hudCtx, l.x, l.y, COMPARE_SPIN_LEFT);
+      const r = legendBox(iv, "right", 0);
+      drawLadderLegend(hudCtx, r.x, r.y, params.spin);
+    } else {
+      const b = legendBox(iv, null, topInset);
+      drawLadderLegend(hudCtx, b.x, b.y, params.spin);
+    }
+  }
 
   if (iv.shown.pot) {
     // The TDE is stateful and compare mode draws it on neither half, so its

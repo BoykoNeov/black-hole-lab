@@ -4,6 +4,32 @@ import { MARCH_MAX_STEPS } from "./kerr";
 import { GAS_COUNT, STAR_COUNT } from "./matter";
 import { TDE_MAX } from "./tde";
 
+/**
+ * The ladder view's colours (slice 9), one per half-turn of winding, in one
+ * place so the shader that paints them and the HUD legend that names them
+ * cannot disagree: the GLSL below is generated from this table. Linear RGB,
+ * pre-tonemap — the composite's ACES curve desaturates them a little.
+ */
+export interface LadderRung {
+  /** Legend caption. */
+  label: string;
+  rgb: [number, number, number];
+}
+export const LADDER_RUNGS: readonly LadderRung[] = [
+  { label: "0–1  direct view", rgb: [0.3, 0.34, 0.42] },
+  { label: "1–2  once past the far side", rgb: [0.2, 0.55, 0.95] },
+  { label: "2–3  first full loop", rgb: [0.25, 0.85, 0.55] },
+  { label: "3–4", rgb: [0.98, 0.85, 0.25] },
+  { label: "4–5", rgb: [0.98, 0.5, 0.2] },
+  { label: "5+", rgb: [0.95, 0.25, 0.35] },
+];
+/** Rays still winding when the march budget ended: fate exact, colour not. */
+export const LADDER_UNRESOLVED: LadderRung = {
+  label: "budget spent — fate exact, colour not",
+  rgb: [0.85, 0.3, 0.95],
+};
+const vec3 = (c: readonly number[]) => `vec3(${c.map((v) => v.toFixed(2)).join(", ")})`;
+
 export const VS_QUAD = `#version 300 es
 out vec2 vUv;
 void main() {
@@ -54,6 +80,7 @@ uniform float uGasOn;        // 1 = draw infalling gas blobs
 uniform float uJetsOn;       // 1 = draw the bipolar jet
 uniform float uJetPower;     // ~0 .. 2
 uniform int uMaxSteps;       // march step budget; < 320 only on the low preset
+uniform float uLadder;       // 1 = false-colour each pixel by how far its ray wound (slice 9)
 uniform float uStepScale;    // > 1 coarsens the adaptive arc length (low preset)
 uniform float uSpin;         // Kerr a in [0, 0.998]
 uniform float uHorizon;      // r+ = 1 + sqrt(1 - a^2)
@@ -200,7 +227,13 @@ float cbrt1(float x) { return sign(x) * pow(abs(x), 1.0 / 3.0); }
 // camera down to r+. R(r+) >= 0 and R(camera) > 0, so a turning point can only
 // show up as a dip through a local minimum, and the minima are the roots of
 // R'/4 = r^3 + (c2/2) r + k/2.
-bool capturedByConstants(float lambda, float q, float rCam) {
+//
+// outward is the launch direction: a ray leaving the camera to larger r
+// reaches the horizon only if it first reflects off a negative minimum ABOVE
+// the camera and then finds none below. That case is real here — the orbit
+// camera goes down to r = 3.2, inside the retrograde photon orbit at high
+// spin, and a ray launched outward can wind at that orbit and fall back.
+bool capturedByConstants(float lambda, float q, float rCam, bool outward) {
   float a = uSpin;
   float k = (lambda - a) * (lambda - a) + q;
   float pc = 0.5 * (2.0 * a * a - 2.0 * a * lambda - k);
@@ -222,12 +255,14 @@ bool capturedByConstants(float lambda, float q, float rCam) {
     roots[2] = m * cos(th - 4.1887902047863905);
     n = 3;
   }
+  bool turnsAbove = false;
   for (int i = 0; i < 3; i++) {
     if (i >= n) break;
-    if (roots[i] > uHorizon && roots[i] < rCam
-        && radialPotential(roots[i], lambda, q) < 0.0) return false;
+    if (radialPotential(roots[i], lambda, q) >= 0.0) continue;
+    if (roots[i] > uHorizon && roots[i] < rCam) return false;
+    if (roots[i] > rCam) turnsAbove = true;
   }
-  return true;
+  return !outward || turnsAbove;
 }
 
 // f = 2r^3/(r^4 + a^2 y^2) and the spatial null vector l (l_t = 1).
@@ -598,6 +633,39 @@ void shadeCrossing(float rc, vec3 pc, float mt, vec3 mv, float lam,
   }
 }
 
+// ---------- the photon ring's ladder (slice 9) ----------
+// False colour by winding: how many half-turns the ray's position direction
+// swept on its way from the camera — 0..1 is the direct view, 1..2 has been
+// bent past the antipode once (the first rung of the ring), and so on. Each
+// integer boundary is an Einstein ring of the point behind the hole (odd) or
+// behind the camera (even), and successive rungs are e^-gamma thinner, which
+// is the ladder this view exists to show: a few flat bands at a = 0, a whole
+// staircase on the prograde edge at a = 0.998.
+//
+// The hue is the rung; the scene's own luminance survives as brightness so the
+// disk's crossings and the sky still read through it, Reinhard-squashed to
+// keep an HDR disk from whiting the band out. Captured pixels stay black.
+// unresolved marks rays still winding when the budget ended — their fate is
+// exact (lambda and q), their colour in the normal view is not, and this is
+// the one place that band is drawn as what it is rather than as sky.
+// A hairline at every integer is drawn constant-width from the derivative,
+// so the rungs stay countable where they crowd toward the critical curve.
+vec3 ladderColor(vec3 scene, float w, bool escaped, bool unresolved) {
+  if (!escaped) return vec3(0.0);
+  float l = max(scene.r, max(scene.g, scene.b));
+  float bright = 0.35 + 0.65 * l / (1.0 + l);
+  vec3 hue;
+  if (unresolved) hue = ${vec3(LADDER_UNRESOLVED.rgb)};
+${LADDER_RUNGS.map((r, i) =>
+    i < LADDER_RUNGS.length - 1
+      ? `  else if (w < ${(i + 1).toFixed(1)}) hue = ${vec3(r.rgb)};`
+      : `  else hue = ${vec3(r.rgb)};`
+  ).join("\n")}
+  float toEdge = min(fract(w), 1.0 - fract(w));
+  float line = 1.0 - smoothstep(0.0, 1.5 * max(fwidth(w), 1e-4), toEdge);
+  return hue * bright * (1.0 - 0.7 * line);
+}
+
 // Flat-space (bypass) disk-plane crossing at world point p along ray v.
 void flatCrossing(vec3 p, vec3 v, inout vec3 accum, inout float thru) {
   float rc2 = dot(p.xz, p.xz) - uSpin * uSpin;
@@ -622,6 +690,8 @@ void main() {
   vec3 sky = v;
   bool haveSky = true;    // false = captured by the hole (or occluded)
   bool matterOn = uStarsOn > 0.5 || uJetsOn > 0.5 || uTdeN > 0;
+  float swept = 0.0;      // ladder view: position angle swept, radians
+  bool unresolved = false; // ladder view: the budget ran out before a verdict
 
   if (uLensing > 0.5) {
     // launch: local view direction in the camera's orthonormal frame
@@ -637,6 +707,15 @@ void main() {
     float rCam = ksRadius(p);
     float rStop = uHorizon + 0.02;
     bool crossings = uDiskOn > 0.5 || uGasOn > 0.5;
+    // Launch direction, for the fate test: dr/dsigma = grad(r) . dx/dsigma with
+    // grad(r) = (r/Sigma)(r^2 x, (r^2+a^2) y, r^2 z) — kerr.ts radialDirection.
+    bool outward;
+    {
+      vec3 dp0, dm0;
+      geoDeriv(p, mv, mt, dp0, dm0);
+      float r2 = rCam * rCam;
+      outward = dot(vec3(r2 * p.x, (r2 + uSpin * uSpin) * p.y, r2 * p.z), dp0) >= 0.0;
+    }
 
     bool escaped = false;
     bool settled = false; // the march reached a verdict of its own
@@ -676,6 +755,11 @@ void main() {
         accum += thru * matterSegment(p, pN, mt, mv);
       }
 
+      // The ladder view's coordinate: the angle the position direction has
+      // swept, summed step by step exactly as kerr.ts's winding is. Off the
+      // hot path unless asked for — atan per step is not free.
+      if (uLadder > 0.5) swept += atan(length(cross(p, pN)), dot(p, pN));
+
       p = pN;
       mv = mvN;
       float rN = ksRadius(p);
@@ -695,7 +779,10 @@ void main() {
     // half-orbits, which diverges at the edge, and gamma there is 0.19. So do
     // not ask the march. lambda and q already know, and cost nothing.
     // See docs/DESIGN.md, "what gamma costs the renderer".
-    if (!settled && !capturedByConstants(lambdaC, qC, rCam)) escaped = true;
+    if (!settled) {
+      unresolved = true; // still winding when the budget ended
+      if (!capturedByConstants(lambdaC, qC, rCam, outward)) escaped = true;
+    }
 
     if (escaped) {
       vec3 dpF, dmF;
@@ -741,6 +828,7 @@ void main() {
   }
 
   vec3 col = accum + (haveSky ? thru * skyColor(normalize(sky)) : vec3(0.0));
+  if (uLadder > 0.5) col = ladderColor(col, swept / PI, haveSky, unresolved);
   // float16 fence: one Inf/NaN/negative pixel would smear black blocks
   // through the bloom chain, so clamp and zero anything non-finite
   col = clamp(col, vec3(0.0), vec3(4096.0));

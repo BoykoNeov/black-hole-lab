@@ -4,7 +4,7 @@
  * hud.ts, wiring in main.ts.
  */
 
-import { circUt, horizonRadius, ksMetric, traceRayKerr, uCircCart } from "./kerr";
+import { circUt, horizonRadius, ksMetric, rayCaptured, uCircCart } from "./kerr";
 import type { Tetrad, V3, V4 } from "./kerr";
 import type { CameraBasis } from "./camera";
 
@@ -374,56 +374,43 @@ export interface ShadowEdge {
 }
 
 /**
- * The exact shadow edge for the current camera, spin and lens, one screen
- * azimuth per yield. Rays launch precisely as the scene shader launches them
- * (same static tetrad, same ndc → direction map) — no far-field or small-angle
- * approximation, and the Kerr D-shape comes out for free. Along each azimuth
- * the capture/escape transition is bracketed by geometric growth from ndc
- * radius 0.05 and bisected 16 times, pinning it to a few 1e-6 in ndc.
- *
- * This used to be the one that was right. It no longer is — quite.
- *
- * It caught the renderer fairly: the shader left a ray that spent
- * MARCH_MAX_STEPS as captured, and near the prograde photon orbit at a = 0.998
- * the Lyapunov exponent falls to 0.19, so light lingered, blew the budget while
- * still outside the true shadow, and got painted black. This outline, tracing
- * to 4000, ran ~50px INSIDE the rendered disk on that edge and was the honest
- * one. The shader now settles fate from the conserved lambda and Carter q
- * instead (kerr.ts rayCaptured), exactly and without stepping, so the picture's
- * edge is now exact.
- *
- * This is still marched, so it is still ~0.6px OUTSIDE the true edge at
- * a = 0.998 prograde — the same effect, a hundredth of the size, and invisible
- * on the frame, but the sign of the remaining disagreement now points here
- * rather than at the picture (pinned in edu.test.ts). Pointing this at
- * rayCaptured would make it exact and cost no traces at all.
- * See docs/DESIGN.md, "what gamma costs the renderer".
- *
- * Cost is ~20 traces per azimuth, ~1000 per outline — and a single trace is
- * the atomic unit of work, from ~0.1 ms in the easy cases to milliseconds for
- * a near-critical ray winding thousands of RK4 steps at high spin (a full
- * 48-azimuth outline measures ~66 ms at a = 0 and ~540 ms at a = 0.998).
- * Hence the generator, yielding after every trace: main.ts drains it against
- * a per-frame time budget; findShadowEdge drains it whole for tests and
- * non-interactive callers, so both run the same code path. The yielded value
- * is the azimuth in progress.
+ * Screen azimuths the outline is sampled at. 96 puts a vertex every 3.75°,
+ * which is what it takes for the flat side of the a = 0.998 D to read as a
+ * side rather than a chord — and it costs nothing now that each sample is a
+ * cubic rather than a thousand RK4 steps.
  */
-export function* findShadowEdgeIncremental(
+export const SHADOW_AZIMUTHS = 96;
+
+/**
+ * The exact shadow edge for the current camera, spin and lens. Rays launch
+ * precisely as the scene shader launches them (same static tetrad, same
+ * ndc → direction map) — no far-field or small-angle approximation, and the
+ * Kerr D-shape comes out for free. Along each azimuth the capture/escape
+ * transition is bracketed by geometric growth from ndc radius 0.05 and
+ * bisected 24 times, pinning it to ~1e-8 in ndc.
+ *
+ * Each sample asks `rayCaptured` — the ray's fate from its conserved lambda
+ * and Carter q through the radial potential — rather than a march. That is
+ * the same criterion the scene shader consults when its budget runs out, so
+ * this outline and the rendered black disk are now the SAME function of the
+ * launch geometry, not two integrations that happen to agree. It used to
+ * trace 4000 RK4 steps per sample: ~540 ms per outline at a = 0.998, spread
+ * across frames behind a debounce, and still ~0.6 px outside the true edge
+ * on the prograde side because a march near the photon shell never settles
+ * (see docs/DESIGN.md, "what gamma costs the renderer"). Now it is exact,
+ * costs well under a millisecond, and main.ts simply recomputes it whenever
+ * the view changes. test/edu.test.ts pins it against the converged march.
+ */
+export function findShadowEdge(
   camPos: V3,
   tet: Tetrad,
   a: number,
   tanHalfFov: number,
   aspect: number,
-  nAz = 48,
-  opts: { camDist?: number } = {}
-): Generator<number, ShadowEdge> {
-  const camDist = opts.camDist ?? Math.hypot(camPos[0], camPos[1], camPos[2]);
+  nAz = SHADOW_AZIMUTHS
+): ShadowEdge {
   const pts = new Float64Array(2 * nAz);
   const m: V4 = [0, 0, 0, 0];
-  // An escaping ray must at least clear the camera's own radius; +40 keeps
-  // the verdict cheap without misreading a wide photon loop as an escape
-  // (traceRayKerr also demands outward motion at the escape radius).
-  const rEscape = camDist + 40;
 
   const captured = (ndcX: number, ndcY: number): boolean => {
     const vx = ndcX * tanHalfFov * aspect;
@@ -436,14 +423,13 @@ export function* findShadowEdgeIncremental(
         inv * tet.fwdCov[i] -
         tet.uCov[i];
     }
-    return !traceRayKerr(camPos, m, a, { rEscape }).escaped;
+    return rayCaptured(camPos, m, a);
   };
 
   // The camera always looks at the origin in this app, so the center ray must
   // fall in. If someone changes the camera model, degrade to "draw nothing"
   // rather than bisecting azimuths that have no transition to find.
   if (!captured(0, 0)) return { pts, valid: false };
-  yield 0;
 
   // Fallback when an azimuth never escapes within s = 3 (the whole screen is
   // shadow — possible right up against the hole with a narrow lens): reuse
@@ -457,9 +443,7 @@ export function* findShadowEdgeIncremental(
     let hi = 0.05;
     let bracketed = false;
     while (hi <= 3) {
-      const cap = captured(hi * c, hi * sn);
-      yield k;
-      if (cap) {
+      if (captured(hi * c, hi * sn)) {
         lo = hi;
         hi *= 1.6;
       } else {
@@ -469,11 +453,9 @@ export function* findShadowEdgeIncremental(
     }
     let s = sPrev;
     if (bracketed) {
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 24; i++) {
         const mid = 0.5 * (lo + hi);
-        const cap = captured(mid * c, mid * sn);
-        yield k;
-        if (cap) lo = mid;
+        if (captured(mid * c, mid * sn)) lo = mid;
         else hi = mid;
       }
       s = 0.5 * (lo + hi);
@@ -638,21 +620,4 @@ export function alignmentAngle(camPos: V3, starPos: V3, out?: Alignment): Alignm
   const c = -(camPos[0] * sx + camPos[1] * sy + camPos[2] * sz) / (d * ls);
   o.angle = Math.acos(Math.min(Math.max(c, -1), 1));
   return o;
-}
-
-/** One-shot edge finder: drains the incremental generator to completion. */
-export function findShadowEdge(
-  camPos: V3,
-  tet: Tetrad,
-  a: number,
-  tanHalfFov: number,
-  aspect: number,
-  nAz = 48,
-  opts: { camDist?: number } = {}
-): ShadowEdge {
-  const gen = findShadowEdgeIncremental(camPos, tet, a, tanHalfFov, aspect, nAz, opts);
-  for (;;) {
-    const r = gen.next();
-    if (r.done) return r.value;
-  }
 }

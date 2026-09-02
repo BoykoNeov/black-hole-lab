@@ -660,7 +660,23 @@ function cubicRealRoots(p: number, s: number): number[] {
 }
 
 /**
- * Whether a ray launched inward from camPos ends on the horizon — exactly, and
+ * Sign of dr/dsigma at a launch point: +1 when the marched ray is moving to
+ * larger Boyer–Lindquist r, -1 when it is falling inward. The march's spatial
+ * velocity is dx/dsigma = mv - f P l (the integrator's own dp), and the
+ * gradient of r is (r/Sigma)(r^2 x, (r^2+a^2) y, r^2 z) with
+ * Sigma = r^4 + a^2 y^2 — the same one derivs() differentiates f and l with.
+ */
+export function radialDirection(pos: V3, mCov: V4, a: number): number {
+  const d = derivs(pos, a, mCov[0], [mCov[1], mCov[2], mCov[3]]);
+  const r = ksRadius(pos, a);
+  const r2 = r * r;
+  const [x, y, z] = pos;
+  const drds = r2 * x * d.dp[0] + (r2 + a * a) * y * d.dp[1] + r2 * z * d.dp[2];
+  return drds >= 0 ? 1 : -1;
+}
+
+/**
+ * Whether a ray launched from camPos ends on the horizon — exactly, and
  * without integrating a single step.
  *
  * This is what the march budget cannot buy. A ray near the photon shell needs
@@ -676,6 +692,18 @@ function cubicRealRoots(p: number, s: number): number[] {
  * minimum to reach them. Testing the sign of R at its interior critical points
  * therefore settles it, and the critical points are the roots of the cubic
  * R'/4 = r^3 + (c2/2) r + k/2.
+ *
+ * The launch direction matters, and the first version of this ignored it. A
+ * ray moving OUTWARD at the camera only reaches the horizon if it first
+ * reflects off a turning point above the camera — R(inf) > 0 too, so that is
+ * again a negative minimum, this time above rCam — and then finds none below.
+ * With the camera far out this never bites: nothing above r ~ 25 turns a ray
+ * around. But the orbit camera goes down to r = 3.2, which at high spin is
+ * INSIDE the retrograde photon orbit (r = 3.9 at a = 0.998), and there a ray
+ * launched outward and retrograde can wind at that orbit, reflect, and fall
+ * in — or squeeze past it and escape. Testing only the interval below the
+ * camera called every one of those captured. test/kerr.test.ts pins both
+ * directions against long traces from that camera position.
  */
 export function rayCaptured(camPos: V3, mCov: V4, a: number): boolean {
   const { lambda, q } = rayConstants(camPos, mCov, a);
@@ -683,8 +711,11 @@ export function rayCaptured(camPos: V3, mCov: V4, a: number): boolean {
   const c2 = 2 * a * a - 2 * a * lambda - k;
   const rCam = ksRadius(camPos, a);
   const rPlus = horizonRadius(a);
+  let turnsAbove = false;
   for (const rc of cubicRealRoots(c2 / 2, k / 2)) {
-    if (rc > rPlus && rc < rCam && radialPotential(rc, lambda, q, a) < 0) return false;
+    if (radialPotential(rc, lambda, q, a) >= 0) continue;
+    if (rc > rPlus && rc < rCam) return false;
+    if (rc > rCam) turnsAbove = true;
   }
-  return true;
+  return radialDirection(camPos, mCov, a) < 0 || turnsAbove;
 }

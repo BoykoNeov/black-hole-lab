@@ -10,10 +10,12 @@ touching `src/kerr.ts`, `src/shaders.ts`, or anything geodesic-related.
 rationale — the artistic knobs and what they cost, and the decisions behind
 compare mode. Read it before changing behaviour a slice argued its way into.
 
-**Current work:** none. The roadmap (slices 1–7) is complete; ask what to work
-on rather than inferring a next slice. `docs/archive/` holds finished plans —
-historical, and their physics prose is known wrong in places, so trust the code,
-the shader and the `kerr.ts` oracles over anything written there.
+**Plan and open problems:** `docs/ROADMAP.md` — the slices landed (1–9), the
+register of open scientific hurdles with the path to each, and what is queued.
+Start there rather than inferring a next slice; the queued items are argued, so
+prefer them to a new idea unless the user asks. `docs/archive/` holds finished
+plans — historical, and their physics prose is known wrong in places, so trust
+the code, the shader and the `kerr.ts` oracles over anything written there.
 
 ## Commands
 
@@ -39,5 +41,6 @@ npm run shot    # visual harness smoke run (needs `npm run dev` already up;
 - No new npm dependencies without asking.
 - Comments explain *why* (physics choice, approximation, workaround), never
   *what* the next line does.
-- After finishing a slice, update `README.md`'s roadmap and file map; put the
-  rationale in `docs/DESIGN.md` rather than growing the README's prose.
+- After finishing a slice, update `docs/ROADMAP.md` (the slice list and the
+  hurdles register) and `README.md`'s file map; put the rationale in
+  `docs/DESIGN.md` rather than growing the README's prose.

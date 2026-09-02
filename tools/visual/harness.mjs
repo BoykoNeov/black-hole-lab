@@ -43,6 +43,15 @@ async function discover() {
   return url;
 }
 
+/**
+ * A chromium to drive instead of the one playwright's own version wants to
+ * download. Playwright pins a browser build per release and refuses any other,
+ * so on a machine with a preinstalled chromium (a CI image, a sandbox with no
+ * network) this is the difference between measuring and "run npx playwright
+ * install". Still headless, still not anyone's real Chrome profile.
+ */
+export const LAB_CHROMIUM = process.env.LAB_CHROMIUM ?? null;
+
 /** Global rule: temp artifacts live outside the repo, never in the git tree. */
 export const OUT_DIR = process.env.LAB_OUT ?? "M:/claud_projects/temp/blackhole-shots";
 
@@ -239,7 +248,11 @@ export function savePng(dataUrl, name) {
  */
 export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
   const base = LAB_URL ?? (await discover());
-  const browser = await chromium.launch({ headless: true, args: LAUNCH_ARGS });
+  const browser = await chromium.launch({
+    headless: true,
+    args: LAUNCH_ARGS,
+    ...(LAB_CHROMIUM ? { executablePath: LAB_CHROMIUM } : {}),
+  });
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   const page = await context.newPage();
   await page.addInitScript(installLab);
@@ -316,13 +329,13 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
     },
 
     /**
-     * Let the debounced overlays catch up before shooting.
+     * Let the frame catch up with the controls before shooting.
      *
-     * The default covers 6f's worst case, which is much slower than it looks:
-     * a 250 ms debounce, and then a full outline is ~540 ms of tracing at
-     * a = 0.998 (~66 ms at a = 0) time-sliced at ~3 ms per frame — about 180
-     * frames, or ~3 s at 60 fps. Shoot before that and you get a half-traced
-     * outline or none at all, which reads exactly like a broken overlay.
+     * The 6f outline used to be the reason for this (debounced, then ~540 ms
+     * of tracing time-sliced across ~180 frames); since slice 9 it is exact
+     * and immediate. What still takes time is the frame AFTER a control
+     * change, and trails, which need simulation time to fill in. The default
+     * is generous for a GPU; under software GL a single frame can be longer.
      */
     async settle(ms = 4000) {
       await page.waitForTimeout(ms);

@@ -190,6 +190,39 @@ lever rather than merely an expensive one, the axis-regular form of Carter's Q,
 and the float32 cancellation that had to be removed from the potential are in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-8--what-gamma-costs-the-renderer).
 
+### The ladder, drawn; the outline, exact (slice 9)
+
+Three things fell out of slice 8's criterion once it existed.
+
+The criterion was **blind to the launch direction**: it tested the radial
+potential between the horizon and the camera, which is the whole story for a
+ray moving inward, and called every *outward*-moving ray captured. From the
+default camera that never showed — such rays escape by marching long before the
+budget ends — but the orbit camera goes down to r = 3.2, which at high spin is
+inside the retrograde photon orbit (r = 3.9 at a = 0.998). A ray launched
+outward and retrograde from there can wind at that orbit, reflect, and fall in,
+or squeeze past it and leave; only the sign of dr/dσ at launch tells the two
+cases apart. `rayCaptured` and the GLSL now read it, pinned against long traces
+over the whole sphere of launch directions from that camera.
+
+The **6f outline asks that criterion** instead of marching 4000 steps per
+sample. It is exact where it was ~0.6 px out, costs ~1000 cubic solves instead
+of ~540 ms of tracing, samples 96 azimuths instead of 48, and follows the
+camera live — the debounce, the time-slicing and the stale-outline fade are
+gone with the cost that justified them. Outline and rendered shadow are now one
+function of the view rather than two integrations that happen to agree.
+
+And the **ladder is drawn**. "Photon-ring ladder" false-colours every pixel by
+how many half-turns its ray's position direction swept around the hole
+(`kerr.ts`'s `winding`, accumulated in the shader), with a hairline at each
+whole turn and the scene's own luminance kept as brightness. The rungs crowd
+geometrically toward the critical curve at `e^(−γ)` per half-turn — a few flat
+bands at a = 0, a staircase on the prograde edge at a = 0.998 — and the band of
+rays still winding when the budget ends is painted as what it is (fate exact,
+colour not) rather than passed off as sky. A legend names the bands and quotes
+`e^(−γ)` per edge at the current spin. What is still open, and how to close it,
+is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
 ## File map
 
 ### `src/`
@@ -205,7 +238,9 @@ and the float32 cancellation that had to be removed from the potential are in
   runs out rather than assuming the ray was swallowed (slice 8a) — and
   `MARCH_MAX_STEPS`, the shader's march budget: the GLSL interpolates it into
   its loop bound and `main.ts`'s quality presets spend it, so the three cannot
-  drift apart
+  drift apart. `radialDirection` reads the sign of dr/dσ at launch, which
+  `rayCaptured` needs to tell an outward ray that reflects back down from one
+  that leaves (slice 9a)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -230,12 +265,10 @@ and the float32 cancellation that had to be removed from the potential are in
   trails, `photonOrbitLyapunov` — how fast the photon orbit sheds light, which
   spaces the ring's ladder at `e^(−γ)` and *also* set where the shader's march
   budget used to run out and paint escaping light black — and the shadow-edge
-  finder: the true capture boundary, located by bisecting CPU rays launched
-  exactly as the shader launches them but integrated far past its budget,
-  exposed as a generator yielding per trace so the render loop can drain it
-  against a time budget (still marched, so still ~0.6 px out at a = 0.998
-  prograde where the shader now is not — see slice 8), plus the
-  callout geometry: which disk lobe is beamed toward the camera (from the same
+  finder `findShadowEdge`: the exact capture boundary, located by bisecting
+  rays launched exactly as the shader launches them and asking `rayCaptured`
+  for each one's fate (no march, so no budget and no residual — slice 9b),
+  plus the callout geometry: which disk lobe is beamed toward the camera (from the same
   prograde `uCircCart` the shader's disk shift is built on) and how nearly a
   star sits behind the hole (pure, tested)
 - `src/compare.ts` — slice 7's split-screen layout math: the two equal
@@ -252,14 +285,18 @@ and the float32 cancellation that had to be removed from the potential are in
   may *not* do: the outline traces the drawn disk and has to land on the pixels
   the shader marched, while an inset only has to sit inside a half
 - `src/insets.ts` — where the two draggable insets sit and which one a pointer
-  is over: the panel sizes, each side's band, the boxes and their grip corners,
+  is over, and where the ladder legend goes (`legendBox`: the top-right of its
+  strip, under the clock row when that is up): the panel sizes, each side's band, the boxes and their grip corners,
   the hit-test and the drag's scale (pure, tested). Pure in the frame's CSS
   size and the knobs' values, which is what lets the grip hit-test run from a
   pointer handler, outside the render loop. It owns the panel geometry rather
   than hud.ts, because the layout and the hit box must agree with what is drawn
   to the pixel — and that keeps it clear of the DOM-only module, so a test can
   import it
-- `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom
+- `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom.
+  Also `LADDER_RUNGS`, the ladder view's palette as data — the GLSL that paints
+  the bands is generated from it and `hud.ts`'s legend reads it, so the two
+  cannot disagree
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
   black blocks through the bloom pyramid). Also the frame-rate cap and the
@@ -275,7 +312,8 @@ and the float32 cancellation that had to be removed from the potential are in
 - `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
-  funnel, orbit trails, dashed shadow outline, and the callout layer —
+  funnel, orbit trails, dashed shadow outline, the ladder legend, and the
+  callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
   other, with all copy in one `CALLOUT_COPY` table — every line of it fixed
   but the slider shadow's ratio, which `setShadowSpin` rewrites per spin;
@@ -305,7 +343,11 @@ and the float32 cancellation that had to be removed from the potential are in
   asymmetry, conserved H/m_t/λ, exact face-on disk redshift √(1−3/r),
   rays aimed inside the shadow never misreported as escapes (the captured
   backward ray hugs the horizon with diverging covariant momentum — the
-  integrator stops the runaway as a capture, as the GLSL's budget does)
+  integrator stops the runaway as a capture, as the GLSL's budget does),
+  the analytic fate against traces — including the whole sphere of launch
+  directions from r = 3.2 at a = 0.998, inside the retrograde photon orbit,
+  where outward rays reflect back down or leave and only the launch direction
+  tells which
 - `test/lens.test.ts` — checks against closed-form GR results (weak-field
   deflection 4M/b, critical impact parameter 3√3 M, photon-ring divergence)
 - `test/disk.test.ts` — checks orbit speed (ISCO at c/2), shift factor
@@ -332,8 +374,10 @@ and the float32 cancellation that had to be removed from the potential are in
   Schwarzschild ISCO marginal stability, Bardeen photon-orbit radii, trail
   ring-buffer overflow/thinning/clear, shadow edge against the exact
   Schwarzschild angular radius (sin θ = 3√3·√(1−2/r)/r, circular to 1e-6,
-  and at the app's widescreen aspect), the Kerr D-shape's x-offset with
-  y-symmetry, the looks-away valid=false path, and incremental ≡ one-shot
+  and at the app's widescreen aspect, to 1e-6 now that it is exact), the Kerr
+  D-shape's x-offset with y-symmetry, the looks-away valid=false path, the
+  march budget's cost against γ, and the outline landing on the analytic edge
+  the march converges to while the old 4000-step outline stays ~0.6 px out
 - `test/compare.test.ts` — checks the two viewports come out exactly equal in
   width across odd/even frames, gutters and offsets, that they fill the region
   and stay symmetric about its midpoint, that they are integers even after a
@@ -346,7 +390,8 @@ and the float32 cancellation that had to be removed from the potential are in
   is drawn last, that a hidden inset cannot be grabbed, and that the drag
   averages its two axes and clamps to the readable range. The widths at which
   the two insets touch are pinned as numbers: 1435 px while comparing, 852 px
-  in single view
+  in single view. Also that the ladder legend sits in its strip's top-right
+  corner, under the clocks, and inside each half while comparing
 
 ### `tools/`
 
@@ -369,68 +414,20 @@ and `tsconfig` covers `src` + `test`.
   (one strip against itself over time). Needs `npm run dev` already serving —
   it finds it by scanning 5173–5188 for the port answering as this lab, since
   vite climbs past whatever else is running, so no port is reliably ours
-  (`LAB_URL` overrides). Writes PNGs outside the repo. See `docs/DESIGN.md` for
-  why it measures instead of diffing against stored images.
+  (`LAB_URL` overrides). Writes PNGs outside the repo. `LAB_CHROMIUM` points it
+  at a preinstalled browser where playwright's own pinned build is absent. See
+  `docs/DESIGN.md` for why it measures instead of diffing against stored images.
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame
   as many ways as you like.
 
-## Slice roadmap
+## Roadmap
 
-1. **Lensed sky** — shadow, photon ring, Einstein-ring star warping, HDR bloom ✅
-2. **Accretion disk** — temperature colors, doubled image, Doppler asymmetry ✅
-3. **Matter in motion** — orbiting stars, infalling gas, relativistic jets,
-   time controls ✅
-4. **Real physics upgrade** — Kerr per-pixel integrator, exact
-   beaming/redshift, true plunge kinematics inside the ISCO (ISCO-follows-
-   spin pulled forward from slice 5) ✅
-5. **Physics-coupled behavior** — mass & accretion-rate sliders drive the
-   disk temperature, physical-unit readouts, tidal disruption events with
-   geodesic debris streams and a t^(-5/3) flare ✅
-6. **Educational overlays** — clocks, potentials, physical-vs-artistic knob
-   labels, embedding diagram, orbit trails, shadow/photon-ring annotation,
-   callout mode ✅
-   - 6a HUD infrastructure + knob provenance badges ✅
-   - 6b clocks — gravitational + velocity time dilation ✅
-   - 6c effective-potential inset — barrier, ISCO minimum, live TDE energies ✅
-   - 6d embedding diagram — the funnel, with live matter riding it ✅
-   - 6e orbit trails — star rings that fail to close (Lense–Thirring), gas
-     spirals, the TDE stream and its fallback loops ✅
-   - 6f shadow & photon-ring annotation — the exact on-screen capture
-     boundary (bisected CPU geodesics launched as the shader launches them,
-     debounced and time-sliced across frames), labelled at its own computed
-     extremes so the D-shape carries its labels with it ✅
-   - 6g "what am I looking at?" callout mode — one toggle that names the
-     frame from its real geometry: shadow and photon ring (6f's outline),
-     the beamed and receding disk lobes, the far side wrapped over the pole,
-     the jets, the ISCO edge, and an Einstein-ring detector that fires when a
-     star passes nearly behind the hole ✅
-7. **Schwarzschild vs Kerr** — a split-screen mode that renders a = 0 and the
-   spin slider's a side by side from one camera, so frame dragging shows up by
-   contrast rather than by explanation ✅
-   - 7a split-screen scene: two viewports, one FBO, per-side spin ✅
-   - 7b shadow outline traced per side (the circle vs the D-shape) ✅
-   - 7c potential & embedding insets per side, each at its half's spin ✅
-   - 7d orbit trails per side — the left ring closes, the right one walks ✅
-   - 7e shadow-edge label per side — 2.6× against 4.3×, the outlines' contrast
-     as a number ✅
-8. **The photon ring's ladder** — γ, the unstable photon orbit's Lyapunov
-   exponent: the `e^(−γ)` spacing of the ring's nested images, π at a = 0 and
-   split 0.19/4.08 across the two edges at a = 0.998. Set out to draw the
-   ladder; found that the same γ sets how many march steps a ray needs, so
-   where it is small the shader's budget ran out and painted escaping light as
-   shadow (~50 px of it on the prograde edge at a = 0.998, sky-lit; 0 px at
-   a = 0). No new overlay — 6f's outline already showed it, against docs that
-   claimed the two agreed ✅
-   - 8a the march is the wrong oracle: fate is fixed by `λ` and Carter's `q`
-     through the radial potential, not discovered by stepping. `rayCaptured`
-     settles it exactly, at any budget; the prograde edge moves in 53 px at
-     a = 0.998 and the rendered shadow is finally a D ✅
-
-The roadmap is complete. There is no slice 9 queued.
-
-Known and pinned, not queued: 6f's traced outline runs at 4000 steps, which
-leaves it ~0.6 px outside the true edge at a = 0.998 prograde — the renderer is
-now the more accurate of the two. Pointing `findShadowEdge` at `rayCaptured`
-would make it exact and drop ~540 ms of tracing per outline.
+Nine slices have landed: the lensed sky, the disk, matter in motion, the Kerr
+integrator, physical scales and TDEs, the educational overlays, compare mode,
+the analytic capture criterion, and the photon-ring ladder with the exact
+outline. The full list, the register of open scientific hurdles (what is
+approximate, by how much, and the path to closing each) and the queued slices
+are in [`docs/ROADMAP.md`](docs/ROADMAP.md). Next up there: polarization via the
+Walker–Penrose constant, and closing the budget-exhausted band's colour.

@@ -174,7 +174,12 @@
 
     <div class="check">
       <input id="edu-shadow" type="checkbox" />
-      <label for="edu-shadow" style="margin:0" title="The true edge of the black disk for the current camera, spin and lens — found by bisecting real traced geodesics, so it hugs the rendered shadow exactly. Recomputed a moment after the view stops moving.">Shadow &amp; photon ring</label>
+      <label for="edu-shadow" style="margin:0" title="The exact edge of the black disk for the current camera, spin and lens — each ray's fate settled from its conserved constants rather than by marching, the same test the renderer itself uses, so the outline and the shadow are one function of the view. Follows the camera live.">Shadow &amp; photon ring</label>
+    </div>
+
+    <div class="check">
+      <input id="edu-ladder" type="checkbox" />
+      <label for="edu-ladder" style="margin:0" title="False-colours every pixel by how many half-turns its light swept around the hole on the way to you, with a hairline at each whole turn. The photon ring is a ladder of ever-thinner images — each rung e^-γ of the last, with γ the photon orbit's Lyapunov exponent — and this is that ladder drawn: a few flat bands at spin 0, a staircase on the prograde edge at high spin, and a marked band where the march ran out of steps (its fate is exact, its colour is not). The scene's own brightness shows through so the disk still reads.">Photon-ring ladder</label>
     </div>
 
     <div class="check">
