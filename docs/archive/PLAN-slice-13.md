@@ -260,3 +260,32 @@ separable from the gradient.
 4. `docs/ROADMAP.md` H1 rewritten to what the measurements say, and marked
    closed; `docs/DESIGN.md` carries the numbers and the two rejected
    alternatives (the geometric series, and the linear constraint for `V^t`).
+
+---
+
+## What changed between this plan and the slice
+
+**The oracle.** The plan proposed `traceRayKerr` at 400,000 steps. The tests use
+`marchRefined` instead — the same RK4 at a fiftieth of the renderer's arc length,
+which `test/mino.test.ts` already keeps for exactly this reason: the renderer's
+own `stepLength` does not converge on near-critical rays, and at 400,000 coarse
+steps the reference is 2.1e-3 out in crossing radius where the continuation is
+1.6e-4. A slice measured against the coarse march would have set its tolerances
+by the oracle's error and called that its own. Final numbers, over 22 crossings
+of the pinned band fixtures: **no count mismatch**, worst radius 1.6e-4 of
+itself, worst shift factor 1.6e-5, worst world position 2.4e-3.
+
+**The seam.** 13c proposed the band boundary as the sharp claim and a per-pixel
+luminance comparison as the fallback. The fallback is what was built, in a
+stronger form than the plan sketched: band pixels the march leaves with **no**
+disk crossing of their own, split by whether the continuation finds them one,
+**differenced across the disk toggle** the tool already flips for the hairline
+scan. That isolates light that was not there before rather than a step in a
+gradient, and the group the continuation does not light is the negative control
+— without it, "turning the disk on brightens everything" would pass. Measured:
+0.10 of full luminance against 0.0000 at a = 0.9, and 0.18 at a = 0.998.
+
+**Budget.** Worst continuation cost with crossings on is 613 steps against
+`MINO_MAX_STEPS` of 1536, and the extra is exactly one step per crossing (at
+most three). `npm run band` reads zero pixels of the capped colour at all five
+views, and the frame stays on the display's 60 fps ceiling.

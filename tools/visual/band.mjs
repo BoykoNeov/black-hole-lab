@@ -12,7 +12,13 @@
  * live twice — once in a tested module and once transcribed into GLSL — and
  * `npm test` can only reach the first.
  *
- * Three things only the renderer can answer:
+ * Slice 13 adds a third claim about pixels: a band ray goes on crossing the
+ * accretion disk after the march gives up, and those crossings are now shaded.
+ * That one is measured by DIFFERENCE — the disk toggled off and on again over
+ * the same pixels — because bloom makes an absolute brightness meaningless
+ * here.
+ *
+ * Four things only the renderer can answer:
  *
  * 1. **The tripwire.** Since slice 11b the ladder's magenta means one thing:
  *    the continuation spent MINO_MAX_STEPS. It is supposed to read ZERO
@@ -36,7 +42,14 @@
  *    the 0-1 rung's 0.283,0.321,0.396). That is a true thing about the tonemap
  *    and a useless thing to measure the winding with.
  *
- * 3. **What the second loop costs**, at the default view and at the pitch
+ * 3. **Whether the light slice 13 found is drawn.** Band pixels the march
+ *    leaves with no disk crossing of their own, split by whether the
+ *    continuation finds them one, differenced across the disk toggle. The
+ *    pixels that gain a crossing and the ones that do not sit a few pixels
+ *    apart in the same bloom, so the split separates where a brightness would
+ *    not: 0.11 of full luminance against 0.0000 at a = 0.9.
+ *
+ * 4. **What the second loop costs**, at the default view and at the pitch
  *    clamp where the pole crossings live.
  *
  * What a rendered frame CANNOT check is slice 12's azimuth swing itself. The
@@ -47,9 +60,10 @@
  * fires in the shader where the module says it should, and that nothing falls
  * off the ladder.
  *
- * The scan runs with the disk off: the ladder keeps the scene's own luminance
- * as brightness, and a bright disk pixel leaves no room for a hairline to dip
- * into.
+ * The hairline scan runs with the disk off: the ladder keeps the scene's own
+ * luminance as brightness, and a bright disk pixel leaves no room for a
+ * hairline to dip into. That is also the dim half of slice 13's difference,
+ * so the two share a frame rather than costing one each.
  */
 
 import { createServer } from "vite";
@@ -107,6 +121,21 @@ const MIN_SPACING = 6;
 const MAX_GRADIENT = 0.05;
 /** Fewer matched than this and the scan proved nothing. */
 const MIN_LINES = 5;
+/**
+ * Slice 13's thresholds. Fewer than MIN_LIT pixels in a group and the medians
+ * are noise, so the view reports and does not judge — a = 0 has no band worth
+ * the name and nothing on the disk to find (the photon orbit is at r = 3 and
+ * the disk starts at 6), which is a fact about the spin rather than a failure.
+ *
+ * Measured at the default camera: the disk adds 0.20-0.28 of full luminance to
+ * a band pixel the continuation lights and 0.001-0.006 to one it does not, so
+ * the two groups are two orders apart and these bounds are nowhere near either.
+ */
+const MIN_LIT = 4;
+const MIN_LIT_GAIN = 0.02;
+const LIT_MARGIN = 5;
+/** How far either side of the shadow's edge the band is looked for, in px. */
+const BAND_PAD = 70;
 
 let failed = false;
 const fail = (msg) => {
@@ -221,8 +250,8 @@ async function shadowRows(lab) {
   }, BLACK);
 }
 
-/** The CPU's own winding at a pixel, in half-turns, or null where captured. */
-function windingAt(cam, tet, W, H, x, y) {
+/** Covariant launch momentum for a pixel centre, in the frame's own basis. */
+function launchAt(cam, tet, W, H, x, y) {
   const aspect = W / H;
   const ndc = [((x + 0.5) / W) * 2 - 1, 1 - ((y + 0.5) / H) * 2];
   const v = [ndc[0] * cam.tanHalfFov * aspect, ndc[1] * cam.tanHalfFov, 1];
@@ -235,9 +264,43 @@ function windingAt(cam, tet, W, H, x, y) {
       (1 / L) * tet.fwdCov[i] -
       tet.uCov[i];
   }
+  return m;
+}
+
+/**
+ * The x windows a band can be in on one row: the shadow's own edges, padded.
+ *
+ * Found with `rayCaptured`, which is closed form and costs nothing, rather than
+ * from the drawn frame — the sky around the shadow is dark enough in places to
+ * fool a luminance threshold, and the band is exactly where being wrong about
+ * the edge would cost the samples this scan is made of.
+ */
+function bandWindows(cam, tet, W, H, y, pad) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (let x = 0; x < W; x++) {
+    if (!rayCaptured(cam.pos, launchAt(cam, tet, W, H, x, y), cam.spin)) continue;
+    if (x < lo) lo = x;
+    if (x > hi) hi = x;
+  }
+  if (hi < lo) return [];
+  const clamp = (v) => Math.max(0, Math.min(W - 1, v));
+  if (hi - lo <= 2 * pad) return [[clamp(lo - pad), clamp(hi + pad)]];
+  return [
+    [clamp(lo - pad), clamp(lo + pad)],
+    [clamp(hi - pad), clamp(hi + pad)],
+  ];
+}
+
+/** The CPU's own winding and disk crossings at a pixel, or null where captured. */
+function windingAt(cam, tet, W, H, x, y) {
+  const m = launchAt(cam, tet, W, H, x, y);
   if (rayCaptured(cam.pos, m, cam.spin)) return null;
   const short = traceRayKerr(cam.pos, m, cam.spin, { rEscape: 64, maxSteps: MARCH_MAX_STEPS });
-  if (short.escaped) return { w: short.winding, band: false, passages: 0, capped: false };
+  const onDisk = (c) => c.r > cam.isco && c.r < cam.diskOuter;
+  const marchDisk = short.crossings.filter(onDisk).length;
+  if (short.escaped)
+    return { w: short.winding, band: false, passages: 0, capped: false, marchDisk, contDisk: 0 };
   // The march's other exits leave garbage the continuation must never be fed.
   if (short.steps < MARCH_MAX_STEPS) return null;
   const rc = rayConstants(cam.pos, m, cam.spin);
@@ -245,9 +308,19 @@ function windingAt(cam, tet, W, H, x, y) {
   const res = continueToEscape(
     minoStateAt(short.pos, [short.mt, ...short.mv], cam.spin, C),
     C,
-    cam.spin
+    cam.spin,
+    // slice 13: the crossings the continuation makes are the light this scan
+    // is about, and they need the march's own energy to be shaded at its scale
+    { mt: short.mt }
   );
-  return { w: short.winding + res.swept, band: true, passages: res.passages, capped: res.capped };
+  return {
+    w: short.winding + res.swept,
+    band: true,
+    passages: res.passages,
+    capped: res.capped,
+    marchDisk,
+    contDisk: res.crossings.filter(onDisk).length,
+  };
 }
 
 const PALETTE = [...LADDER_RUNGS.map((r) => r.rgb), LADDER_UNRESOLVED.rgb];
@@ -393,8 +466,83 @@ async function checkView(lab, label) {
   if (worst > MAX_OFFSET_W)
     fail(`a hairline sits ${worst.toFixed(3)} half-turns from the CPU crossing`);
 
+  // 3. slice 13: is the disk light the continuation carries actually drawn?
+  // Sampled on its own rows, still on the dim frame, so the two states can be
+  // differenced pixel for pixel.
+  const lit = [];
+  const dark = [];
+  const rows = [];
+  for (const f of [0.15, 0.3, 0.4, 0.5, 0.6, 0.7, 0.85]) {
+    const y = Math.round(span.lo + f * (span.hi - span.lo));
+    if (rows.includes(y)) continue;
+    rows.push(y);
+    const lum = await lumRow(lab, y);
+    for (const [x0, x1] of bandWindows(cam, tet, W, H, y, BAND_PAD)) {
+      for (let x = x0; x <= x1; x++) {
+        const r = windingAt(cam, tet, W, H, x, y);
+        // Only band pixels the march left with no disk light of their own: the
+        // claim is about light that was not there before, and a pixel the march
+        // already lit would be bright either way.
+        if (!r || !r.band || r.marchDisk !== 0) continue;
+        (r.contDisk > 0 ? lit : dark).push({ x, y, off: lum[x] });
+      }
+    }
+  }
+
   await lab.set({ disk: true });
   await lab.settle(1200);
+  await lab.capture();
+  return checkDiskLight(lab, rows, lit, dark);
+}
+
+/**
+ * Slice 13: is the disk light the continuation carries actually DRAWN?
+ *
+ * The claim is narrow on purpose. A band pixel whose 320-step march found no
+ * equatorial crossing on the disk had, before this slice, no disk light at all
+ * — it rendered as sky. If the continuation now finds it one, the pixel must
+ * light up when the disk is switched on; if the continuation finds it none, it
+ * must not.
+ *
+ * The disk toggle is the control, and it is what makes this measurable through
+ * the composite. Bloom spreads light from the bright disk elsewhere in the
+ * frame into every pixel here, so an absolute brightness would prove nothing;
+ * the pixels that gained a crossing and the pixels that did not sit a few
+ * pixels apart along the same rows, in the same bloom, so their DIFFERENCE
+ * between the two frames separates cleanly. The dark group is the negative
+ * control: without it, turning the disk on brightening everything would pass.
+ */
+async function checkDiskLight(lab, rows, lit, dark) {
+  if (lit.length === 0 && dark.length === 0) {
+    // Said out loud rather than skipped: a view that stops finding band pixels
+    // the march leaves dark looks exactly like a view where the check passed.
+    console.log(`          slice 13: no band px here the march leaves dark — nothing to check`);
+    return 0;
+  }
+  const on = new Map();
+  for (const y of rows) on.set(y, await lumRow(lab, y));
+  const gain = (px) => on.get(px.y)[px.x] - px.off;
+  const med = (A) => {
+    const v = A.map(gain).sort((p, q) => p - q);
+    return v.length ? v[v.length >> 1] : NaN;
+  };
+  const gLit = med(lit);
+  const gDark = med(dark);
+  console.log(
+    `          slice 13: ${lit.length} band px the march left dark that the ` +
+      `continuation lights, ${dark.length} it leaves dark; median luminance the ` +
+      `disk adds ${lit.length ? gLit.toFixed(4) : "n/a"} vs ${dark.length ? gDark.toFixed(4) : "n/a"}`
+  );
+  if (lit.length >= MIN_LIT) {
+    if (!(gLit > MIN_LIT_GAIN))
+      fail(`the disk adds only ${gLit.toFixed(4)} to band px the continuation says it lights`);
+    if (dark.length >= MIN_LIT && !(gLit > LIT_MARGIN * gDark))
+      fail(
+        `band px the continuation lights gain ${gLit.toFixed(4)}, ones it does not ` +
+          `gain ${gDark.toFixed(4)} — not separated`
+      );
+  }
+  return lit.length >= MIN_LIT ? 1 : 0;
 }
 
 /**
@@ -415,13 +563,16 @@ async function frameTime(lab, label) {
   console.log(`${label}: ${text.trim()}`);
 }
 
+/** Views where slice 13's disk-light check had enough pixels to judge. */
+let judged = 0;
+
 const lab = await openLab({ controls: { spin: SPINS[0], timespeed: 0, "edu-ladder": true } });
 try {
   console.log(`lab found at ${lab.url}\n`);
   for (const spin of SPINS) {
     await lab.set({ spin });
     await lab.settle(1500);
-    await checkView(lab, "default camera");
+    judged += await checkView(lab, "default camera");
   }
   // and at the pitch clamp, which is where the pole crossings are. The camera
   // has no control to set — it is dragged, and the clamp is main.ts own — so
@@ -438,8 +589,9 @@ try {
   for (const spin of [0.9, 0.998]) {
     await lab.set({ spin });
     await lab.settle(1500);
-    await checkView(lab, "pitch clamp");
+    judged += await checkView(lab, "pitch clamp");
   }
+  if (judged === 0) fail("no view had enough band px to judge slice 13's disk light");
   await lab.set({ "edu-ladder": false, timespeed: 1 });
   await frameTime(lab, "\nframe time at the pitch clamp, ladder off");
   await lab.set({ "edu-ladder": true });

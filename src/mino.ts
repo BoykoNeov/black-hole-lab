@@ -41,7 +41,6 @@ import {
   horizonRadius,
   ksMetric,
   ksRadius,
-  lower,
   radialPotential,
   raise,
   type V3,
@@ -603,8 +602,9 @@ function radialAdvance(
  *     (q = -(B + sign(B) sqrt(disc))/2, roots q/A and C/q) rather than the
  *     schoolbook one.
  *
- *  3. Lower, then rescale the spatial part so the time component is exactly
- *     `mt`. Every shift factor in the lab is homogeneous of degree -1 in the
+ *  3. Lower — m_i = V^i + f (V^t + l.V) l_i, written out rather than borrowed
+ *     so the GLSL mirror transcribes it — then rescale so the time component
+ *     is exactly `mt`. Every shift factor in the lab is homogeneous of degree -1 in the
  *     momentum, so that scaling is what makes these crossings shade
  *     identically to the march's.
  *
@@ -634,22 +634,24 @@ export function covariantMomentum(
   const Cq = f * L * L + V2;
   const disc = Math.sqrt(Math.max(B * B - 4 * A * Cq, 0));
   const qq = -0.5 * (B + (B >= 0 ? 1 : -1) * disc);
-  const roots = [
-    Math.abs(A) > 1e-12 ? qq / A : Cq / qq,
-    Math.abs(qq) > 1e-30 ? Cq / qq : -Cq / B,
-  ];
-  for (const T of roots) {
-    if (!Number.isFinite(T)) continue;
-    const m = lower(pos, a, [T, V[0], V[1], V[2]]);
-    if (m[0] * mt > 0) {
-      const k = mt / m[0];
-      return { pos, mv: [k * m[1], k * m[2], k * m[3]] };
-    }
+  let T = Math.abs(A) > 1e-12 ? qq / A : Cq / qq;
+  let lv = T + L;
+  let mtr = -T + f * lv;
+  if (mtr * mt <= 0) {
+    T = Math.abs(qq) > 1e-30 ? Cq / qq : -Cq / B;
+    lv = T + L;
+    mtr = -T + f * lv;
   }
-  // Both roots refused: only reachable if V is not null, which the potentials
-  // forbid. Fall back to the E = 1 spatial part rather than emit a NaN into
-  // the shading — a slightly wrong shift beats a black pixel.
-  return { pos, mv: V };
+  // Written out rather than calling kerr.ts's `lower` so the GLSL mirror is a
+  // transcription rather than a re-derivation: m_i = V^i + f (V^t + l.V) l_i.
+  // Neither root having the right sign needs V to be non-null, which the
+  // potentials forbid; the guard keeps a division by zero out of the shading
+  // rather than fixing anything real.
+  const k = Math.abs(mtr) > 1e-12 ? mt / mtr : 1;
+  return {
+    pos,
+    mv: [k * (V[0] + f * lv * l[0]), k * (V[1] + f * lv * l[1]), k * (V[2] + f * lv * l[2])],
+  };
 }
 
 /**

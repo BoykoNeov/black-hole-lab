@@ -21,7 +21,8 @@ npm test        # physics unit tests (geodesic integrator)
 npm run build   # typecheck + production build
 npm run shot    # visual harness smoke run (needs `npm run dev` up)
 npm run pol     # slice 10: the drawn polarization ticks vs the CPU oracle
-npm run band    # slices 11-12: the drawn photon-ring ladder vs the CPU oracle
+npm run band    # slices 11-13: the drawn photon-ring ladder vs the CPU oracle,
+                # and the disk light the continuation carries
 ```
 
 ## Architecture
@@ -187,10 +188,11 @@ No steps, so no exponent. The prograde edge moves in 22 px at a = 0.9 and 53 px
 at a = 0.998 (predicted: 23 and 53.5); a = 0 and both retrograde edges do not
 move a pixel. **The rendered shadow at a = 0.998 is now a D.**
 
-The fate is exact; the colour of the band it revealed is approximate — those
-rays are still winding when the budget ends. That, why the budget was the wrong
-lever rather than merely an expensive one, the axis-regular form of Carter's Q,
-and the float32 cancellation that had to be removed from the potential are in
+The fate is exact; the *colour* of the band it revealed was not, until slices
+11–13 finished those rays in a separated chart instead of guessing at them. Why
+the budget was the wrong lever rather than merely an expensive one, the
+axis-regular form of Carter's Q, and the float32 cancellation that had to be
+removed from the potential are in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-8--what-gamma-costs-the-renderer).
 
 ### The ladder, drawn; the outline, exact (slice 9)
@@ -220,11 +222,14 @@ how many half-turns its ray's position direction swept around the hole
 (`kerr.ts`'s `winding`, accumulated in the shader), with a hairline at each
 whole turn and the scene's own luminance kept as brightness. The rungs crowd
 geometrically toward the critical curve at `e^(−γ)` per half-turn — a few flat
-bands at a = 0, a staircase on the prograde edge at a = 0.998 — and the band of
-rays still winding when the budget ends is painted as what it is (fate exact,
-colour not) rather than passed off as sky. A legend names the bands and quotes
-`e^(−γ)` per edge at the current spin. What is still open, and how to close it,
-is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
+bands at a = 0, a staircase on the prograde edge at a = 0.998. A legend names
+the bands and quotes `e^(−γ)` per edge at the current spin. Rays still winding
+when the budget ends were drawn as their own colour when the ladder landed;
+since slices 11–13 they are finished in the separated chart instead — real
+escape direction, real winding, and the disk light they collect on the way out —
+so that colour survives only as a tripwire `npm run band` requires to read zero
+pixels. What is still open, and how to close it, is in
+[`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ### Polarization (slice 10)
 
@@ -290,15 +295,20 @@ worth the algebra, is in
   (direction exact, polarized fraction fitted between two exact endpoints).
   `pixelPolarization` runs the whole chain for one pixel and is the oracle
   `npm run pol` checks the shader against (pure, tested)
-- `src/mino.ts` — the separated continuation (slices 11–12): what happens to a
+- `src/mino.ts` — the separated continuation (slices 11–13): what happens to a
   ray still winding at the photon shell when the march's step budget runs out.
   In Mino time the radial and polar motions are independent 1-D polynomial
   problems, so a ray needing ~291,000 marched steps finishes here in a few
   hundred cheap ones — which is the only way to close it, since the step count
   DIVERGES at the critical curve. `axisPassage` takes the polar turning point
   near the spin axis in closed form instead of stepping into a 0/0, and
-  `continueToEscape` returns both the escape direction and the winding still to
-  sweep (pure, tested against a step-refined march in different coordinates)
+  `continueToEscape` returns the escape direction, the winding still to sweep,
+  and (slice 13, given the march's own m_t) the equatorial crossings the ray
+  makes on the way out — the disk light nothing used to shade.
+  `covariantMomentum` rebuilds the (m_t, mv) the shading wants out of five
+  scalars and no metric, taking V^t from the null condition because the linear
+  constraint divides by 1 − f and f = 1 is the ergosphere (pure, tested against
+  a step-refined march in different coordinates)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -505,14 +515,19 @@ and `tsconfig` covers `src` + `test`.
   adding a TS runner as a dependency
 - `tools/visual/band.mjs` — `npm run band`. The same problem as `npm run pol`,
   for the photon-ring ladder: `src/mino.ts` is tested and its GLSL copy is not.
-  Three measurements at five views. The ladder's magenta means "the
+  Four measurements at five views. The ladder's magenta means "the
   continuation spent its own budget" and must read zero pixels — it is a
   passing check, not dead UI, and it was reading two when slice 12 looked.
   Whole-turn crossings are matched against the CPU's own winding through the
   HAIRLINES the shader draws at each one, because a line's position is the
   winding and a local minimum survives a tonemap that a colour does not: worst
   offset 0.027 half-turns over 36 crossings, which is the float32 answer the
-  CPU tests cannot reach. And the frame rate, which sits on the display's
+  CPU tests cannot reach. Slice 13's disk light is measured as a DIFFERENCE
+  across the disk toggle, because bloom makes an absolute brightness meaningless
+  at these pixels: band pixels the march leaves with no disk crossing of their
+  own, split by whether the continuation finds them one, gain 0.10 of full
+  luminance against 0.0000 for the ones it does not. And the frame rate, which
+  sits on the display's
   ceiling either way — an upper bound on the cost, and the tool says so rather
   than dressing it up as a measurement
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
@@ -522,10 +537,13 @@ and `tsconfig` covers `src` + `test`.
 
 ## Roadmap
 
-Ten slices have landed: the lensed sky, the disk, matter in motion, the Kerr
-integrator, physical scales and TDEs, the educational overlays, compare mode,
-the analytic capture criterion, the photon-ring ladder with the exact outline,
-and polarization. The full list, the register of open scientific hurdles (what
-is approximate, by how much, and the path to closing each) and the queued
-slices are in [`docs/ROADMAP.md`](docs/ROADMAP.md). Next up there: closing the
-budget-exhausted band's colour, and γ around the ring rather than per edge.
+Thirteen slices have landed: the lensed sky, the disk, matter in motion, the
+Kerr integrator, physical scales and TDEs, the educational overlays, compare
+mode, the analytic capture criterion, the photon-ring ladder with the exact
+outline, polarization, and the separated continuation that finishes a ray the
+march cannot — over the spin axis, and carrying the disk light it collects. The
+full list, the register of open scientific hurdles (what is approximate, by how
+much, and the path to closing each) and the queued slices are in
+[`docs/ROADMAP.md`](docs/ROADMAP.md). Next up there: γ around the ring rather
+than per equatorial edge, and sourcing Chandrasekhar's table for the polarized
+fraction.

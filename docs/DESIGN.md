@@ -959,6 +959,173 @@ more than a rung. Those crossings are checked by the tripwire and on the CPU
 instead. Over the ones a frame can locate, the shader and the oracle agree to
 0.027 half-turns, and that is the float32 question the unit tests cannot reach.
 
+## Slice 13 — the light the continuation was already carrying
+
+Slices 11 and 12 gave a budget-exhausted ray a real escape direction and a real
+winding. What they did not give it is the **light it collects on the way out**.
+The ray goes on crossing the equatorial plane after the march stops, and every
+one of those crossings is a pass through the accretion disk that nothing was
+shading — so the photon ring's inner rungs rendered darker than they are, and
+some of them rendered as empty sky.
+
+### The hurdle predicted a series that does not exist
+
+H1's paragraph said the fix was to sum the remaining crossings analytically:
+each further half-orbit crosses the equator once more, at a radius converging
+geometrically to the photon orbit's, so the tail is a geometric series to be
+evaluated in closed form.
+
+That series is real and it is **invisible**, for a reason the entry never
+checked. The crossings converge on the photon orbit, and at low spin the photon
+orbit is *inside the disk's inner edge*:
+
+| a | photon orbits (prograde / retrograde) | ISCO = inner edge |
+| --- | --- | --- |
+| 0 | 3.000 / 3.000 | 6.000 |
+| 0.9 | 1.558 / 4.330 | 2.321 |
+| 0.998 | 1.074 / 4.000 | 1.237 |
+
+At a = 0 every hovering crossing lands at r = 3 in a disk that starts at 6. The
+whole tail emits nothing, and summing it would have added nothing to the frame.
+What a band ray actually misses is the handful of crossings on its **outbound
+leg**, where r climbs back out through the disk — one, two or three per pixel,
+not a series. Only at high spin does any of the hovering itself reach the disk,
+and then because the ISCO has dropped below the *retrograde* photon orbit at
+r ≈ 4, not because the series converges more slowly.
+
+So the slice is smaller than the hurdle: no closed form, no expansion. Detect
+the sign change of `u` in the loop that is already tracking `u`, and shade it.
+
+### What it is worth, measured before anything was written
+
+At the default camera, over a 1280×800 grid, as a bolometric proxy
+`Σ (T_n(r) g)⁴` over a band pixel's crossings:
+
+| a | band px | gain disk light | *saw no disk crossing at all* in the march | added ÷ already had (median) |
+| --- | --- | --- | --- | --- |
+| 0 | 6 | 0 | 4 | — |
+| 0.9 | 248 | 116 | 98 | **1.77** |
+| 0.998 | 510 | 325 | 47 | **0.92** |
+
+At a = 0.9 the continuation roughly triples the disk light on the band pixels
+that had any, and 98 of them were rendering as sky with a disk image missing
+from them entirely. At a = 0.998 it roughly doubles it, and those crossings pile
+up at r ≈ 1.5 against an ISCO of 1.237 — which is where the temperature profile
+peaks, so they are the hottest part of the disk seen through the most winding.
+
+At a = 0 nothing changes. That is the honest headline and the reason the hurdle
+sat open looking cosmetic: the screenshot everyone looks at is a slow spin.
+
+### Rebuilding the momentum: the null condition, not the linear one
+
+The separated system carries five scalars and no metric, which is exactly why it
+is fast. `shadeCrossing` wants `(m_t, mv)` — the covariant momentum — for the
+gas blobs and for slice 10's polarization, so the crossing has to be handed back
+into the Kerr–Schild picture. Three steps, and only the middle one is dangerous.
+
+`minoToCartesian` returns d(pos)/dτ, and Mino time is dτ = dσ/Σ, so
+`V^i = vel^i / Σ` with Σ = r² + a²u² is the affine tangent at the E = 1
+normalization the potentials are written in. Lowering it needs `V^t`, and there
+are two ways to get it.
+
+The tempting one is the **linear** constraint m_t = g_(tμ) V^μ, which solves in
+one line: P = (l·V − m_t)/(1 − f). It is wrong, and not subtly: f = 1 is exactly
+the **ergosphere**, a surface these rays really do cross, and there the
+expression divides by zero with no second root to fall back on.
+
+The one used is the **null condition**, which is a quadratic in V^t:
+
+```
+(f - 1) T² + 2 f L T + (f L² + |V|²) = 0,    L = l·V
+```
+
+Two roots, one per time orientation; the one whose lowered time component shares
+the sign of `m_t` is the ray's. Written in the stable pairing (q/A and C/q)
+because A = f − 1 passes through zero at the same ergosphere — there the
+quadratic degenerates to a linear equation with one finite root, which the
+stable form returns and the schoolbook formula turns into 0/0. Then lower,
+m_i = V^i + f (V^t + l·V) l_i, and rescale so the time component is exactly
+`m_t`: every shift factor in the lab is homogeneous of degree −1 in the
+momentum, so that scaling is what makes these crossings shade *identically* to
+the march's rather than merely similarly.
+
+That is what buys `shadeCrossing` verbatim — disk sheet, gas blobs and
+polarization, one shading path rather than two.
+
+The reconstruction is pinned at the one state both sides know. Rebuilding `mv`
+at the handoff and comparing with the march's own there gives 1.4e-4 relative,
+and that is the **march's** drift at 320 steps rather than this function's
+error: the rebuilt momentum is null to 1e-13 and the march's is not. The test
+asserts the disagreement from below as well as above — an exact match would mean
+`minoStateAt`'s re-projection onto √R and √U had quietly stopped happening.
+
+### The crossings, against a march that is actually converged
+
+The oracle is `marchRefined` — the renderer's own RK4 at a fiftieth of its arc
+length — run from the *same* re-projected state the continuation starts from, so
+the two crossing lists are one-to-one with no prefix to align. Over 22 crossings
+on the pinned band fixtures: **not one gained or lost**, worst radius 1.6e-4 of
+itself, worst shift factor 1.6e-5, worst world position 2.4e-3. A brightness
+going as the fourth power of the shift moves by 1e-4 of itself on that, four
+orders under the turbulence the same crossing is multiplied by.
+
+Against `traceRayKerr` at 400,000 steps the same comparison reads 2.1e-3 in
+radius — thirteen times worse, and it is the *reference* that is wrong.
+`marchRefined` exists because the renderer's own `stepLength` does not converge
+on near-critical rays; a slice measured against the coarse march would have set
+its tolerances by the oracle's error and called that its own.
+
+Locating the crossing inside a step needs nothing clever: `u` is interpolated
+linearly, which is what the march does to its own y, so the two agree by
+construction rather than by coincidence. The |u| left over is 1.4e-6 to 2.7e-6,
+and a quadratic fit through (u₀, pu₀, u₁) changes nothing at the precision the
+radius is checked to. `u` is then **snapped to zero**, because that is what a
+crossing is: it puts the reconstructed position exactly in the plane, so the
+shader's own rc² = |pos.xz|² − a² returns the r the shift factor was evaluated
+at instead of nearly.
+
+### Two things decided deliberately rather than by default
+
+**The refinement sub-step is charged against the budget**, on both sides. The
+ladder's magenta means one thing — the continuation spent `MINO_MAX_STEPS` — and
+slice 12 was already bitten by a cap 29 steps too small. At most three extra
+steps against 1536 with 900 of headroom, so the parity is worth more than the
+steps, and the CPU test asserts the extra is exactly one per crossing so the
+GLSL budget stays predictable from the oracle's.
+
+**The march is not touched.** The continuation runs outward along the same ray,
+so its crossings sit behind everything already composited and front-to-back
+accumulation simply continues — no sorting, no re-entry, and every frame outside
+the band is unchanged. `rayCaptured` also keeps the last word on fate: this
+slice adds light along a path whose ending was already decided, and does not get
+a vote on it.
+
+Matter along the continuation — orbiting stars, the jets, TDE debris — is *not*
+integrated. Those are volumetric emitters sampled per march step rather than per
+crossing, so carrying them would mean running the whole matter sampler in the
+second loop. The disk is what the hurdle was about.
+
+### What a frame can prove about it, and how
+
+Bloom makes an absolute brightness meaningless at these pixels: the disk
+elsewhere in the frame spills into them regardless of what they receive. So
+`npm run band` measures a **difference** instead, across the disk toggle it
+already flips for the hairline scan.
+
+The claim is deliberately narrow. A band pixel whose 320-step march found no
+equatorial crossing on the disk had, before this slice, no disk light at all. If
+the continuation now finds it one, switching the disk on must light it; if the
+continuation finds it none, it must not. Both groups sit a few pixels apart
+along the same rows in the same bloom, so their difference separates where a
+brightness would not: 0.11 of full luminance against 0.0000 at a = 0.9. The
+second group is the point — without a negative control, "turning the disk on
+brightens everything" would pass.
+
+The band pixels are found from `rayCaptured`, which is closed form and free,
+rather than from the drawn frame: the sky around the shadow is dark enough in
+places to fool a luminance threshold, and the band is precisely where being
+wrong about the shadow's edge would cost the samples the check is made of.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

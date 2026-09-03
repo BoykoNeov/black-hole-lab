@@ -112,34 +112,65 @@ Units are geometrized (G = c = M = 1) throughout.
       whole-turn crossings match the CPU's own winding to 0.027 half-turns,
       which is the float32 answer the unit tests cannot reach ✅
 
+13. **The light the continuation was already carrying** — hurdle H1's second
+    half, closed ✅
+    - 13a a ray still winding when the march's budget ends goes on crossing the
+      equatorial plane, and those crossings are passes through the disk that
+      nothing shaded. `continueToEscape` collects them, given the march's own
+      m_t — the one thing the separated system cannot recover, since lambda and
+      q are quotients and the normalization drops out. Rebuilding the covariant
+      momentum from five scalars and no metric is the one place a sign or a
+      scale could go wrong: V^t comes from the null condition, NOT from the
+      linear constraint m_t = g_(t mu) V^mu, which divides by 1 - f and f = 1 is
+      the ergosphere these rays cross. Pinned at the handoff against the march's
+      own mv (1.4e-4, the march's drift) and, over 22 crossings of a 50x-refined
+      march, not one gained or lost: radius 1.6e-4 of itself, shift 1.6e-5 ✅
+    - 13b the GLSL mirror, calling the same `shadeCrossing` — so the gas blobs
+      and slice 10's polarization come with it rather than needing a second
+      shading path. The refinement sub-step is charged against the budget on
+      both sides, deliberately: the ladder's magenta means one thing ✅
+    - 13c `npm run band`: band pixels the march leaves with no disk light of
+      their own, split by whether the continuation finds them any, differenced
+      across the disk toggle. Bloom makes an absolute brightness meaningless
+      here; the two groups sit a few pixels apart in the same bloom and separate
+      by two orders — 0.10 of full luminance against 0.0000 at a = 0.9 ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
 to closing it. Ordered by how much of the picture they touch.
 
-### H1 — the ring's inner rungs are under-lit
+### H1 — the ring's inner rungs were under-lit
 
-**Status: half closed by slices 11 and 12.** The first half — a
-budget-exhausted ray taking the sky at whatever direction it happened to be
-pointing — is done: those rays now get a real escape direction and a real
-winding out of `src/mino.ts`, and the ladder view's off-ladder colour reads
-zero pixels at every camera sampled.
+**Status: closed — the first half by slices 11 and 12, the second by slice 13.**
+A budget-exhausted ray no longer takes the sky at whatever direction it happened
+to be pointing (11, 12), and it no longer loses the disk light it collects on
+the way out (13).
 
-What is left is the light. An exhausted ray also misses the equatorial
-crossings its later half-orbits would have made, so the photon ring's inner
-rungs stay under-lit exactly where γ is small. The march cannot fix that
-either, for the same reason: the crossings keep coming as the ray winds, and
-the step count diverges.
+**This entry used to predict the wrong fix, and the correction is worth keeping.**
+It said the remaining crossings had to be summed analytically, from the
+near-critical expansion, because they keep coming as the ray winds and the step
+count diverges. The series is real and it is invisible: those crossings converge
+on the photon orbit, and at low spin the photon orbit is INSIDE the disk's inner
+edge — r = 3 against an ISCO of 6 at a = 0, so the whole tail emits nothing.
+What a band ray actually misses is the handful of crossings on its OUTBOUND leg,
+one to three per pixel, and only at high spin does any of the hovering itself
+reach the disk (the ISCO drops below the retrograde photon orbit at r ~ 4). No
+series, no expansion: detect the sign change of `u` in the loop already tracking
+`u`, and shade it. The sentence the entry got right is the one that turned out
+to be the whole answer — *they are exactly where `u` changes sign, which it
+computes anyway.*
 
-Path: each further half-orbit crosses the equatorial plane once more, at a
-radius converging geometrically to the photon orbit's. Summing the remaining
-crossings analytically — radius sequence from the near-critical expansion,
-shift from `diskShift` — would restore the brightness without stepping. The
-continuation already knows *where* those crossings are: they are exactly where
-`u` changes sign, which it computes anyway. What is missing is the shift factor
-and the compositing order, not the geometry. Needs its own oracle; bundling it
-into slice 11 would have let that slice's acceptance test pass while this half
-was wrong.
+Measured before the slice was written, at the default camera: at a = 0.9, 116 of
+248 band pixels gain disk light and 98 of those had none at all; at a = 0.998,
+325 of 510, roughly doubling what the march saw. At a = 0 nothing changes, which
+is why this looked cosmetic for so long — the default screenshot is a slow spin.
+
+Matter along the continuation path (stars, jets, TDE debris) is still not
+integrated; those are volumetric emitters sampled per march step rather than per
+crossing. See `docs/DESIGN.md` for the derivation, for why V^t comes from the
+null condition rather than the linear constraint, and for what a rendered frame
+can prove about any of it.
 
 ### H9 — the continuation could not follow a ray over the spin axis
 
@@ -234,11 +265,6 @@ frame-count-based wait would make it portable.
 
 ## Queued
 
-- **Ladder-aware disk lighting** (H1's remaining half). The photon ring's inner
-  rungs are under-lit because an exhausted ray misses the equatorial crossings
-  its later half-orbits would have made. The continuation already knows where
-  those crossings are; what is missing is the shift factor and the compositing
-  order. `npm run band` is the instrument it will be measured with.
 - **γ around the ring** (H2). Small. It touches the ladder legend, so it should
   not ride along with anything else that changes the same legend.
 - **Chandrasekhar's table** (H8). Smaller still: source twenty numbers and

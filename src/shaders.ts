@@ -482,6 +482,42 @@ void ksFL(vec3 p, out float f, out vec3 l) {
   l = vec3((r * p.x - a * p.z) / D, p.y / r, (r * p.z + a * p.x) / D);
 }
 
+// The covariant momentum the shading wants, rebuilt from a separated state
+// (slice 13). Belongs with the continuation block above and sits here only
+// because it needs ksFL. Mirrors covariantMomentum in src/mino.ts, which is the
+// tested oracle — pinned at the handoff against the march's own mv.
+//
+// V^t comes from the NULL CONDITION, a quadratic in it:
+//   (f - 1) T^2 + 2 f L T + (f L^2 + |V|^2) = 0,   L = l.V
+// Two roots, one per time orientation; the one whose lowered time component
+// shares the sign of mt is the ray's. Solving the LINEAR constraint
+// m_t = g_(t mu) V^mu instead looks simpler and divides by 1 - f, and f = 1 is
+// exactly the ergosphere, which these rays cross. The stable pairing of the
+// roots (q/A and C/q) is what carries A = 0 there.
+vec3 minoMv(vec3 pos, vec3 vel, float Sigma, float mt) {
+  vec3 V = vel / Sigma;
+  float f; vec3 l; ksFL(pos, f, l);
+  float L = dot(l, V);
+  float A = f - 1.0;
+  float B = 2.0 * f * L;
+  float Cq = f * L * L + dot(V, V);
+  float disc = sqrt(max(B * B - 4.0 * A * Cq, 0.0));
+  float qq = -0.5 * (B + (B >= 0.0 ? 1.0 : -1.0) * disc);
+  float T = abs(A) > 1e-12 ? qq / A : Cq / qq;
+  float lv = T + L;
+  float mtr = -T + f * lv;
+  if (mtr * mt <= 0.0) {
+    T = abs(qq) > 1e-30 ? Cq / qq : -Cq / B;
+    lv = T + L;
+    mtr = -T + f * lv;
+  }
+  // m_i = V^i + f (V^t + l.V) l_i, then rescaled: every shift factor in the
+  // lab is homogeneous of degree -1 in the momentum, so this is what makes
+  // these crossings shade identically to the march's.
+  float k = abs(mtr) > 1e-12 ? mt / mtr : 1.0;
+  return k * (V + f * lv * l);
+}
+
 // Hamiltonian flow of H = 1/2 (-mt^2 + |mv|^2 - f P^2), P = -mt + l.mv:
 // dp/ds = mv - f P l,  dm_i/ds = 1/2 df_i P^2 + f P (dl_j/dx_i) m_j.
 // Mirrors kerr.ts derivs(); keep the two in sync.
@@ -1250,8 +1286,47 @@ void main() {
                           min(0.08 / max(abs(s.w), 1e-9),
                               ${MINO_AZ_STEP.toFixed(4)} / max(abs(C.x) / v, 1e-9))),
                       ${MINO_V_FALL.toFixed(3)} * v / max(2.0 * abs(s.z * s.w), 1e-9));
+        vec4 sPrev = s;
+        float azPrev = az;
         s = minoStep(s, C, h, az);
         spent++;
+
+        // The equatorial plane passed during this step (slice 13). A ray still
+        // winding here goes on crossing the disk, and until this slice nothing
+        // shaded those passes: at a = 0.9, 116 of 248 band pixels gain light
+        // from them and 98 of those had none at all. They cost nothing to find,
+        // being where u changes sign in a loop already tracking u.
+        //
+        // Located by interpolating u LINEARLY across the step, which is what
+        // the march does to its own y, then re-stepping to that fraction — so
+        // the two agree by construction. u is then snapped to zero, because
+        // that is what a crossing is and it makes rc^2 = |pc.xz|^2 - a^2 return
+        // the r the shift factor was evaluated at.
+        //
+        // The sub-step is charged against the budget like any other: the
+        // ladder's magenta means "the continuation spent MINO_MAX_STEPS" and
+        // nothing else, and src/mino.ts counts it the same way.
+        if (crossings && sPrev.z * s.z < 0.0) {
+          float azC = azPrev;
+          vec4 sc = minoStep(sPrev, C, h * sPrev.z / (sPrev.z - s.z), azC);
+          spent++;
+          sc.z = 0.0;
+          vec3 pc, velX;
+          minoCart(sc, C, azC, pc, velX);
+          if (sc.x > uHorizon && sc.x < uDiskOuter) {
+            vec3 mvc = minoMv(pc, velX, sc.x * sc.x, mt);
+            float wgt = shadeCrossing(sc.x, pc, mt, mvc, lam, accum, thru);
+            // Resolved before it is added, for the reason the march's own
+            // crossings are: Stokes parameters are quadratic in the
+            // polarization, so two images that overlap really do depolarize.
+            if (uPolarization > 0.5 && wgt > 0.0 && abs(polDet) > 1e-20) {
+              vec3 cd = crossingPol(sc.x, pc, mt, mvc, kH, kV, polDet);
+              polI += wgt;
+              polQ += wgt * cd.z * (cd.x * cd.x - cd.y * cd.y);
+              polU += wgt * cd.z * 2.0 * cd.x * cd.y;
+            }
+          }
+        }
 
         if (uLadder > 0.5) {
           vec3 curP;
