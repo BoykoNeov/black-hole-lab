@@ -36,6 +36,8 @@ import {
   gDot,
   ksRadius,
   lower,
+  raise,
+  traceRayKerr,
   uCircCart,
   type Tetrad,
   type V3,
@@ -413,5 +415,83 @@ export function diskPolarization(
   return {
     f: [w[0] * n, w[1] * n, w[2] * n, w[3] * n],
     degree: scatteringDegree(mu),
+  };
+}
+
+// ---------- one pixel, end to end ----------
+
+export interface PixelPolarization {
+  /** Polarized fraction of the light this pixel receives from the disk. */
+  degree: number;
+  /** Arriving polarization as a direction in the camera's sky (tetrad components). */
+  dir: V3;
+  /** The same direction drawn on screen, as an unnormalized (dx, dy). */
+  screen: [number, number];
+  stokes: Stokes;
+  crossings: number;
+  /**
+   * True when the sky basis went degenerate. It should never happen — the map
+   * from polarizations to kappa is a similarity, so |det| = |kH||kV| exactly
+   * — so this doubles as a check on that claim rather than a case to handle
+   * gracefully and forget. A pixel that trips it is reported unpolarized,
+   * which is what the shader does too: a huge director from a near-zero
+   * divide would draw a tick pointing nowhere real.
+   */
+  degenerate: boolean;
+}
+
+/**
+ * The polarization one pixel receives, from launch to screen: trace the ray,
+ * ask each disk crossing how it emits, carry each answer out on its conserved
+ * kappa, and add the results as Stokes parameters in the camera's sky.
+ *
+ * The CPU oracle for the shader's polarization pass, and the thing the tests
+ * measure. `weight` is how much a crossing contributes to the pixel's
+ * brightness — the shader passes its own composited disk emission; tests pass
+ * a constant, since every claim about DIRECTION is weight-blind.
+ */
+export function pixelPolarization(
+  camPos: V3,
+  a: number,
+  tet: Tetrad,
+  n: V3,
+  opts: {
+    rInner: number;
+    rOuter: number;
+    weight?: (rc: number, g: number) => number;
+    maxSteps?: number;
+  }
+): PixelPolarization {
+  const mCov: V4 = [0, 1, 2, 3].map(
+    (i) =>
+      n[0] * tet.rightCov[i] + n[1] * tet.upCov[i] + n[2] * tet.fwdCov[i] - tet.uCov[i]
+  ) as V4;
+  const basis = skyBasis(camPos, a, tet, n);
+  const scale = Math.hypot(basis.kH.k1, basis.kH.k2) * Math.hypot(basis.kV.k1, basis.kV.k2);
+  const degenerate = !(Math.abs(basis.det) > 1e-9 * Math.max(scale, 1e-30));
+  const trace = traceRayKerr(camPos, mCov, a, { maxSteps: opts.maxSteps });
+  const w = opts.weight ?? (() => 1);
+
+  let s = ZERO_STOKES;
+  let used = 0;
+  if (!degenerate) {
+    for (const c of trace.crossings) {
+      if (c.r < opts.rInner || c.r > opts.rOuter) continue;
+      const P = raise(c.pos, a, [trace.mt, c.mv[0], c.mv[1], c.mv[2]]);
+      const pol = diskPolarization(c.pos, a, c.r, P);
+      if (!pol) continue;
+      const { c1, c2 } = solveSky(basis, walkerPenrose(c.pos, a, P, pol.f));
+      s = addCrossing(s, w(c.r, c.g), pol.degree, c1, c2);
+      used++;
+    }
+  }
+  const { degree, dir } = resolveStokes(s, basis);
+  return {
+    degree,
+    dir,
+    screen: skyToScreen(n, dir),
+    stokes: s,
+    crossings: used,
+    degenerate,
   };
 }

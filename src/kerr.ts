@@ -450,6 +450,13 @@ export interface KerrCrossing {
   pos: V3;
   /** Exact circular-orbit disk shift factor at this crossing. */
   g: number;
+  /**
+   * Covariant spatial momentum there, interpolated across the step exactly as
+   * the GLSL interpolates it. Slice 10 needs the ray's own tangent AT the
+   * crossing to work out how the light leaves polarized; m_t is the trace's
+   * conserved mt, so this completes the 4-momentum.
+   */
+  mv: V3;
 }
 
 export interface KerrTraceResult {
@@ -537,7 +544,16 @@ export function traceRayKerr(
       const rc2 = pc[0] * pc[0] + pc[2] * pc[2] - a * a;
       if (rc2 > 0) {
         const rc = Math.sqrt(rc2);
-        crossings.push({ r: rc, pos: pc, g: diskShift(rc, a, mt, lam) });
+        crossings.push({
+          r: rc,
+          pos: pc,
+          g: diskShift(rc, a, mt, lam),
+          mv: [
+            mv[0] + fr * (next.mv[0] - mv[0]),
+            mv[1] + fr * (next.mv[1] - mv[1]),
+            mv[2] + fr * (next.mv[2] - mv[2]),
+          ],
+        });
       }
     }
 

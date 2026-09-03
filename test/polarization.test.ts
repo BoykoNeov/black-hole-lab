@@ -16,6 +16,7 @@ import {
   emitterPolarization,
   frameDirection,
   photonDirInFrame,
+  pixelPolarization,
   scatteringDegree,
   SCATTERING_DEGREE_MAX,
   skyBasis,
@@ -631,5 +632,181 @@ describe("the disk's own polarization (electron scattering)", () => {
     const got = diskPolarization(pos, a, rc, P)!;
     expect(got.degree).toBeGreaterThan(0.11);
     expect(got.degree).toBeLessThan(SCATTERING_DEGREE_MAX);
+  });
+});
+
+describe("one pixel, launch to screen", () => {
+  /** Tetrad and pixel launch for a camera at camPos looking at the origin. */
+  function view(camPos: V3, a: number) {
+    const f = unit([-camPos[0], -camPos[1], -camPos[2]]);
+    // a face-on camera looks straight down the spin axis, where the world up
+    // is no use as a reference
+    const upW: V3 = Math.abs(f[1]) > 0.99 ? [0, 0, 1] : [0, 1, 0];
+    const rgt = unit([
+      upW[1] * f[2] - upW[2] * f[1],
+      upW[2] * f[0] - upW[0] * f[2],
+      upW[0] * f[1] - upW[1] * f[0],
+    ]);
+    const up: V3 = [
+      f[1] * rgt[2] - f[2] * rgt[1],
+      f[2] * rgt[0] - f[0] * rgt[2],
+      f[0] * rgt[1] - f[1] * rgt[0],
+    ];
+    return buildStaticTetrad(camPos, a, rgt, up, f);
+  }
+
+  // THE end-to-end check. Take a real disk crossing, ask it how it emits, and
+  // get that polarization to the camera two independent ways: along its
+  // conserved kappa, and by dragging it there with the finite-difference
+  // transport. Every sign convention in the chain — the azimuth's sense, the
+  // Levi-Civita components, the 1-forms, the backward tangent — sits between
+  // those two answers, and only the right ones make them agree.
+  it.each([
+    { a: 0, label: "a = 0" },
+    { a: 0.9, label: "a = 0.9" },
+  ])("agrees with dragging the polarization to the camera ($label)", ({ a }) => {
+    const camPos: V3 = [0, 5, 15];
+    const n = unit([0.11, -0.16, 1]);
+    const tet = view(camPos, a);
+    const mCov: V4 = [0, 1, 2, 3].map(
+      (i) =>
+        n[0] * tet.rightCov[i] + n[1] * tet.upCov[i] + n[2] * tet.fwdCov[i] - tet.uCov[i]
+    ) as V4;
+    const mt = mCov[0];
+    const basis = skyBasis(camPos, a, tet, n);
+
+    // march to the first equatorial crossing, dragging both sky legs
+    const legs = [skyLeg(tet, basis.eH), skyLeg(tet, basis.eV)];
+    const carried: V4[] = [];
+    let cross: { p: V3; mv: V3 } | null = null;
+    for (const leg of legs) {
+      let st: TransportState = {
+        p: [...camPos],
+        mv: [mCov[1], mCov[2], mCov[3]],
+        V: leg,
+        sigma: 0,
+      };
+      for (let i = 0; i < 4000; i++) {
+        const nxt = transportStep(st, a, mt, 0.01);
+        if (st.p[1] * nxt.p[1] < 0) {
+          st = nxt;
+          break;
+        }
+        st = nxt;
+        if (ksRadius(st.p, a) > 40) break;
+      }
+      carried.push(st.V);
+      cross = { p: st.p, mv: st.mv };
+    }
+    expect(cross).not.toBeNull();
+    const pc = cross!.p;
+    const rc = Math.sqrt(Math.max(pc[0] * pc[0] + pc[2] * pc[2] - a * a, 0));
+    expect(rc).toBeGreaterThan(3); // it really landed on the disk, not the hole
+    const P = raise(pc, a, [mt, cross!.mv[0], cross!.mv[1], cross!.mv[2]]);
+    const pol = diskPolarization(pc, a, rc, P)!;
+    expect(pol).not.toBeNull();
+
+    // route 1: project the emitted polarization onto the dragged legs
+    const byTransport = [
+      gDot(pc, a, pol.f, carried[0]),
+      gDot(pc, a, pol.f, carried[1]),
+    ];
+    // route 2: its conserved kappa, resolved on the camera's sky basis
+    const k = walkerPenrose(pc, a, P, pol.f);
+    const byKappa = solveSky(basis, k);
+
+    // a director: the two routes may disagree by an overall sign
+    const sgn = Math.sign(
+      byTransport[0] * byKappa.c1 + byTransport[1] * byKappa.c2
+    );
+    expect(sgn * byKappa.c1).toBeCloseTo(byTransport[0], 3);
+    expect(sgn * byKappa.c2).toBeCloseTo(byTransport[1], 3);
+  });
+
+  it("leaves a distant face-on view almost unpolarized", () => {
+    const a = 0.5;
+    const camPos: V3 = [0, 260, 0];
+    const tet = view(camPos, a);
+    let worst = 0;
+    for (const n of [unit([0.04, 0, 1]), unit([0, 0.05, 1]), unit([-0.03, 0.03, 1])]) {
+      const got = pixelPolarization(camPos, a, tet, n, { rInner: 6, rOuter: 24 });
+      expect(got.crossings).toBeGreaterThan(0);
+      worst = Math.max(worst, got.degree);
+    }
+    // Face-on, light leaves along the disk normal and scattering has no
+    // direction to prefer. Not exactly zero, and the residue is physical: the
+    // disk's own orbital motion aberrates the emission direction by ~19
+    // degrees at these radii, so the matter does not see the ray leaving
+    // quite along its normal even when the distant camera does.
+    expect(worst).toBeGreaterThan(0);
+    expect(worst).toBeLessThan(0.01);
+  });
+
+  it("polarizes a grazing view far more than a face-on one", () => {
+    const a = 0.5;
+    const n = unit([0.06, 0.0, 1]);
+    const faceOn = pixelPolarization(camPos0(260, 0.02), a, view(camPos0(260, 0.02), a), n, {
+      rInner: 6,
+      rOuter: 24,
+    });
+    const edgeOn = pixelPolarization(camPos0(260, 1.45), a, view(camPos0(260, 1.45), a), n, {
+      rInner: 6,
+      rOuter: 24,
+    });
+    expect(edgeOn.crossings).toBeGreaterThan(0);
+    expect(edgeOn.degree).toBeGreaterThan(8 * faceOn.degree);
+    expect(edgeOn.degree).toBeLessThan(SCATTERING_DEGREE_MAX);
+  });
+
+  /** Camera at distance d, inclination incl from the spin axis. */
+  function camPos0(d: number, incl: number): V3 {
+    return [0, d * Math.cos(incl), d * Math.sin(incl)];
+  }
+
+  // Kerr is symmetric under reflection in its own equatorial plane, and the
+  // disk and its rotation are too (the angular velocity is an axial vector, so
+  // it survives the reflection). A camera below the disk must therefore see
+  // the mirror image of what one above sees — with the vertical flipped, since
+  // that reflection turns the camera's up leg over.
+  it("mirrors the tick field between a view from above and one from below", () => {
+    const a = 0.7;
+    const above: V3 = [0, 6, 15];
+    const below: V3 = [0, -6, 15];
+    const tA = view(above, a);
+    const tB = view(below, a);
+    let compared = 0;
+    for (const [nx, ny] of [
+      [0.42, 0.26],
+      [-0.51, 0.19],
+      [0.24, -0.44],
+    ]) {
+      const nA = unit([nx, ny, 1]);
+      const nB = unit([nx, -ny, 1]);
+      const pA = pixelPolarization(above, a, tA, nA, { rInner: 3.5, rOuter: 40 });
+      const pB = pixelPolarization(below, a, tB, nB, { rInner: 3.5, rOuter: 40 });
+      if (pA.crossings === 0 || pB.crossings === 0) continue;
+      compared++;
+      expect(pB.degree).toBeCloseTo(pA.degree, 6);
+      // the drawn tick is a director, so compare |cos| of the angle between
+      // the mirrored screen directions
+      const mA: [number, number] = [pA.screen[0], -pA.screen[1]];
+      const dot =
+        (mA[0] * pB.screen[0] + mA[1] * pB.screen[1]) /
+        (Math.hypot(...mA) * Math.hypot(...pB.screen));
+      expect(Math.abs(dot)).toBeCloseTo(1, 5);
+    }
+    expect(compared).toBeGreaterThan(1);
+  });
+
+  it("never reports the sky basis as degenerate, the similarity guaranteeing it", () => {
+    for (const a of [0, 0.6, 0.998]) {
+      for (const camPos of [[0, 12, 0], [0, 0, 12], [0, 9, 9]] as V3[]) {
+        const tet = view(camPos, a);
+        for (const n of [unit([0.3, 0.2, 1]), unit([-0.4, 0.5, 1])]) {
+          const got = pixelPolarization(camPos, a, tet, n, { rInner: 6, rOuter: 24 });
+          expect(got.degenerate).toBe(false);
+        }
+      }
+    }
   });
 });
