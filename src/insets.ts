@@ -173,14 +173,16 @@ export function dragScale(id: InsetId, startScale: number, dx: number, dy: numbe
  * Eight rows: the six rungs, the one way the continuation can still fail, and
  * captured. It was nine for the length of slice 11b, whose ninth was the rays
  * the separated chart could not follow over the spin axis; slice 12 follows
- * them, so the row and its height came back off. The width never moved for
- * either — nothing here clips, so an over-wide caption spills onto the scene
- * rather than truncating, and the widest caption there has ever been measures
- * 198 px against the 210 px a row gets at this width. Measured in the browser
- * with the HUD's own font, not counted in characters.
+ * them, so the row and its height came back off. The three-line footer is what
+ * makes it 181: H2 added the range of gamma the drawn ring covers under the
+ * pair of edge values that bound it. The width never moved for any of it —
+ * nothing here clips, so an over-wide caption spills onto the scene rather
+ * than truncating, and the widest caption there has ever been measures 198 px
+ * against the 210 px a row gets at this width. Measured in the browser with
+ * the HUD's own font, not counted in characters.
  */
 export const LEGEND_W = 250;
-export const LEGEND_H = 168;
+export const LEGEND_H = 181;
 
 /**
  * Where the ladder legend sits: the top-right corner of the strip whose

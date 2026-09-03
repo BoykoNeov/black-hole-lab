@@ -8,6 +8,7 @@ import {
   iscoRadius,
   ksRadius,
   rayCaptured,
+  rayConstants,
   traceRayKerr,
   uCircCart,
 } from "../src/kerr";
@@ -19,16 +20,20 @@ import {
   alignmentAngle,
   approachingSign,
   circRate,
+  criticalLyapunov,
   embeddingProfile,
   embeddingZAt,
   equatorialPoint,
   findShadowEdge,
   photonImpactParameter,
   photonOrbitLyapunov,
+  outlineLyapunov,
   photonOrbitRadius,
   projectToScreen,
+  ringGammaLabels,
   shadowExtremes,
   shadowHorizonRatio,
+  sphericalPhotonRadius,
   staticRate,
   vEff,
 } from "../src/edu";
@@ -376,6 +381,278 @@ describe("photonOrbitLyapunov against traced rays", () => {
     expectFit(retro, photonOrbitLyapunov(0.9, false));
     // the headline contrast: the prograde edge sheds light ~3x slower
     expect(retro / pro).toBeGreaterThan(3);
+  });
+});
+
+/**
+ * gamma around the ring (H2): the pointwise exponent, against the two things
+ * that can check it — the equatorial closed form it must reduce to, and rays
+ * the integrator actually traced.
+ */
+describe("criticalLyapunov", () => {
+  it("reduces to the equatorial closed form, both senses, every spin", () => {
+    for (const a of [0, 0.3, 0.6, 0.9, 0.998]) {
+      for (const prograde of [true, false]) {
+        const b = photonImpactParameter(a, prograde);
+        // q = 0 IS the equatorial orbit, so this is one orbit reached by two
+        // different routes: the closed form in (r~, b), and the latitude
+        // quadrature in the limit of no latitude swing at all.
+        expect(criticalLyapunov(a, b, 0) / photonOrbitLyapunov(a, prograde)).toBeCloseTo(1, 11);
+      }
+    }
+  });
+
+  it("finds the orbit the ray hovers at", () => {
+    for (const a of [0, 0.5, 0.9, 0.998]) {
+      for (const prograde of [true, false]) {
+        const b = photonImpactParameter(a, prograde);
+        expect(sphericalPhotonRadius(a, b, 0)).toBeCloseTo(photonOrbitRadius(a, prograde), 9);
+      }
+    }
+    // Off the equator at a = 0 every critical ray shares r~ = 3 — the
+    // degeneracy that makes the textbook lambda(r~), q(r~) unusable here.
+    for (let i = 0; i <= 8; i++) {
+      const lambda = (Math.sqrt(27) * i) / 8;
+      expect(sphericalPhotonRadius(0, lambda, 27 - lambda * lambda)).toBeCloseTo(3, 9);
+    }
+  });
+
+  it("is pi everywhere on the ring at a = 0, however the ray is tilted", () => {
+    // Spherical symmetry: with no spin there is no preferred sense, so every
+    // critical ray sheds light at the same rate whatever its (lambda, q).
+    for (let i = 0; i <= 10; i++) {
+      const lambda = (Math.sqrt(27) * i) / 10;
+      expect(criticalLyapunov(0, lambda, 27 - lambda * lambda)).toBeCloseTo(Math.PI, 10);
+      expect(criticalLyapunov(0, -lambda, 27 - lambda * lambda)).toBeCloseTo(Math.PI, 10);
+    }
+  });
+
+  it("sweeps monotonically from the prograde edge to the retrograde one", () => {
+    // The two equatorial exponents are the ends of one continuous sweep, which
+    // is what lets the legend quote them as bounds.
+    const a = 0.9;
+    const rPro = photonOrbitRadius(a, true);
+    const rRetro = photonOrbitRadius(a, false);
+    let prev = -Infinity;
+    let last = 0;
+    for (let i = 0; i <= 20; i++) {
+      const rt = rPro + (rRetro - rPro) * (i / 20);
+      // (lambda, q) of the spherical orbit at r~, the textbook forms — used
+      // ONLY here, where a = 0.9 keeps their 1/a harmless.
+      const lambda = (rt * rt + a * a) / a - (2 * rt * (rt * rt - 2 * rt + a * a)) / (a * (rt - 1));
+      const q = (rt ** 3 / (a * a)) * ((4 * (rt * rt - 2 * rt + a * a)) / ((rt - 1) ** 2) - rt);
+      if (!(q >= 0)) continue;
+      last = criticalLyapunov(a, lambda, q);
+      expect(last).toBeGreaterThan(prev);
+      prev = last;
+    }
+    expect(last).toBeCloseTo(photonOrbitLyapunov(a, false), 2);
+  });
+});
+
+/**
+ * The traced check, the one that cannot be argued with: this measures the
+ * exponent from rays the integrator really followed, in the winding the ladder
+ * view really colours. Off the equator there is no closed form to compare
+ * against but this one, so it is what says the clock is the right one.
+ */
+function fitAtAzimuth(camPos: V3, right: V3, up: V3, fwd: V3, a: number, psi: number) {
+  const tanHalfFov = 0.4;
+  const tet = buildStaticTetrad(camPos, a, right, up, fwd);
+  const rEscape = Math.hypot(camPos[0], camPos[1], camPos[2]) + 40;
+  const cx = Math.cos(psi);
+  const cy = Math.sin(psi);
+  const momentum = (s: number): V4 => {
+    const vx = s * cx * tanHalfFov;
+    const vy = s * cy * tanHalfFov;
+    const inv = 1 / Math.hypot(vx, vy, 1);
+    const m: V4 = [0, 0, 0, 0];
+    for (let i = 0; i < 4; i++) {
+      m[i] =
+        vx * inv * tet.rightCov[i] +
+        vy * inv * tet.upCov[i] +
+        inv * tet.fwdCov[i] -
+        tet.uCov[i];
+    }
+    return m;
+  };
+  const trace = (s: number) =>
+    traceRayKerr(camPos, momentum(s), a, { rEscape, maxSteps: 200000 });
+
+  let lo = 0;
+  let hi = 0.05;
+  while (hi <= 3 && !trace(hi).escaped) {
+    lo = hi;
+    hi *= 1.6;
+  }
+  for (let i = 0; i < 40; i++) {
+    const mid = 0.5 * (lo + hi);
+    if (!trace(mid).escaped) lo = mid;
+    else hi = mid;
+  }
+  const sc = 0.5 * (lo + hi);
+
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let k = 1; k <= 16; k++) {
+    const off = 0.02 * Math.pow(0.55, k);
+    const r = trace(sc + off);
+    if (!r.escaped) continue;
+    xs.push(Math.log(off));
+    ys.push(r.winding);
+  }
+  const n = xs.length;
+  const mx = xs.reduce((s, v) => s + v, 0) / n;
+  const my = ys.reduce((s, v) => s + v, 0) / n;
+  let num = 0;
+  let den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - mx) * (ys[i] - my);
+    den += (xs[i] - mx) * (xs[i] - mx);
+  }
+  const c = rayConstants(camPos, momentum(sc), a);
+  return { fitted: -den / num, closed: criticalLyapunov(a, c.lambda, c.q) };
+}
+
+describe("criticalLyapunov against traced rays, off the equator", () => {
+  const EDGE: [V3, V3, V3] = [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, -1],
+  ];
+  const CAM: V3 = [0, 0, 25];
+
+  /**
+   * The same one-sided bias the equatorial fit carries: the stepper takes
+   * finite steps along a trajectory whose deviation is growing exponentially,
+   * which overstates the growth slightly. Off the equator the ray swings in
+   * latitude as well, so the bias is a little larger — still one-sided, so
+   * this asserts the sign rather than hiding it in a symmetric tolerance.
+   */
+  const expectFit = (r: { fitted: number; closed: number }) => {
+    expect(r.fitted / r.closed).toBeGreaterThan(0.999);
+    expect(r.fitted / r.closed).toBeLessThan(1.05);
+  };
+
+  it("holds at every screen azimuth at a = 0.9", () => {
+    for (const deg of [0, 45, 90, 135, 180, 270]) {
+      expectFit(fitAtAzimuth(CAM, ...EDGE, 0.9, (deg * Math.PI) / 180));
+    }
+  });
+
+  it("still returns pi off the equator at a = 0", () => {
+    const r = fitAtAzimuth(CAM, ...EDGE, 0, Math.PI / 3);
+    // Looser than the exact-(lambda, q) test above by design: here the pair
+    // is read off a ray bisected on the MARCH's escape verdict, so the 6e-7
+    // left over is where that boundary sits against the exact one — the
+    // integrator's, not the quadrature's.
+    expect(r.closed).toBeCloseTo(Math.PI, 5);
+    expectFit(r);
+  });
+});
+
+describe("outlineLyapunov", () => {
+  const ring = (a: number, pitch: number) => {
+    const basis = cameraBasis({ yaw: 0, pitch, dist: 25, fovDeg: 60 });
+    const tet = buildStaticTetrad(basis.pos, a, basis.right, basis.up, basis.fwd);
+    const edge = findShadowEdge(basis.pos, tet, a, T, 1);
+    return { g: outlineLyapunov(basis.pos, tet, a, T, 1, edge), edge };
+  };
+
+  it("spans exactly the two equatorial exponents, edge-on", () => {
+    const a = 0.9;
+    const { g } = ring(a, 0);
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const v of g) {
+      lo = Math.min(lo, v);
+      hi = Math.max(hi, v);
+    }
+    // With the camera in the plane the ring's extremes ARE the two equatorial
+    // orbits, which is what lets the legend quote them as bounds.
+    expect(lo).toBeCloseTo(photonOrbitLyapunov(a, true), 2);
+    expect(hi).toBeCloseTo(photonOrbitLyapunov(a, false), 2);
+  });
+
+  it("reads one number all the way round from the spin axis", () => {
+    // On the axis every critical ray carries lambda = 0 by symmetry, so the
+    // ring has a single exponent and it is NEITHER edge's — the reason the
+    // legend quotes the range it draws rather than the closed form's.
+    const a = 0.9;
+    const { g } = ring(a, Math.PI / 2 - 1e-4);
+    // What is left of the spread is the camera's own 1e-4 tilt off the axis
+    // and the bisection, three orders under the 2.8 the ring spans edge-on.
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const v of g) {
+      lo = Math.min(lo, v);
+      hi = Math.max(hi, v);
+    }
+    expect(hi - lo).toBeLessThan(1e-3);
+    expect(g[0]).toBeGreaterThan(photonOrbitLyapunov(a, true));
+    expect(g[0]).toBeLessThan(photonOrbitLyapunov(a, false));
+  });
+
+  it("is pi at every azimuth at a = 0, from any camera", () => {
+    for (const pitch of [0, 0.6, 1.2]) {
+      const { g } = ring(0, pitch);
+      for (const v of g) expect(v).toBeCloseTo(Math.PI, 6);
+    }
+  });
+});
+
+describe("ringGammaLabels", () => {
+  const a = 0.9;
+  const basis = cameraBasis({ yaw: 0, pitch: 0, dist: 25, fovDeg: 60 });
+  const tet = buildStaticTetrad(basis.pos, a, basis.right, basis.up, basis.fwd);
+  const edge = findShadowEdge(basis.pos, tet, a, T, 16 / 9);
+  const g = outlineLyapunov(basis.pos, tet, a, T, 16 / 9, edge);
+
+  it("anchors on drawn samples and pushes the text off the ring", () => {
+    const labels = ringGammaLabels(edge, g, 0, 1600, 900);
+    expect(labels).toHaveLength(6);
+    const cx = 800;
+    const cy = 450;
+    for (const l of labels) {
+      // the anchor is an outline sample verbatim, so it lands on the dashes
+      let onCurve = false;
+      for (let k = 0; k < edge.pts.length / 2; k++) {
+        const ax = ((edge.pts[2 * k] + 1) / 2) * 1600;
+        const ay = ((1 - edge.pts[2 * k + 1]) / 2) * 900;
+        if (Math.hypot(ax - l.ax, ay - l.ay) < 1e-9) onCurve = true;
+      }
+      expect(onCurve).toBe(true);
+      // and the text sits outside it, never on the curve it labels
+      expect(Math.hypot(l.tx - cx, l.ty - cy)).toBeGreaterThan(Math.hypot(l.ax - cx, l.ay - cy));
+      expect(l.gamma).toBeGreaterThan(0);
+    }
+  });
+
+  it("leans the text away from the hole on each side", () => {
+    const labels = ringGammaLabels(edge, g, 0, 1600, 900);
+    for (const l of labels) {
+      if (l.align === "left") expect(l.tx).toBeGreaterThan(l.ax);
+      if (l.align === "right") expect(l.tx).toBeLessThan(l.ax);
+      if (l.align === "center") expect(Math.abs(l.ty - l.ay)).toBeGreaterThan(5);
+    }
+  });
+
+  it("lays out within the strip it is given, not the frame", () => {
+    // Compare mode hands each half its own (x0, w); a label laid out against
+    // the whole canvas would sit half a shadow away from its own outline.
+    const left = ringGammaLabels(edge, g, 0, 800, 900);
+    const right = ringGammaLabels(edge, g, 800, 800, 900);
+    for (let j = 0; j < left.length; j++) {
+      expect(right[j].ax - left[j].ax).toBeCloseTo(800, 9);
+      expect(right[j].ty).toBeCloseTo(left[j].ty, 9);
+    }
+  });
+
+  it("reuses the caller's objects rather than allocating per frame", () => {
+    const buf = ringGammaLabels(edge, g, 0, 1600, 900);
+    const again = ringGammaLabels(edge, g, 0, 1600, 900, buf);
+    expect(again).toBe(buf);
+    expect(again[0]).toBe(buf[0]);
   });
 });
 

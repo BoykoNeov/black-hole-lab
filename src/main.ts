@@ -42,6 +42,7 @@ import {
   drawPolarizationLegend,
   drawPotential,
   drawResizeGrip,
+  drawRingGammaLabels,
   drawShadowOutline,
   drawTrails,
   initHud,
@@ -50,6 +51,7 @@ import {
   type CalloutItem,
   type CalloutKey,
   type ClockEntry,
+  type HudBox,
   type TrailGroup,
 } from "./hud";
 import {
@@ -65,12 +67,15 @@ import {
   embeddingProfile,
   equatorialPoint,
   findShadowEdge,
+  outlineLyapunov,
   projectToScreen,
+  ringGammaLabels,
   shadowExtremes,
   staticRate,
   type Alignment,
   type EmbeddingProfile,
   type Projected,
+  type RingGammaLabel,
   type ShadowEdge,
   type ShadowExtremes,
 } from "./edu";
@@ -471,6 +476,11 @@ const trailScratch: V3 = [0, 0, 0];
 // frames; see docs/DESIGN.md, slice 9.
 interface ShadowTrace {
   edge: ShadowEdge | null;
+  // The ladder's exponent at each of the outline's azimuths (H2). Computed
+  // with the edge and keyed by the same view: it is a tenth of the outline's
+  // own cost (0.05 ms against 0.56 at a = 0.998), so there is nothing to gain
+  // by computing only the six that get printed.
+  gammas: Float64Array | null;
   // The view this outline was computed for; any change recomputes it. NaN so
   // that the first frame always misses.
   spin: number;
@@ -482,6 +492,7 @@ interface ShadowTrace {
 }
 const makeShadowTrace = (): ShadowTrace => ({
   edge: null,
+  gammas: null,
   spin: NaN,
   yaw: NaN,
   pitch: NaN,
@@ -497,6 +508,9 @@ const makeShadowTrace = (): ShadowTrace => ({
  */
 const shadowSlider = makeShadowTrace();
 const shadowSchw = makeShadowTrace();
+/** The exponents the legend may quote: only ever ones an outline measured. */
+const drawnGammas = (st: ShadowTrace): Float64Array | null =>
+  st.edge !== null && st.edge.valid ? st.gammas : null;
 
 // Callout mode (6g). Every anchor here is a straight-line projection of where
 // a thing IS; the lensed image the label names sits near it, not on it (the
@@ -509,6 +523,15 @@ for (let i = 0; i < CALLOUT_MAX; i++)
 const calloutExt: ShadowExtremes = {
   leftX: 0, leftY: 0, rightX: 0, rightY: 0, topX: 0, topY: 0, bottomX: 0, bottomY: 0,
 };
+// The printed exponents (H2), one buffer per strip for the same reason the
+// extremes are: both halves are live at once while comparing, and each one's
+// numbers belong to its own spin.
+const ringLabels: RingGammaLabel[] = [];
+const ringLabelsSchw: RingGammaLabel[] = [];
+// and the boxes they took, so 6g's callouts can step around them
+const ringBoxes: HudBox[] = [];
+const ringBoxesSchw: HudBox[] = [];
+
 // The a = 0 half's shadow label (compare only) lays out in its own strip, so
 // it gets its own extremes and its own one-item list rather than sharing the
 // buffers above — those hold the slider side's, and both are live at once.
@@ -934,9 +957,19 @@ function render() {
     // from its own — this is the camera as ITS spacetime sees it
     const tet = buildStaticTetrad(basis.pos, spin, basis.right, basis.up, basis.fwd);
     st.edge = findShadowEdge(basis.pos, tet, spin, tanHalfFov, aspect);
+    st.gammas = outlineLyapunov(
+      basis.pos,
+      tet,
+      spin,
+      tanHalfFov,
+      aspect,
+      st.edge,
+      st.gammas ?? undefined
+    );
   };
 
-  if (shadowOn) {
+  const outlineOn = shadowOn || params.eduLadder;
+  if (outlineOn) {
     if (params.compare) updateShadow(shadowSchw, COMPARE_SPIN_LEFT, split.left);
     updateShadow(shadowSlider, params.spin, viewSlider);
   }
@@ -1183,31 +1216,65 @@ function render() {
   // two labels word-for-word alike, crowding the shape they sat on. Now that
   // the ratio is read per spin, the pair says 2.6× here against 4.3× across
   // the divider: the same contrast the circle and the D draw, as a number.
-  if (shadowOn && params.compare && shadowSchw.edge && shadowSchw.edge.valid) {
+  if (outlineOn && params.compare && shadowSchw.edge && shadowSchw.edge.valid) {
     const schwX0 = hudX(split.left);
     const schwW = hudW(split.left);
     drawShadowOutline(hudCtx, shadowSchw.edge, schwX0, schwW, ch, 1);
-    shadowExtremes(shadowSchw.edge, calloutExtSchw);
-    const it = calloutItemsSchw[0];
-    it.ax = schwX0 + ((calloutExtSchw.bottomX + 1) / 2) * schwW;
-    it.ay = ((1 - calloutExtSchw.bottomY) / 2) * ch;
-    it.dy = SHADOW_LABEL_DY;
-    it.alpha = 1;
-    // Laid out in the left strip, so it cannot slide across the divider and
-    // caption the spin it is here to be the control for. Its own call rather
-    // than an entry in the list below: that list is bounded to the slider's
-    // strip, and the two are disjoint, so neither needs to know about the
-    // other's blocks.
-    drawCallouts(hudCtx, calloutItemsSchw, 1, schwX0, schwW, calloutFloorY("left"));
+    if (params.eduLadder && shadowSchw.gammas) {
+      // Six identical readings of pi on this half, deliberately: the a = 0
+      // side is the control, and watching the slider's numbers spread away
+      // from a ring that stays uniform IS the comparison.
+      drawRingGammaLabels(
+        hudCtx,
+        ringGammaLabels(shadowSchw.edge, shadowSchw.gammas, schwX0, schwW, ch, ringLabelsSchw),
+        ringBoxesSchw
+      );
+    }
+
+    // The two labels the outline has always carried are the shadow
+    // checkbox's, not the ladder's — turning the ladder on brings the curve
+    // and its exponents, and nothing else moves.
+    if (shadowOn) {
+      shadowExtremes(shadowSchw.edge, calloutExtSchw);
+      const it = calloutItemsSchw[0];
+      it.ax = schwX0 + ((calloutExtSchw.bottomX + 1) / 2) * schwW;
+      it.ay = ((1 - calloutExtSchw.bottomY) / 2) * ch;
+      it.dy = SHADOW_LABEL_DY;
+      it.alpha = 1;
+      // Laid out in the left strip, so it cannot slide across the divider and
+      // caption the spin it is here to be the control for. Its own call rather
+      // than an entry in the list below: that list is bounded to the slider's
+      // strip, and the two are disjoint, so neither needs to know about the
+      // other's blocks.
+      drawCallouts(
+        hudCtx,
+        calloutItemsSchw,
+        1,
+        schwX0,
+        schwW,
+        calloutFloorY("left"),
+        params.eduLadder ? ringBoxesSchw : []
+      );
+    }
   }
 
   const shadowEdge = shadowSlider.edge;
-  const haveEdge = shadowOn && shadowEdge !== null && shadowEdge.valid;
-  if (haveEdge) {
-    // valid=false (camera not aimed at the hole — unreachable with the orbit
-    // camera) degrades to drawing nothing.
+  // valid=false (camera not aimed at the hole — unreachable with the orbit
+  // camera) degrades to drawing nothing.
+  const edgeReady = outlineOn && shadowEdge !== null && shadowEdge.valid;
+  const haveEdge = shadowOn && edgeReady;
+  if (edgeReady) {
     drawShadowOutline(hudCtx, shadowEdge!, sliderX0, sliderW, ch, 1);
     shadowExtremes(shadowEdge!, calloutExt);
+    if (params.eduLadder && shadowSlider.gammas) {
+      drawRingGammaLabels(
+        hudCtx,
+        ringGammaLabels(shadowEdge!, shadowSlider.gammas, sliderX0, sliderW, ch, ringLabels),
+        ringBoxes
+      );
+    }
+  }
+  if (haveEdge) {
     // Emitted first, so that with only the 6f overlay on they keep the exact
     // positions they had before 6g gave them neighbours to make room for.
     setShadowSpin(params.spin);
@@ -1358,7 +1425,8 @@ function render() {
       nCallouts,
       sliderX0,
       sliderW,
-      calloutFloorY(params.compare ? "right" : null)
+      calloutFloorY(params.compare ? "right" : null),
+      params.eduLadder ? ringBoxes : []
     );
 
   // Also single-spin: every rate below is evaluated at params.spin, which is
@@ -1392,12 +1460,12 @@ function render() {
   if (params.eduLadder) {
     if (params.compare) {
       const l = legendBox(iv, "left", 0);
-      drawLadderLegend(hudCtx, l.x, l.y, COMPARE_SPIN_LEFT);
+      drawLadderLegend(hudCtx, l.x, l.y, COMPARE_SPIN_LEFT, drawnGammas(shadowSchw));
       const r = legendBox(iv, "right", 0);
-      drawLadderLegend(hudCtx, r.x, r.y, params.spin);
+      drawLadderLegend(hudCtx, r.x, r.y, params.spin, drawnGammas(shadowSlider));
     } else {
       const b = legendBox(iv, null, legendTop);
-      drawLadderLegend(hudCtx, b.x, b.y, params.spin);
+      drawLadderLegend(hudCtx, b.x, b.y, params.spin, drawnGammas(shadowSlider));
     }
   }
 

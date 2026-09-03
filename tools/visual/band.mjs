@@ -18,7 +18,7 @@
  * the same pixels — because bloom makes an absolute brightness meaningless
  * here.
  *
- * Four things only the renderer can answer:
+ * Five things only the renderer can answer:
  *
  * 1. **The tripwire.** Since slice 11b the ladder's magenta means one thing:
  *    the continuation spent MINO_MAX_STEPS. It is supposed to read ZERO
@@ -26,7 +26,13 @@
  *    not read zero when slice 12 looked: two pixels at a = 0.998 from the
  *    default camera were clipping a cap 29 steps too small.
  *
- * 2. **Where the rungs fall, against the CPU's own winding.** This is the
+ * 2. **Whether the exponents printed around the ring are printed where the
+ *    layout puts them.** Slice 14 draws gamma at six azimuths on the dashed
+ *    outline; the values are pinned on the CPU, so what is left for a frame is
+ *    placement, measured as ink against control boxes at azimuths with no text
+ *    on them.
+ *
+ * 3. **Where the rungs fall, against the CPU's own winding.** This is the
  *    float32 question, and the CPU tests cannot reach it: the radial
  *    acceleration near a double root is a cancellation and the error is
  *    amplified by e^(gamma * winding).
@@ -42,14 +48,14 @@
  *    the 0-1 rung's 0.283,0.321,0.396). That is a true thing about the tonemap
  *    and a useless thing to measure the winding with.
  *
- * 3. **Whether the light slice 13 found is drawn.** Band pixels the march
+ * 4. **Whether the light slice 13 found is drawn.** Band pixels the march
  *    leaves with no disk crossing of their own, split by whether the
  *    continuation finds them one, differenced across the disk toggle. The
  *    pixels that gain a crossing and the ones that do not sit a few pixels
  *    apart in the same bloom, so the split separates where a brightness would
  *    not: 0.11 of full luminance against 0.0000 at a = 0.9.
  *
- * 4. **What the second loop costs**, at the default view and at the pitch
+ * 5. **What the second loop costs**, at the default view and at the pitch
  *    clamp where the pole crossings live.
  *
  * What a rendered frame CANNOT check is slice 12's azimuth swing itself. The
@@ -80,6 +86,8 @@ const { MARCH_MAX_STEPS, buildStaticTetrad, rayCaptured, rayConstants, traceRayK
   await vite.ssrLoadModule("/src/kerr.ts");
 const { continueToEscape, minoStateAt, rayPotentials } = await vite.ssrLoadModule("/src/mino.ts");
 const { LADDER_RUNGS, LADDER_UNRESOLVED } = await vite.ssrLoadModule("/src/shaders.ts");
+const { findShadowEdge, outlineLyapunov, ringGammaLabels } =
+  await vite.ssrLoadModule("/src/edu.ts");
 
 /** Spins to sweep. a = 0 has a band and pole crossings too — 384 px of one. */
 const SPINS = [0, 0.9, 0.998];
@@ -136,6 +144,18 @@ const MIN_LIT_GAIN = 0.02;
 const LIT_MARGIN = 5;
 /** How far either side of the shadow's edge the band is looked for, in px. */
 const BAND_PAD = 70;
+/**
+ * Slice 14's thresholds: ink in a printed exponent's box, and ink in the
+ * control box that is the same offset outside the same curve at an azimuth
+ * with no text on it.
+ *
+ * "gamma 1.22" at 10 px is about 40 px wide and 8 tall; measured, a box lands
+ * 30-60 lit pixels. The control catches the failure that matters — a label
+ * laid out against the wrong strip, or pushed inward onto the ring — because
+ * the outline's own dashes run just as close to it.
+ */
+const MIN_LABEL_INK = 15;
+const MAX_CONTROL_INK = 4;
 
 let failed = false;
 const fail = (msg) => {
@@ -397,6 +417,81 @@ function scanRow(w, lum, W, y, notes) {
   return { locatable: isolated.length, matched, missing, crowded, worst };
 }
 
+/**
+ * Slice 14 (H2): are the pointwise exponents actually printed on the ring?
+ *
+ * The values themselves are pinned on the CPU, against traced rays, in
+ * test/edu.test.ts — what only a frame can answer is whether the six numbers
+ * land where the layout says, outside the curve and in the right strip. Glyphs
+ * cannot be read back, so this measures INK against a control: the same boxes
+ * at azimuths halfway between the labelled ones, built by handing
+ * ringGammaLabels an outline rotated by half a label spacing, so the control
+ * runs through the same layout code and sits the same distance outside the
+ * same dashes. Text boxes full and control boxes empty is the claim.
+ */
+async function checkRingLabels(lab, cam, layout) {
+  const { w: W, h: H } = layout.hud;
+  const tet = buildStaticTetrad(cam.pos, cam.spin, cam.right, cam.up, cam.fwd);
+  const edge = findShadowEdge(cam.pos, tet, cam.spin, cam.tanHalfFov, W / H);
+  if (!edge.valid) {
+    fail("no outline to print exponents on");
+    return;
+  }
+  const gammas = outlineLyapunov(cam.pos, tet, cam.spin, cam.tanHalfFov, W / H, edge);
+  const labels = ringGammaLabels(edge, gammas, 0, W, H);
+
+  // the same layout, half a label spacing round — where nothing is printed
+  const n = edge.pts.length / 2;
+  const shift = Math.round(n / 12) * 2;
+  const rotated = { valid: true, pts: new Float64Array(edge.pts.length) };
+  for (let i = 0; i < edge.pts.length; i++) {
+    rotated.pts[i] = edge.pts[(i + shift) % edge.pts.length];
+  }
+  const controls = ringGammaLabels(rotated, gammas, 0, W, H);
+
+  const box = (l) => ({
+    x0: l.align === "left" ? l.tx : l.align === "right" ? l.tx - 42 : l.tx - 21,
+    y0: l.ty - 7,
+    w: 42,
+    h: 14,
+  });
+  const ink = await lab.page.evaluate(async (boxes) => {
+    const c = await window.__lab.layer("hud");
+    const d = c.getContext("2d", { willReadFrequently: true })
+      .getImageData(0, 0, c.width, c.height).data;
+    return boxes.map((b) => {
+      let lit = 0;
+      for (let y = Math.round(b.y0); y < Math.round(b.y0 + b.h); y++) {
+        for (let x = Math.round(b.x0); x < Math.round(b.x0 + b.w); x++) {
+          if (x < 0 || y < 0 || x >= c.width || y >= c.height) continue;
+          if (d[((y * c.width + x) << 2) + 3] > 40) lit++;
+        }
+      }
+      return lit;
+    });
+  }, [...labels.map(box), ...controls.map(box)]);
+
+  const text = ink.slice(0, labels.length);
+  const empty = ink.slice(labels.length);
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const g of gammas) {
+    lo = Math.min(lo, g);
+    hi = Math.max(hi, g);
+  }
+  console.log(
+    `          6 printed exponents: ${Math.min(...text)}-${Math.max(...text)} px of ink each ` +
+      `(control boxes ${Math.min(...empty)}-${Math.max(...empty)}), ` +
+      `gamma ${lo.toFixed(3)}..${hi.toFixed(3)} around this ring`
+  );
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] < MIN_LABEL_INK)
+      fail(`the exponent at azimuth ${i} has ${text[i]} px of ink; it was not drawn`);
+    if (empty[i] > MAX_CONTROL_INK)
+      fail(`a control box carries ${empty[i]} px of ink; the labels are not where the layout puts them`);
+  }
+}
+
 async function checkView(lab, label) {
   const layout = await lab.capture();
   const cam = layout.cam;
@@ -412,7 +507,10 @@ async function checkView(lab, label) {
   );
   if (cap.hits !== 0) fail(`${cap.hits} px of the continuation-capped colour; it must read zero`);
 
-  // 2. the hairlines, against the CPU's own winding, on a dim frame
+  // 2. slice 14: the exponents printed around the ring, on the same frame
+  await checkRingLabels(lab, cam, layout);
+
+  // 3. the hairlines, against the CPU's own winding, on a dim frame
   await lab.set({ disk: false });
   await lab.settle(1200);
   await lab.capture();
@@ -466,7 +564,7 @@ async function checkView(lab, label) {
   if (worst > MAX_OFFSET_W)
     fail(`a hairline sits ${worst.toFixed(3)} half-turns from the CPU crossing`);
 
-  // 3. slice 13: is the disk light the continuation carries actually drawn?
+  // 4. slice 13: is the disk light the continuation carries actually drawn?
   // Sampled on its own rows, still on the dim frame, so the two states can be
   // differenced pixel for pixel.
   const lit = [];

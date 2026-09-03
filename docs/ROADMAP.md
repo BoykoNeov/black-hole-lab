@@ -135,6 +135,41 @@ Units are geometrized (G = c = M = 1) throughout.
       here; the two groups sit a few pixels apart in the same bloom and separate
       by two orders — 0.10 of full luminance against 0.0000 at a = 0.9 ✅
 
+14. **γ around the ring** — hurdle H2, closed ✅
+    - `criticalLyapunov`: the ladder's spacing at ONE point of the critical
+      curve, from that ray's own lambda and q. Off the equator the light hovers
+      on a spherical photon orbit that swings in latitude, and each such orbit
+      sheds light at its own rate. Deviation grows at sqrt(R''/2) per unit Mino
+      time exactly as on the equator; what is not the same is the clock, and
+      the choice is forced. The literature counts e-folds per half-libration in
+      latitude, but on ANY equatorial photon orbit kappa^2 = lambda^2 - a^2
+      identically, so that exponent is exactly pi on both edges at EVERY spin —
+      the one number that erases the 0.19-against-4.08 contrast the ladder view
+      exists to show. The rungs are whole half-turns of the swept position
+      angle, so that is the clock: q = 0 reduces to `photonOrbitLyapunov` to
+      machine precision at every spin, and it is pinned off the equator against
+      traced rays at six screen azimuths (+0.3% to +0.7%, the stepper's known
+      one-sided bias) ✅
+    - the entry's own path could not have worked: it parameterized the curve by
+      the orbit radius through the textbook lambda(r~), q(r~), which divide by
+      a — and at a = 0 every critical ray shares r~ = 3. Running the map
+      backwards instead, from the (lambda, q) each outline sample already
+      carries to r~ as the double root of the radial potential, needs no case
+      at zero spin and shares `kerr.ts`'s cubic solver. The latitude integrals
+      take one substitution and one 16-node midpoint rule, spectrally accurate
+      because the integrand is even and pi-periodic: 6 nodes already land
+      within 1e-13, so there is no elliptic integral and no new dependency ✅
+    - drawn: six numbers on the dashed outline, which the ladder view now
+      brings up whether or not the shadow checkbox is — and 6g's callouts slide
+      down around them, since a number pinned to a point on the ring cannot
+      move and a paragraph can. The legend's third line quotes the range the
+      SAMPLES cover rather than the closed form's, because what a camera can
+      see is its own business: edge-on the ring's extremes are the two
+      equatorial orbits, from the spin axis symmetry forces lambda = 0 and the
+      whole ring reads one number that is neither edge's (2.49-2.56 at a = 0.9).
+      `npm run band` measures the ink at each label against control boxes at
+      azimuths with no text on them: 234-272 px against 0 at five views ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -192,16 +227,26 @@ the two guards measurement added around it.
 Measured: worst direction error over 43 near-axis band rays at 60 cameras,
 156.197° → 1.27e-4°, with rays away from the axis unmoved to 4.0e-6°.
 
-### H2 — γ is quoted per equatorial edge, not around the ring
+### H2 — γ was quoted per equatorial edge, not around the ring
 
-**Status: open, labelled honestly.** `photonOrbitLyapunov` is the exponent of
-the two *equatorial* circular photon orbits. Off the equator the critical
-curve is made of Carter-Q spherical orbits with their own exponents, so the
-legend's two numbers bound the ring's spacing rather than give it pointwise.
-Path: the Lyapunov exponent of a spherical photon orbit at radius r̃ is a
-closed form in (r̃, a) (Johnson et al. 2020, eq. for γ(r̃)); parameterize the
-critical curve by r̃, map each outline azimuth to its r̃ through (λ, q), and
-draw γ along the dashed outline. Pure math, belongs in `edu.ts`.
+**Status: closed by slice 14.** `photonOrbitLyapunov` is the exponent of the two
+*equatorial* circular photon orbits; off the equator the critical curve is made
+of Carter-Q spherical orbits with their own exponents, so those two numbers
+bound the ring's spacing rather than give it pointwise. `criticalLyapunov` gives
+it pointwise, and the outline carries it.
+
+**This entry's path was wrong twice, and both corrections are worth keeping.**
+It said to take the closed form γ(r̃) from the literature and parameterize the
+critical curve by r̃. That parameterization divides by a and collapses at a = 0,
+where every critical ray shares r̃ = 3 — H9's degeneracy exactly, so the fix is
+H9's too: run the map backwards, from the (λ, q) each outline sample already
+carries. And the literature's γ is a different CLOCK: it counts e-folds per
+half-libration in latitude, which on any equatorial photon orbit is exactly π at
+every spin (κ² = λ² − a² identically there), while this lab's rungs are whole
+half-turns of swept position angle. Porting that equation would have replaced an
+incomplete legend with a uniformly wrong one. See `docs/DESIGN.md` for the
+derivation, for the measured camera-dependence of the range, and for why the
+labels displace the callouts rather than the other way round.
 
 ### H3 — the Kerr embedding uses r as the circumferential radius
 
@@ -265,7 +310,5 @@ frame-count-based wait would make it portable.
 
 ## Queued
 
-- **γ around the ring** (H2). Small. It touches the ladder legend, so it should
-  not ride along with anything else that changes the same legend.
 - **Chandrasekhar's table** (H8). Smaller still: source twenty numbers and
   replace a fitted curve with them. Tick directions do not change.

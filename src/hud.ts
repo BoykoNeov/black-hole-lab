@@ -16,7 +16,14 @@ import {
   shadowHorizonRatio,
   vEff,
 } from "./edu";
-import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
+import type {
+  EmbeddingProfile,
+  Projected,
+  RingGammaLabel,
+  ShadowEdge,
+  Trail,
+  V3,
+} from "./edu";
 import type { CameraBasis } from "./camera";
 import { COMPARE_SPIN_LEFT, splitMidpoint } from "./compare";
 import {
@@ -1084,7 +1091,8 @@ export function drawLadderLegend(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  a: number
+  a: number,
+  gammas: Float64Array | null
 ): void {
   const toCss = (c: readonly number[]) =>
     `rgb(${c.map((v) => Math.round(255 * Math.pow(Math.min(v, 1), 1 / 2.2))).join(",")})`;
@@ -1130,7 +1138,75 @@ export function drawLadderLegend(
     x + 10,
     ry
   );
+
+  // The two edges BOUND the ring; which part of that range a camera can see
+  // is the camera's own business (edge-on it is the whole of it, from the spin
+  // axis it collapses to one number that is neither edge's), so this line
+  // reads the samples actually drawn rather than the closed form.
+  if (gammas !== null && gammas.length > 0) {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < gammas.length; i++) {
+      lo = Math.min(lo, gammas[i]);
+      hi = Math.max(hi, gammas[i]);
+    }
+    ry += LEGEND_ROW;
+    ctx.fillText(
+      a === 0
+        ? "γ = π everywhere on the ring"
+        : `γ ${lo.toFixed(2)}–${hi.toFixed(2)} from here, marked on the ring`,
+      x + 10,
+      ry
+    );
+  }
   ctx.restore();
+}
+
+/**
+ * gamma where it applies: the pointwise ladder spacing, printed just outside
+ * the dashed outline at the azimuth it belongs to (H2).
+ *
+ * Haloed like a callout rather than boxed, for the same reason — the ladder
+ * view is at its brightest exactly where the ring is, and pale text on it
+ * disappears. The leader is a two-pixel dot on the curve, not a line: the
+ * text is already a finger-width away from its own anchor, and six lines
+ * radiating out of the shadow would read as an object in the scene.
+ */
+export function drawRingGammaLabels(
+  ctx: CanvasRenderingContext2D,
+  labels: readonly RingGammaLabel[],
+  out?: HudBox[]
+): HudBox[] {
+  const boxes = out ?? [];
+  ctx.save();
+  ctx.font = HUD_STYLE.small;
+  ctx.textBaseline = "middle";
+  ctx.lineJoin = "round";
+  for (let i = 0; i < labels.length; i++) {
+    const l = labels[i];
+    ctx.fillStyle = HUD_STYLE.accent;
+    ctx.beginPath();
+    ctx.arc(l.ax, l.ay, 1.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.textAlign = l.align;
+    const s = `γ ${l.gamma.toFixed(2)}`;
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.72)";
+    ctx.strokeText(s, l.tx, l.ty);
+    ctx.fillText(s, l.tx, l.ty);
+    // Measured, not guessed: the width is the glyphs' own, and the callout
+    // layer is handed these so it can step around them.
+    const w = ctx.measureText(s).width;
+    const left = l.align === "left" ? l.tx : l.align === "right" ? l.tx - w : l.tx - w / 2;
+    const box = boxes[i] ?? (boxes[i] = { l: 0, r: 0, t: 0, b: 0 });
+    box.l = left;
+    box.r = left + w;
+    box.t = l.ty - 7;
+    box.b = l.ty + 7;
+  }
+  boxes.length = labels.length;
+  ctx.restore();
+  return boxes;
 }
 
 /**
@@ -1207,14 +1283,26 @@ export interface CalloutItem {
   alpha: number;
 }
 
+/** A rectangle the callout layout must not put text in, in CSS px. */
+export interface HudBox {
+  l: number;
+  r: number;
+  t: number;
+  b: number;
+}
+
 /** The control panel is opaque, sits above the HUD and is 240 px wide at
  *  left: 12 — text may not slide under it. */
 const CALLOUT_SAFE_X = 270;
 const CALLOUT_EDGE_PAD = 8;
 /** Breathing room left between two blocks the push-down has separated. */
 const CALLOUT_GAP = 6;
-/** Ceiling on one frame's callouts; main.ts can emit at most ten. */
-const CALLOUT_MAX_ITEMS = 12;
+/**
+ * Ceiling on the blocks one frame's layout tracks: main.ts can emit at most
+ * ten callouts, and the six printed exponents (H2) are reserved into the same
+ * arrays so a callout steps around a number rather than landing on it.
+ */
+const CALLOUT_MAX_ITEMS = 20;
 
 // Bounds of the blocks placed so far this frame, for the overlap check.
 // Preallocated: the layout runs every frame the overlay is on.
@@ -1265,10 +1353,21 @@ export function drawCallouts(
   n: number,
   x0: number,
   w: number,
-  floorY: number
+  floorY: number,
+  reserved: readonly HudBox[] = []
 ): void {
   ctx.save();
   let placed = 0;
+  // Seeded first so every callout below treats them as already placed. They
+  // are the one thing on this layer a callout cannot slide under: the numbers
+  // are pinned to points on the ring, so it is the prose that has to move.
+  for (let i = 0; i < reserved.length && placed < CALLOUT_MAX_ITEMS; i++) {
+    laidL[placed] = reserved[i].l;
+    laidR[placed] = reserved[i].r;
+    laidT[placed] = reserved[i].t;
+    laidB[placed] = reserved[i].b;
+    placed++;
+  }
   for (let i = 0; i < n && placed < CALLOUT_MAX_ITEMS; i++) {
     const it = items[i];
     const c = CALLOUT_COPY[it.key];

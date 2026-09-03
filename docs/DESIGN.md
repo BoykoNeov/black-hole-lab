@@ -1153,6 +1153,152 @@ that agreement means the crossing radii have converged by the time the shader
 stops — but they now finish the same way, which is the part that was a
 transcription rather than a convergence claim.
 
+## Slice 14 — γ around the ring
+
+The ladder legend has quoted two numbers since slice 9: how fast the rungs thin
+on the prograde edge of the ring and on the retrograde one. Those are the two
+*equatorial* photon orbits. Everywhere else on the critical curve the light
+hovers on a **spherical** photon orbit — one that swings in latitude while it
+winds — with its own exponent, so the pair bounded the ring's spacing without
+giving it anywhere. This slice computes it pointwise and prints it on the ring.
+
+### The clock is forced, and it is not the literature's
+
+The published exponent counts e-folds per half-*libration in latitude*: one more
+crossing of the equatorial plane, one more subring. This lab's rungs are whole
+half-turns of the **swept position angle**, which is what `kerr.ts`'s `winding`
+accumulates and what the ladder view false-colours. In Kerr the two clocks are
+genuinely different — near the a = 0.9 prograde orbit the light advances 2.6
+half-turns of azimuth per half-libration — and for this picture the published one
+is not merely different but useless:
+
+> On any equatorial photon orbit, κ² = λ² − a² identically, where κ = √(R″(r̃)/2)
+> is the growth rate per unit Mino time. The half-libration takes Mino time
+> π/√(λ² − a²). So the libration exponent is **exactly π on both edges at every
+> spin.**
+
+That is the one number that erases the contrast the ladder exists to draw: 0.19
+against 4.08 at a = 0.998. Porting the paper's γ(r̃) would have replaced a
+legend that was merely incomplete with one that was uniformly wrong. The
+identity is worth keeping written down — it also says the near-equatorial
+vertical oscillation and the radial instability run at the same rate, which is
+why Schwarzschild's π is π at all.
+
+So γ here is κ times the Mino time of a half libration, divided by the position
+angle swept over that same interval, scaled to one half-turn. On the equator it
+reduces to the old `photonOrbitLyapunov` identically — machine precision at
+every spin, which is the first test.
+
+### The hurdle's own path had slice 12's bug in it
+
+H2 said to parameterize the critical curve by the spherical orbit's radius r̃,
+using the textbook λ(r̃), q(r̃). Both divide by a, and at a = 0 every critical
+ray shares r̃ = 3, so the parameterization collapses exactly where the lab has a
+real picture to draw. That is H9's degeneracy again, and H9's entry had to be
+corrected for the same reason.
+
+The fix is to run the map backwards. Every outline sample already *is* a
+critical ray, bisected to ~1e-8 in screen coordinates, so its conserved (λ, q)
+come straight from `rayConstants` and r̃ is the double root of the radial
+potential for that pair — the largest real root of R′(r) = 0, a cubic with no
+quadratic term, which is `kerr.ts`'s existing depressed solver. No 1/a, no case
+at zero spin, and the outline and the exponent drawn along it now solve one
+cubic between them rather than two.
+
+### One substitution, one quadrature
+
+Both integrals run over the latitude swing, and cos θ = √u₊ sin ψ cancels the
+turning point identically:
+
+    dλ_Mino/dψ = 1 / √(a² u₊ sin²ψ − a² u₋)
+
+with a² u₊ = 2a²q/(S + B), −a² u₋ = (S + B)/2, B = q + λ² − a², S = √(B² + 4a²q).
+Nothing divides by a. The swept angle rides the same parameter, so one loop
+returns both — and because the integrand is even and π-periodic in ψ, the
+midpoint rule is *spectrally* accurate rather than second order: six nodes land
+within 1e-13 of the converged value at every spin and azimuth measured,
+near-polar rays included. Sixteen is margin. No elliptic integral, no new
+dependency.
+
+One detail that is easy to get wrong: the swept angle is the arc the position
+*direction* traces on the unit sphere, so it is taken on the Kerr–Schild
+ellipsoid (polar angle atan2(√(r̃²+a²) sin θ, r̃ cos θ)) rather than from θ. That
+is the same quantity `winding` measures, which is the whole point of choosing
+this clock.
+
+### What a camera can see is not what the spacetime has
+
+The two equatorial exponents bound γ over the spacetime, but which part of that
+range reaches a given observer is a fact about the observer. Measured, over the
+drawn outline:
+
+| spin | camera in the disk plane | 30° up | 60° up | on the axis |
+|------|--------------------------|--------|--------|-------------|
+| 0    | 3.142 – 3.142            | same   | same   | same        |
+| 0.9  | 1.216 – 4.004            | 1.28 – 3.84 | 1.66 – 3.34 | 2.493 – 2.555 |
+| 0.998| 0.194 – 4.080            | 0.20 – 3.90 | 0.82 – 3.32 | 2.242 – 2.328 |
+
+Edge-on, the ring's extremes *are* the two equatorial orbits, so the drawn range
+is exactly the pair the legend has always quoted. From the spin axis symmetry
+forces every critical ray to carry λ = 0, so the whole ring reads one number and
+it is neither edge's. That is why the legend's third line reads the samples
+actually drawn rather than the closed form: quoting 0.19–4.08 over a pole-on
+frame whose ring is uniform at 2.28 would be a true sentence about the
+spacetime and a false one about the picture under it.
+
+### What it is worth, measured
+
+The pointwise exponent against `fitLyapunov`'s method generalized to any screen
+azimuth — the slope of winding against ln(offset from the critical curve), on
+rays the integrator really followed:
+
+- a = 0, six azimuths: every fit +0.31% of π, the stepper's known one-sided bias.
+- a = 0.9: +0.27% on the retrograde edge, +0.29% at 45°, +0.46% at the top and
+  bottom of the ring, +0.69% at 135°, +0.57% on the prograde edge.
+- a = 0.998: +0.27% to +0.57% over most of the ring, rising to +3.0% on the
+  prograde edge and +6.8% beside it — where γ is 0.19 and a ray hovers for so
+  much winding that the stepper's overstatement compounds. The bias is one-sided
+  everywhere, which is what the test asserts; a fit coming in LOW would mean
+  something new.
+
+Cost: 0.051 ms for all 96 azimuths at a = 0.998, against 0.563 ms for the
+outline it decorates. There was no reason to compute only the six that get
+printed.
+
+### The one approximation, and where it bites
+
+Off the equator γ is an average over the whole libration, while the rungs are
+drawn at whole half-turns wherever they happen to fall. On the equator the two
+coincide and each rung really is e^(−γ) of the last; near a polar azimuth it is
+the asymptotic ratio rather than the exact one. It is labelled in the code
+rather than left for someone to discover.
+
+Nothing in the shader changed. The ladder still colours by winding; this slice
+is arithmetic and a HUD layer, which is why it has no GLSL half and no mirror
+to keep in step.
+
+### The numbers are pinned to the ring, so the prose moves
+
+Six labels hang off the outline, pushed straight out of the shadow — in pixels,
+not in screen coordinates, because a half of compare mode is nothing like the
+frame's shape and a radial offset taken in the wrong space leans into the
+shadow on one axis. Turning the ladder view on now draws the dashed outline
+whether or not the shadow checkbox is up: the numbers need a curve to sit on.
+What it deliberately does *not* bring is the two callouts the shadow checkbox
+carries — turning on the ladder brings the curve and its exponents, and nothing
+else moves.
+
+Where they collide with 6g's callouts, the callouts give way. `drawCallouts`
+already slides blocks down to clear each other, so the exponents' measured text
+boxes are seeded into that layout as already-placed: a number is pinned to a
+point on the ring and cannot move, a paragraph can. Measured on a frame with
+every overlay up, "approaching side" now sits below γ 1.22 instead of across it.
+
+At a = 0 the six labels all read 3.14, and in compare mode the a = 0 half shows
+six of them against the slider half's spread. That is not redundancy, it is the
+control: the ring that stays uniform is what makes the other one's sweep mean
+something.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

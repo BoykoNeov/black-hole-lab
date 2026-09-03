@@ -663,8 +663,12 @@ export function radialPotential(r: number, lambda: number, q: number, a: number)
   return ((r * r + c2) * r + 2 * k) * r - a * a * q;
 }
 
-/** Real roots of the depressed cubic t^3 + p t + s. */
-function cubicRealRoots(p: number, s: number): number[] {
+/**
+ * Real roots of the depressed cubic t^3 + p t + s. Shared with edu.ts, whose
+ * spherical photon orbit is the double root of this same radial potential, so
+ * the outline and the exponent drawn along it solve one cubic, not two.
+ */
+export function cubicRealRoots(p: number, s: number): number[] {
   const disc = (s * s) / 4 + (p * p * p) / 27;
   if (p >= 0 || disc > 0) {
     const rt = Math.sqrt(Math.max(disc, 0));

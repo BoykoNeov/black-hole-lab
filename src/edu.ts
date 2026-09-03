@@ -4,7 +4,15 @@
  * hud.ts, wiring in main.ts.
  */
 
-import { circUt, horizonRadius, ksMetric, rayCaptured, uCircCart } from "./kerr";
+import {
+  circUt,
+  cubicRealRoots,
+  horizonRadius,
+  ksMetric,
+  rayCaptured,
+  rayConstants,
+  uCircCart,
+} from "./kerr";
 import type { Tetrad, V3, V4 } from "./kerr";
 import type { CameraBasis } from "./camera";
 
@@ -181,6 +189,129 @@ export function photonOrbitLyapunov(a: number, prograde: boolean): number {
   const rpp = 12 * r * r + 4 * a * a - 4 * a * b - 2 * (b - a) * (b - a);
   const phi = b - a + (a * Math.abs(b - a)) / Math.sqrt(Math.max(delta, 0));
   return (Math.PI * Math.sqrt(Math.max(rpp, 0) / 2)) / Math.abs(phi);
+}
+
+/**
+ * Radius of the spherical photon orbit a critical ray hovers at: the double
+ * root of the radial potential for that ray's own (lambda, q). Setting
+ * R'(r) = 0 leaves a cubic with no quadratic term, so kerr.ts's own depressed
+ * solver takes it whole, and the orbit is the largest real root at every spin.
+ *
+ * This is the inverse of the textbook parameterization, deliberately. The
+ * closed forms lambda(r~), q(r~) both divide by a, and at a = 0 every critical
+ * ray shares r~ = 3 — the same 1/a degeneracy H9 records for the pole crossing,
+ * and a = 0 is a spin the lab really renders. Going the other way, from the
+ * conserved pair the outline already has to r~, needs no case of its own.
+ */
+export function sphericalPhotonRadius(a: number, lambda: number, q: number): number {
+  const k = (lambda - a) * (lambda - a) + q;
+  const roots = cubicRealRoots(a * a - a * lambda - k / 2, k / 2);
+  let r = roots[0];
+  for (let i = 1; i < roots.length; i++) if (roots[i] > r) r = roots[i];
+  return r;
+}
+
+/**
+ * Midpoint nodes for the latitude quadrature below. In psi the integrand is
+ * even and pi-periodic, so the midpoint rule is spectrally accurate rather
+ * than second order: 6 nodes already land within 1e-13 of the converged value
+ * at every spin and azimuth measured, near-polar rays included. 16 is margin.
+ */
+const RING_QUAD_NODES = 16;
+
+/**
+ * The ladder's spacing at ONE point of the critical curve, from that ray's
+ * conserved lambda and q — the pointwise exponent photonOrbitLyapunov can only
+ * bound (hurdle H2). Off the equatorial plane a critical ray hovers on a
+ * spherical photon orbit that swings in latitude while it winds, and each such
+ * orbit sheds light at its own rate.
+ *
+ * Deviation from the orbit grows at kappa = sqrt(R''(r~)/2) per unit Mino
+ * time, exactly as in the equatorial case. What is not the same is the CLOCK
+ * that rate is quoted against, and the choice is forced rather than a matter
+ * of taste. The literature counts e-folds per half-libration in latitude (one
+ * more equatorial crossing, one more subring); this lab's rungs are whole
+ * half-turns of the swept position angle, which is the quantity the ladder
+ * view false-colours and kerr.ts's `winding` accumulates. In Kerr the two
+ * clocks genuinely differ — the a = 0.9 prograde orbit advances 2.6 half-turns
+ * per half-libration — and the literature's is the wrong one for this picture
+ * twice over: on ANY equatorial photon orbit kappa^2 = lambda^2 - a^2
+ * identically while the half-libration takes Mino time pi/sqrt(lambda^2 - a^2),
+ * so that gamma is exactly pi on both edges at EVERY spin. It is the one
+ * number that erases the prograde/retrograde contrast the ladder exists to
+ * show (0.19 against 4.08 at a = 0.998).
+ *
+ * So gamma is kappa times the Mino time of a half libration, over the position
+ * angle swept in that same interval, scaled to a half-turn. Both integrals run
+ * over the latitude swing, and the substitution cos(theta) = sqrt(u+) sin(psi)
+ * cancels the turning point identically and puts them under one integral sign:
+ *
+ *     dlambda_Mino/dpsi = 1 / sqrt(a^2 u+ sin^2(psi) - a^2 u-),
+ *
+ * where u = cos^2(theta) turns the polar potential into a quadratic with
+ *     a^2 u+ = 2 a^2 q / (S + B),   -a^2 u- = (S + B)/2,
+ *     B = q + lambda^2 - a^2,       S = sqrt(B^2 + 4 a^2 q).
+ * Nothing there divides by a, so a = 0 needs no special case — the lesson
+ * slice 12 paid for. The two halves of the libration are mirror images, so the
+ * factor of two on each integral cancels and neither carries it.
+ *
+ * The swept angle is the arc the POSITION DIRECTION traces on the unit sphere,
+ * which is what `winding` measures, so it is taken on the Kerr-Schild
+ * ellipsoid — direction polar angle atan2(sqrt(r~^2+a^2) sin th, r~ cos th) —
+ * and not from theta itself.
+ *
+ * One approximation, and it is only visible off the equator: gamma is an
+ * average over the whole libration, while the rungs are drawn at whole
+ * half-turns wherever they happen to fall. On the equator the two coincide and
+ * each rung really is e^-gamma of the last; near a polar azimuth it is the
+ * asymptotic ratio rather than the exact one.
+ *
+ * Equatorial q = 0 reduces to photonOrbitLyapunov to machine precision at
+ * every spin, and a = 0 gives pi at every azimuth from any camera, which
+ * spherical symmetry forces. Both are pinned in test/edu.test.ts, against
+ * traced rays as well as against the closed form.
+ */
+export function criticalLyapunov(a: number, lambda: number, q: number): number {
+  const r = sphericalPhotonRadius(a, lambda, q);
+  const a2 = a * a;
+  const r2 = r * r;
+  const k = (lambda - a) * (lambda - a) + q;
+  const kappa = Math.sqrt(Math.max(12 * r2 + 4 * a2 - 4 * a * lambda - 2 * k, 0) / 2);
+  // The extremal prograde orbit merges with the horizon and stops shedding
+  // light at all; photonOrbitLyapunov returns 0 there for the same reason.
+  if (!(kappa > 0)) return 0;
+
+  const B = q + lambda * lambda - a2;
+  const S = Math.sqrt(B * B + 4 * a2 * q);
+  // Both Vieta forms of the same root, picked so the subtraction never cancels
+  const uPlus = q <= 0 ? 0 : B >= 0 ? (2 * q) / (S + B) : (S - B) / (2 * a2);
+  const a2uPlus = a2 * uPlus;
+  const a2uMinus = (S + B) / 2; // -a^2 u-, positive off the extremal orbit
+
+  const delta = r2 - 2 * r + a2;
+  const A2 = r2 + a2;
+  const A = Math.sqrt(A2);
+  let mino = 0;
+  let swept = 0;
+  const h = Math.PI / 2 / RING_QUAD_NODES;
+  for (let i = 0; i < RING_QUAD_NODES; i++) {
+    const psi = (i + 0.5) * h;
+    const sp = Math.sin(psi);
+    const cp = Math.cos(psi);
+    const dMino = 1 / Math.sqrt(a2uPlus * sp * sp + a2uMinus);
+    const s2 = Math.max(1 - uPlus * sp * sp, 0); // sin^2(theta)
+    const c2 = uPlus * sp * sp;
+    // (dtheta/dpsi)^2, which stays finite as an exactly polar orbit (u+ = 1)
+    // reaches the axis: there the ratio is identically one.
+    const dTheta2 = s2 > 0 ? (uPlus * cp * cp) / s2 : 1;
+    const dPhi = lambda / s2 - a + (a * (A2 - a * lambda)) / delta;
+    const den = A2 * s2 + r2 * c2;
+    const dDir = (A * r) / den; // d(direction's polar angle)/dtheta
+    const sinDir2 = (A2 * s2) / den;
+    mino += h * dMino;
+    swept += h * Math.sqrt(dDir * dDir * dTheta2 + sinDir2 * dPhi * dPhi * dMino * dMino);
+  }
+  return (Math.PI * kappa * mino) / swept;
 }
 
 /**
@@ -382,6 +513,34 @@ export interface ShadowEdge {
 export const SHADOW_AZIMUTHS = 96;
 
 /**
+ * The covariant launch momentum of the ray through one NDC point, built the
+ * way the scene shader builds it — same static tetrad, same ndc -> direction
+ * map. Shared so that the outline and the exponent quoted along it are two
+ * readings of ONE ray rather than two constructions that have to be kept in
+ * step by hand.
+ */
+function launchMomentum(
+  tet: Tetrad,
+  ndcX: number,
+  ndcY: number,
+  tanHalfFov: number,
+  aspect: number,
+  out: V4
+): V4 {
+  const vx = ndcX * tanHalfFov * aspect;
+  const vy = ndcY * tanHalfFov;
+  const inv = 1 / Math.hypot(vx, vy, 1);
+  for (let i = 0; i < 4; i++) {
+    out[i] =
+      vx * inv * tet.rightCov[i] +
+      vy * inv * tet.upCov[i] +
+      inv * tet.fwdCov[i] -
+      tet.uCov[i];
+  }
+  return out;
+}
+
+/**
  * The exact shadow edge for the current camera, spin and lens. Rays launch
  * precisely as the scene shader launches them (same static tetrad, same
  * ndc → direction map) — no far-field or small-angle approximation, and the
@@ -412,19 +571,8 @@ export function findShadowEdge(
   const pts = new Float64Array(2 * nAz);
   const m: V4 = [0, 0, 0, 0];
 
-  const captured = (ndcX: number, ndcY: number): boolean => {
-    const vx = ndcX * tanHalfFov * aspect;
-    const vy = ndcY * tanHalfFov;
-    const inv = 1 / Math.hypot(vx, vy, 1);
-    for (let i = 0; i < 4; i++) {
-      m[i] =
-        vx * inv * tet.rightCov[i] +
-        vy * inv * tet.upCov[i] +
-        inv * tet.fwdCov[i] -
-        tet.uCov[i];
-    }
-    return rayCaptured(camPos, m, a);
-  };
+  const captured = (ndcX: number, ndcY: number): boolean =>
+    rayCaptured(camPos, launchMomentum(tet, ndcX, ndcY, tanHalfFov, aspect, m), a);
 
   // The camera always looks at the origin in this app, so the center ray must
   // fall in. If someone changes the camera model, degrade to "draw nothing"
@@ -516,6 +664,116 @@ export function shadowExtremes(edge: ShadowEdge, out?: ShadowExtremes): ShadowEx
   o.bottomX = edge.pts[iB * 2];
   o.bottomY = edge.pts[iB * 2 + 1];
   return o;
+}
+
+// ---------- gamma around the ring (H2) ----------
+
+/**
+ * The ladder's spacing at every azimuth of an outline, in the same order as
+ * `edge.pts` — the pointwise exponent, drawn where it applies.
+ *
+ * Each outline point IS a critical ray to within the bisection's ~1e-8 in ndc,
+ * so its lambda and q are the critical pair at that azimuth and
+ * criticalLyapunov takes them directly. No search, no marching: one cubic and
+ * one 16-node quadrature per azimuth, which is far less than the bisection
+ * that found the point.
+ *
+ * Which exponents a camera can SEE is a fact about the camera, not only about
+ * the spacetime. Edge-on, the ring's extremes are the two equatorial orbits
+ * and the drawn numbers run the full range photonOrbitLyapunov quotes; from
+ * the spin axis, symmetry forces every critical ray to carry lambda = 0, so
+ * the whole ring reads one number and it is neither edge's. That is why the
+ * legend quotes the range from these samples rather than from the closed form.
+ */
+export function outlineLyapunov(
+  camPos: V3,
+  tet: Tetrad,
+  a: number,
+  tanHalfFov: number,
+  aspect: number,
+  edge: ShadowEdge,
+  out?: Float64Array
+): Float64Array {
+  const n = edge.pts.length / 2;
+  const g = out && out.length === n ? out : new Float64Array(n);
+  if (!edge.valid) return g;
+  const m: V4 = [0, 0, 0, 0];
+  for (let k = 0; k < n; k++) {
+    launchMomentum(tet, edge.pts[2 * k], edge.pts[2 * k + 1], tanHalfFov, aspect, m);
+    const c = rayConstants(camPos, m, a);
+    g[k] = criticalLyapunov(a, c.lambda, c.q);
+  }
+  return g;
+}
+
+/** How many of the outline's azimuths carry a printed number. */
+export const RING_GAMMA_LABELS = 6;
+
+/** How far outside the outline the text sits, in CSS px. */
+const RING_LABEL_PAD = 15;
+
+export interface RingGammaLabel {
+  /** The point on the outline this number belongs to, in CSS px. */
+  ax: number;
+  ay: number;
+  /** Where the text goes, in CSS px. */
+  tx: number;
+  ty: number;
+  align: "left" | "right" | "center";
+  gamma: number;
+}
+
+/**
+ * Where the numbers go: evenly spaced screen azimuths, each pushed straight
+ * out of the shadow from its own point on the curve.
+ *
+ * Outward has to be taken in PIXELS, not in ndc. The outline is built as
+ * s(psi)(cos psi, sin psi) about ndc (0, 0) — the shadow's own centre by
+ * construction — but the ndc -> px map scales x by the strip's width and y by
+ * the canvas height, and in compare mode a half is nothing like the frame's
+ * shape. A radial offset taken in ndc would lean into the shadow on one axis.
+ *
+ * Six is what the ring can carry: it puts a number on both equatorial edges
+ * for an edge-on camera (where the spread is widest and the two extremes are
+ * exactly the pair the legend quotes) while leaving the dashes between them
+ * readable. The text hangs off the anchor away from the hole, so it never
+ * sits on the ring it labels.
+ */
+export function ringGammaLabels(
+  edge: ShadowEdge,
+  gammas: Float64Array,
+  x0: number,
+  w: number,
+  h: number,
+  out?: RingGammaLabel[]
+): RingGammaLabel[] {
+  const labels = out ?? [];
+  const nAz = edge.pts.length / 2;
+  for (let j = 0; j < RING_GAMMA_LABELS; j++) {
+    const k = Math.round((j * nAz) / RING_GAMMA_LABELS) % nAz;
+    const nx = edge.pts[2 * k];
+    const ny = edge.pts[2 * k + 1];
+    const ax = x0 + ((nx + 1) / 2) * w;
+    const ay = ((1 - ny) / 2) * h;
+    let ox = nx * w;
+    let oy = -ny * h;
+    const len = Math.hypot(ox, oy) || 1;
+    ox /= len;
+    oy /= len;
+    // Straight up or down there is no side to hang the text off, so it is
+    // centred and cleared vertically by half a line instead.
+    const align = ox > 0.35 ? "left" : ox < -0.35 ? "right" : "center";
+    const l =
+      labels[j] ?? (labels[j] = { ax: 0, ay: 0, tx: 0, ty: 0, align, gamma: 0 });
+    l.ax = ax;
+    l.ay = ay;
+    l.tx = ax + ox * RING_LABEL_PAD;
+    l.ty = ay + oy * RING_LABEL_PAD + (align === "center" ? Math.sign(oy) * 5 : 0);
+    l.align = align;
+    l.gamma = gammas[k];
+  }
+  labels.length = RING_GAMMA_LABELS;
+  return labels;
 }
 
 // ---------- "what am I looking at?" callout geometry (6g) ----------

@@ -21,8 +21,9 @@ npm test        # physics unit tests (geodesic integrator)
 npm run build   # typecheck + production build
 npm run shot    # visual harness smoke run (needs `npm run dev` up)
 npm run pol     # slice 10: the drawn polarization ticks vs the CPU oracle
-npm run band    # slices 11-13: the drawn photon-ring ladder vs the CPU oracle,
-                # and the disk light the continuation carries
+npm run band    # slices 11-14: the drawn photon-ring ladder vs the CPU oracle,
+                # the disk light the continuation carries, and the exponents
+                # printed around the ring
 ```
 
 ## Architecture
@@ -169,6 +170,14 @@ forever — each thinner than the last by `e^(−γ)`, with γ the Lyapunov expo
 of the unstable photon orbit (`edu.ts`'s `photonOrbitLyapunov`). It is exactly
 π at a = 0, and spin splits it hard and asymmetrically: 0.19 on the prograde
 edge at a = 0.998 against 4.08 on the retrograde one.
+
+Those two are the *equatorial* orbits, and since slice 14 they are what they
+always were — bounds. Off the equator the light hovers on spherical photon
+orbits with their own exponents, so `criticalLyapunov` computes γ from a ray's
+own conserved (λ, q) and the ladder view prints it at six points on the shadow's
+edge. Measured in half-turns swept, deliberately, and not in the literature's
+half-librations in latitude: that exponent is exactly π on both edges at every
+spin, and would erase the very asymmetry above.
 
 The same γ said where the picture stopped being true. It sets how long light
 lingers near the photon orbit, hence how many march steps a ray needs to resolve
@@ -334,8 +343,13 @@ worth the algebra, is in
   the fixed-size ring buffer of (position, time) samples behind the orbit
   trails, `photonOrbitLyapunov` — how fast the photon orbit sheds light, which
   spaces the ring's ladder at `e^(−γ)` and *also* set where the shader's march
-  budget used to run out and paint escaping light black — and the shadow-edge
-  finder `findShadowEdge`: the exact capture boundary, located by bisecting
+  budget used to run out and paint escaping light black — `criticalLyapunov`,
+  the same exponent pointwise anywhere on the critical curve (slice 14: the
+  spherical orbit's radius as the double root of the radial potential, then one
+  substitution and a 16-node midpoint rule over the latitude swing, with no 1/a
+  anywhere, so a = 0 needs no case), with `outlineLyapunov` evaluating it at
+  every azimuth of an outline and `ringGammaLabels` placing the six that get
+  printed — and the shadow-edge finder `findShadowEdge`: the exact capture boundary, located by bisecting
   rays launched exactly as the shader launches them and asking `rayCaptured`
   for each one's fate (no march, so no budget and no residual — slice 9b),
   plus the callout geometry: which disk lobe is beamed toward the camera (from the same
@@ -382,8 +396,9 @@ worth the algebra, is in
 - `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
-  funnel, orbit trails, dashed shadow outline, the ladder legend, and the
-  callout layer —
+  funnel, orbit trails, dashed shadow outline, the ladder legend, γ printed
+  around the ring (`drawRingGammaLabels`, which reports the boxes its text took
+  so the callout layout can step around them), and the callout layer —
   leader-line labels laid out to stay clear of the control panel and of each
   other, with all copy in one `CALLOUT_COPY` table — every line of it fixed
   but the slider shadow's ratio, which `setShadowSpin` rewrites per spin;
@@ -517,7 +532,7 @@ and `tsconfig` covers `src` + `test`.
   adding a TS runner as a dependency
 - `tools/visual/band.mjs` — `npm run band`. The same problem as `npm run pol`,
   for the photon-ring ladder: `src/mino.ts` is tested and its GLSL copy is not.
-  Four measurements at five views. The ladder's magenta means "the
+  Five measurements at five views. The ladder's magenta means "the
   continuation spent its own budget" and must read zero pixels — it is a
   passing check, not dead UI, and it was reading two when slice 12 looked.
   Whole-turn crossings are matched against the CPU's own winding through the
