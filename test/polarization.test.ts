@@ -1,0 +1,536 @@
+import { describe, it, expect } from "vitest";
+import {
+  buildStaticTetrad,
+  gDot,
+  ksMetric,
+  ksRadius,
+  raise,
+  rk4Step,
+  type V3,
+  type V4,
+} from "../src/kerr";
+import {
+  emitterPolarization,
+  photonDirInFrame,
+  skyBasis,
+  skyLeg,
+  skyToScreen,
+  solveSky,
+  walkerPenrose,
+  addCrossing,
+  resolveStokes,
+  ZERO_STOKES,
+} from "../src/polarization";
+
+// ---------------------------------------------------------------------------
+// An independent parallel-transport oracle.
+//
+// The point of this file is to check a CLOSED FORM (the Walker-Penrose
+// constant) against actually dragging a vector along a geodesic. So the
+// transport must not reuse the analytic metric derivatives kerr.ts's derivs()
+// is built from, or a sign error shared by both would cancel and the test
+// would pass on a broken formula. These Christoffels come from central
+// differences of the exported ksMetric instead: slower, cruder, and
+// independent, which is the whole point.
+// ---------------------------------------------------------------------------
+
+/** Full covariant metric g_munu at p, from the exported Kerr-Schild pieces. */
+function metric4(p: V3, a: number): number[][] {
+  const { f, l } = ksMetric(p, a);
+  const lc = [1, l[0], l[1], l[2]];
+  const eta = [-1, 1, 1, 1];
+  const g: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    g.push([]);
+    for (let j = 0; j < 4; j++) {
+      g[i].push((i === j ? eta[i] : 0) + f * lc[i] * lc[j]);
+    }
+  }
+  return g;
+}
+
+/** g^munu at p: the exact Kerr-Schild inverse, g^munu = eta^munu - f l^mu l^nu. */
+function metricInv4(p: V3, a: number): number[][] {
+  const { f, l } = ksMetric(p, a);
+  const lu = [-1, l[0], l[1], l[2]];
+  const eta = [-1, 1, 1, 1];
+  const g: number[][] = [];
+  for (let i = 0; i < 4; i++) {
+    g.push([]);
+    for (let j = 0; j < 4; j++) {
+      g[i].push((i === j ? eta[i] : 0) - f * lu[i] * lu[j]);
+    }
+  }
+  return g;
+}
+
+/** Christoffels at p by central-differencing metric4 (d/dt vanishes). */
+function christoffel(p: V3, a: number): number[][][] {
+  const h = 1e-5;
+  // dg[lambda][mu][nu]; the metric is stationary, so the t slice is zero
+  const dg: number[][][] = [
+    [
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+      [0, 0, 0, 0],
+    ],
+    [],
+    [],
+    [],
+  ];
+  for (let k = 0; k < 3; k++) {
+    const pp: V3 = [...p];
+    const pm: V3 = [...p];
+    pp[k] += h;
+    pm[k] -= h;
+    const gp = metric4(pp, a);
+    const gm = metric4(pm, a);
+    const d: number[][] = [];
+    for (let mu = 0; mu < 4; mu++) {
+      d.push([]);
+      for (let nu = 0; nu < 4; nu++) d[mu].push((gp[mu][nu] - gm[mu][nu]) / (2 * h));
+    }
+    dg[k + 1] = d;
+  }
+  const gi = metricInv4(p, a);
+  const G: number[][][] = [];
+  for (let m = 0; m < 4; m++) {
+    G.push([]);
+    for (let al = 0; al < 4; al++) {
+      G[m].push([]);
+      for (let be = 0; be < 4; be++) {
+        let s = 0;
+        for (let nu = 0; nu < 4; nu++) {
+          s += gi[m][nu] * (dg[al][nu][be] + dg[be][nu][al] - dg[nu][al][be]);
+        }
+        G[m][al].push(0.5 * s);
+      }
+    }
+  }
+  return G;
+}
+
+/** dV^mu/dsigma = -Gamma^mu_ab V^a P^b for a parallel-transported vector. */
+function transportDeriv(p: V3, a: number, V: V4, P: V4): V4 {
+  const G = christoffel(p, a);
+  const out: V4 = [0, 0, 0, 0];
+  for (let m = 0; m < 4; m++) {
+    let s = 0;
+    for (let al = 0; al < 4; al++) {
+      for (let be = 0; be < 4; be++) s += G[m][al][be] * V[al] * P[be];
+    }
+    out[m] = -s;
+  }
+  return out;
+}
+
+interface TransportState {
+  p: V3;
+  mv: V3;
+  V: V4;
+  sigma: number;
+}
+
+/**
+ * March a ray and drag V along it. RK4 on V, with the geodesic's own state at
+ * the half step and the full step taken from kerr.ts's rk4Step, so the two
+ * integrations advance on the same trajectory.
+ */
+function transportStep(
+  st: TransportState,
+  a: number,
+  mt: number,
+  h: number
+): TransportState {
+  const tangent = (p: V3, mv: V3): V4 => raise(p, a, [mt, mv[0], mv[1], mv[2]]);
+  const half = rk4Step(st.p, st.mv, a, mt, h / 2);
+  const full = rk4Step(st.p, st.mv, a, mt, h);
+
+  const k1 = transportDeriv(st.p, a, st.V, tangent(st.p, st.mv));
+  const V2 = st.V.map((v, i) => v + (h / 2) * k1[i]) as V4;
+  const Pm = tangent(half.p, half.mv);
+  const k2 = transportDeriv(half.p, a, V2, Pm);
+  const V3v = st.V.map((v, i) => v + (h / 2) * k2[i]) as V4;
+  const k3 = transportDeriv(half.p, a, V3v, Pm);
+  const V4v = st.V.map((v, i) => v + h * k3[i]) as V4;
+  const k4 = transportDeriv(full.p, a, V4v, tangent(full.p, full.mv));
+
+  return {
+    p: full.p,
+    mv: full.mv,
+    V: st.V.map(
+      (v, i) => v + (h / 6) * (k1[i] + 2 * k2[i] + 2 * k3[i] + k4[i])
+    ) as V4,
+    sigma: st.sigma + h,
+  };
+}
+
+/** Launch momentum and tetrad for a pixel direction n at a camera position. */
+function launch(camPos: V3, a: number, n: V3) {
+  const fwd: V3 = [-camPos[0], -camPos[1], -camPos[2]];
+  const fn = Math.hypot(fwd[0], fwd[1], fwd[2]);
+  const f: V3 = [fwd[0] / fn, fwd[1] / fn, fwd[2] / fn];
+  // right = up_world x fwd; swap the reference up when the camera looks along
+  // the spin axis, which the on-axis test does exactly
+  const upW: V3 = Math.abs(f[1]) > 0.99 ? [0, 0, 1] : [0, 1, 0];
+  const rgt: V3 = [
+    upW[1] * f[2] - upW[2] * f[1],
+    upW[2] * f[0] - upW[0] * f[2],
+    upW[0] * f[1] - upW[1] * f[0],
+  ];
+  const rn = Math.hypot(rgt[0], rgt[1], rgt[2]) || 1;
+  const r: V3 = [rgt[0] / rn, rgt[1] / rn, rgt[2] / rn];
+  const up: V3 = [
+    f[1] * r[2] - f[2] * r[1],
+    f[2] * r[0] - f[0] * r[2],
+    f[0] * r[1] - f[1] * r[0],
+  ];
+  const tet = buildStaticTetrad(camPos, a, r, up, f);
+  const mCov: V4 = [0, 1, 2, 3].map(
+    (i) =>
+      n[0] * tet.rightCov[i] + n[1] * tet.upCov[i] + n[2] * tet.fwdCov[i] - tet.uCov[i]
+  ) as V4;
+  return { tet, mCov };
+}
+
+const unit = (v: V3): V3 => {
+  const n = Math.hypot(v[0], v[1], v[2]);
+  return [v[0] / n, v[1] / n, v[2] / n];
+};
+
+describe("Walker-Penrose constant", () => {
+  it("is blind to the gauge freedom f -> f + c P", () => {
+    const camPos: V3 = [0, 3.0, 12];
+    const a = 0.7;
+    const { tet, mCov } = launch(camPos, a, unit([0.06, -0.02, 1]));
+    const P = raise(camPos, a, mCov);
+    const b = skyBasis(camPos, a, tet, unit([0.06, -0.02, 1]));
+    const F = skyLeg(tet, b.eH);
+    const k0 = walkerPenrose(camPos, a, P, F);
+    for (const c of [-3.1, 0.4, 17]) {
+      const Fg: V4 = [
+        F[0] + c * P[0],
+        F[1] + c * P[1],
+        F[2] + c * P[2],
+        F[3] + c * P[3],
+      ];
+      const k = walkerPenrose(camPos, a, P, Fg);
+      expect(k.k1).toBeCloseTo(k0.k1, 10);
+      expect(k.k2).toBeCloseTo(k0.k2, 10);
+    }
+  });
+
+  it("is bilinear, so the time-reversed tangent only rescales it", () => {
+    const camPos: V3 = [1.5, 2.0, 9];
+    const a = 0.5;
+    const { tet, mCov } = launch(camPos, a, unit([-0.1, 0.05, 1]));
+    const P = raise(camPos, a, mCov);
+    const Pn: V4 = [-P[0], -P[1], -P[2], -P[3]];
+    const F = skyLeg(tet, skyBasis(camPos, a, tet, unit([-0.1, 0.05, 1])).eV);
+    const kp = walkerPenrose(camPos, a, P, F);
+    const kn = walkerPenrose(camPos, a, Pn, F);
+    expect(kn.k1).toBeCloseTo(-kp.k1, 10);
+    expect(kn.k2).toBeCloseTo(-kp.k2, 10);
+  });
+
+  // The load-bearing check: drag a polarization along a real geodesic with an
+  // independently built transport and watch kappa refuse to move.
+  it.each([
+    { a: 0, label: "a = 0" },
+    { a: 0.5, label: "a = 0.5" },
+    { a: 0.9, label: "a = 0.9" },
+    { a: 0.998, label: "a = 0.998" },
+  ])("is conserved along a traced geodesic ($label)", ({ a }) => {
+    const camPos: V3 = [0, 4, 14];
+    for (const n of [
+      unit([0.52, 0.08, 1]),
+      unit([-0.61, 0.2, 1]),
+      unit([0.15, -0.58, 1]),
+    ]) {
+      const { tet, mCov } = launch(camPos, a, n);
+      const mt = mCov[0];
+      let st: TransportState = {
+        p: [...camPos],
+        mv: [mCov[1], mCov[2], mCov[3]],
+        V: skyLeg(tet, skyBasis(camPos, a, tet, n).eH),
+        sigma: 0,
+      };
+      const k0 = walkerPenrose(
+        st.p,
+        a,
+        raise(st.p, a, [mt, ...st.mv] as V4),
+        st.V
+      );
+      const scale = Math.hypot(k0.k1, k0.k2);
+      for (let i = 0; i < 1600; i++) {
+        const r = ksRadius(st.p, a);
+        if (r > 40) break;
+        st = transportStep(st, a, mt, 0.05);
+      }
+      // it actually went somewhere
+      expect(st.sigma).toBeGreaterThan(1);
+      const P = raise(st.p, a, [mt, ...st.mv] as V4);
+      const k = walkerPenrose(st.p, a, P, st.V);
+      expect(Math.abs(k.k1 - k0.k1) / scale).toBeLessThan(2e-4);
+      expect(Math.abs(k.k2 - k0.k2) / scale).toBeLessThan(2e-4);
+      // the transport is an isometry: |V| and V.P are held too
+      expect(gDot(st.p, a, st.V, st.V)).toBeCloseTo(1, 3);
+      expect(gDot(st.p, a, st.V, P) / Math.hypot(...P)).toBeCloseTo(0, 3);
+    }
+  });
+
+  it("stays finite for a camera sitting exactly on the spin axis", () => {
+    const a = 0.9;
+    const camPos: V3 = [0, 15, 0];
+    const { tet } = launch(camPos, a, unit([0.44, 0.11, 1]));
+    const b = skyBasis(camPos, a, tet, unit([0.44, 0.11, 1]));
+    for (const k of [b.kH, b.kV]) {
+      expect(Number.isFinite(k.k1)).toBe(true);
+      expect(Number.isFinite(k.k2)).toBe(true);
+    }
+    expect(Math.abs(b.det)).toBeGreaterThan(1e-6);
+  });
+});
+
+describe("no gravitational Faraday rotation at a = 0", () => {
+  // Schwarzschild is static and spherically symmetric: a null geodesic lies in
+  // a plane, and a polarization launched normal to that plane stays normal to
+  // it. Nothing about the Walker-Penrose machinery is used here — this pins
+  // the transport oracle itself, so the conservation test above cannot pass by
+  // both halves being wrong the same way.
+  it("keeps a polarization normal to the orbital plane", () => {
+    const camPos: V3 = [0, 0, 16];
+    const n = unit([0.42, 0.0, 1]);
+    const { mCov } = launch(camPos, 0, n);
+    const mt = mCov[0];
+    const P0 = raise(camPos, 0, mCov);
+    // plane normal: x cross P (spatial), conserved for a = 0
+    const N = unit([
+      camPos[1] * P0[3] - camPos[2] * P0[2],
+      camPos[2] * P0[1] - camPos[0] * P0[3],
+      camPos[0] * P0[2] - camPos[1] * P0[1],
+    ]);
+    let st: TransportState = {
+      p: [...camPos],
+      mv: [mCov[1], mCov[2], mCov[3]],
+      V: [0, N[0], N[1], N[2]],
+      sigma: 0,
+    };
+    for (let i = 0; i < 1600; i++) {
+      if (ksRadius(st.p, 0) > 40) break;
+      st = transportStep(st, 0, mt, 0.05);
+    }
+    const Vs = unit([st.V[1], st.V[2], st.V[3]]);
+    expect(Math.abs(st.V[0])).toBeLessThan(1e-6);
+    expect(Math.abs(Math.abs(Vs[0] * N[0] + Vs[1] * N[1] + Vs[2] * N[2]) - 1)).toBeLessThan(
+      1e-5
+    );
+  });
+
+  it("keeps a polarization in the orbital plane in it", () => {
+    const camPos: V3 = [0, 0, 16];
+    const n = unit([0.42, 0.0, 1]);
+    const { mCov } = launch(camPos, 0, n);
+    const mt = mCov[0];
+    const P0 = raise(camPos, 0, mCov);
+    const N = unit([
+      camPos[1] * P0[3] - camPos[2] * P0[2],
+      camPos[2] * P0[1] - camPos[0] * P0[3],
+      camPos[0] * P0[2] - camPos[1] * P0[1],
+    ]);
+    // an in-plane polarization: N x khat, spatial and orthogonal to the ray
+    const Ps = unit([P0[1], P0[2], P0[3]]);
+    const inPlane = unit([
+      N[1] * Ps[2] - N[2] * Ps[1],
+      N[2] * Ps[0] - N[0] * Ps[2],
+      N[0] * Ps[1] - N[1] * Ps[0],
+    ]);
+    let st: TransportState = {
+      p: [...camPos],
+      mv: [mCov[1], mCov[2], mCov[3]],
+      V: [0, inPlane[0], inPlane[1], inPlane[2]],
+      sigma: 0,
+    };
+    for (let i = 0; i < 1600; i++) {
+      if (ksRadius(st.p, 0) > 40) break;
+      st = transportStep(st, 0, mt, 0.05);
+    }
+    const Vs = unit([st.V[1], st.V[2], st.V[3]]);
+    expect(Math.abs(Vs[0] * N[0] + Vs[1] * N[1] + Vs[2] * N[2])).toBeLessThan(1e-5);
+  });
+});
+
+describe("resolving an emitted polarization on the camera's sky", () => {
+  // The end-to-end round trip: a polarization launched at the camera, dragged
+  // down the geodesic, read back through its conserved kappa. Recovering the
+  // launch components is what makes the closed form safe to mirror in GLSL.
+  it.each([
+    { a: 0, label: "a = 0" },
+    { a: 0.9, label: "a = 0.9" },
+  ])("recovers the launch components after a round trip ($label)", ({ a }) => {
+    const camPos: V3 = [0, 3, 13];
+    const n = unit([0.47, -0.12, 1]);
+    const { tet, mCov } = launch(camPos, a, n);
+    const mt = mCov[0];
+    const basis = skyBasis(camPos, a, tet, n);
+    // an arbitrary polarization at the camera, 33 degrees off the H leg
+    const c1 = Math.cos(0.5763);
+    const c2 = Math.sin(0.5763);
+    const F0: V4 = [0, 1, 2, 3].map(
+      (i) => c1 * skyLeg(tet, basis.eH)[i] + c2 * skyLeg(tet, basis.eV)[i]
+    ) as V4;
+    let st: TransportState = {
+      p: [...camPos],
+      mv: [mCov[1], mCov[2], mCov[3]],
+      V: F0,
+      sigma: 0,
+    };
+    for (let i = 0; i < 1600; i++) {
+      if (ksRadius(st.p, a) > 40) break;
+      st = transportStep(st, a, mt, 0.05);
+    }
+    const P = raise(st.p, a, [mt, ...st.mv] as V4);
+    const k = walkerPenrose(st.p, a, P, st.V);
+    const got = solveSky(basis, k);
+    expect(got.c1).toBeCloseTo(c1, 3);
+    expect(got.c2).toBeCloseTo(c2, 3);
+  });
+
+  // c1^2 + c2^2 = 1 is not imposed anywhere: it holds because the map from
+  // polarizations to kappa is a similarity at every point, with the same scale
+  // at both ends of a geodesic (a unit polarization keeps its length, and
+  // kappa keeps its value). Checking it every step is the cheapest statement
+  // that the closed form, the basis and the tangent all agree.
+  it("returns a unit sky vector for any unit emitted polarization", () => {
+    const a = 0.8;
+    const camPos: V3 = [0, 2.5, 11];
+    const n = unit([-0.75, 0.25, 1]);
+    const { tet, mCov } = launch(camPos, a, n);
+    const mt = mCov[0];
+    const basis = skyBasis(camPos, a, tet, n);
+    let st: TransportState = {
+      p: [...camPos],
+      mv: [mCov[1], mCov[2], mCov[3]],
+      V: skyLeg(tet, basis.eV),
+      sigma: 0,
+    };
+    for (let i = 0; i < 2600; i++) {
+      if (ksRadius(st.p, a) > 40) break;
+      st = transportStep(st, a, mt, 0.02);
+      const P = raise(st.p, a, [mt, ...st.mv] as V4);
+      const { c1, c2 } = solveSky(basis, walkerPenrose(st.p, a, P, st.V));
+      expect(c1 * c1 + c2 * c2).toBeCloseTo(1, 3);
+    }
+  });
+});
+
+describe("emitter-frame helpers", () => {
+  // A null tangent AT pos, built the way the emitter sees it: a static frame
+  // there, plus a unit spatial direction in that frame.
+  function nullAt(pos: V3, a: number, dir: V3) {
+    const tet = buildStaticTetrad(pos, a, [1, 0, 0], [0, 1, 0], [0, 0, 1]);
+    const P = [0, 1, 2, 3].map(
+      (i) =>
+        dir[0] * tet.right[i] + dir[1] * tet.up[i] + dir[2] * tet.fwd[i] + tet.u[i]
+    ) as V4;
+    return { u: tet.u, P };
+  }
+
+  it("splits the photon into u + khat with khat a unit spatial vector", () => {
+    const a = 0.6;
+    const pos: V3 = [7, 0, 2];
+    const { u, P } = nullAt(pos, a, unit([0.3, 0.5, -0.8]));
+    expect(gDot(pos, a, P, P)).toBeCloseTo(0, 9);
+    const k = photonDirInFrame(pos, a, u, P);
+    expect(gDot(pos, a, k, k)).toBeCloseTo(1, 9);
+    expect(gDot(pos, a, k, u)).toBeCloseTo(0, 9);
+  });
+
+  it("makes a direction transverse to the ray and unit", () => {
+    const a = 0.6;
+    const pos: V3 = [7, 0, 2];
+    const { u, P } = nullAt(pos, a, unit([0.3, 0.5, -0.8]));
+    // the disk normal as the emitter sees it: world +y with u projected out
+    const d = emitterPolarization(pos, a, u, P, [0, 0, 1, 0])!;
+    expect(d).not.toBeNull();
+    expect(gDot(pos, a, d, d)).toBeCloseTo(1, 9);
+    expect(gDot(pos, a, d, P)).toBeCloseTo(0, 9);
+    expect(gDot(pos, a, d, u)).toBeCloseTo(0, 9);
+  });
+
+  it("reports a line-of-sight direction as unpolarized rather than inventing one", () => {
+    const a = 0.4;
+    const pos: V3 = [9, 0, 0];
+    const dir = unit([0, 1, 0]);
+    const { u, P } = nullAt(pos, a, dir);
+    const k = photonDirInFrame(pos, a, u, P);
+    // ask to polarize along the line of sight itself: nothing survives
+    expect(emitterPolarization(pos, a, u, P, k)).toBeNull();
+  });
+});
+
+describe("screen projection and Stokes bookkeeping", () => {
+  it("projects an on-axis sky vector straight through", () => {
+    const n: V3 = [0, 0, 1];
+    expect(skyToScreen(n, [1, 0, 0])).toEqual([1, 0]);
+    expect(skyToScreen(n, [0, 1, 0])).toEqual([0, 1]);
+  });
+
+  it("foreshortens a sky vector tilted toward the camera", () => {
+    const n = unit([0.5, 0, 1]);
+    const along = unit([1, 0, -0.5]); // perpendicular to n, tilted in depth
+    const [dx, dy] = skyToScreen(n, along);
+    expect(dy).toBeCloseTo(0, 12);
+    // the gnomonic chart stretches the component in the tilt direction
+    expect(Math.abs(dx)).toBeGreaterThan(1);
+  });
+
+  it("depolarizes two crossings whose planes are 90 degrees apart", () => {
+    let s = ZERO_STOKES;
+    s = addCrossing(s, 1, 1, 1, 0);
+    s = addCrossing(s, 1, 1, 0, 1);
+    const basis = {
+      eH: [1, 0, 0] as V3,
+      eV: [0, 1, 0] as V3,
+      kH: { k1: 1, k2: 0 },
+      kV: { k1: 0, k2: 1 },
+      det: 1,
+    };
+    expect(resolveStokes(s, basis).degree).toBeCloseTo(0, 12);
+  });
+
+  it("keeps the full degree when two crossings agree, and the direction with it", () => {
+    let s = ZERO_STOKES;
+    const c1 = Math.cos(0.4);
+    const c2 = Math.sin(0.4);
+    s = addCrossing(s, 2, 0.11, c1, c2);
+    s = addCrossing(s, 5, 0.11, c1, c2);
+    const basis = {
+      eH: [1, 0, 0] as V3,
+      eV: [0, 1, 0] as V3,
+      kH: { k1: 1, k2: 0 },
+      kV: { k1: 0, k2: 1 },
+      det: 1,
+    };
+    const { degree, dir } = resolveStokes(s, basis);
+    expect(degree).toBeCloseTo(0.11, 12);
+    expect(Math.abs(dir[0] * c1 + dir[1] * c2)).toBeCloseTo(1, 12);
+  });
+
+  it("weights a bright crossing over a faint one", () => {
+    let s = ZERO_STOKES;
+    s = addCrossing(s, 9, 1, 1, 0);
+    s = addCrossing(s, 1, 1, 0, 1);
+    const basis = {
+      eH: [1, 0, 0] as V3,
+      eV: [0, 1, 0] as V3,
+      kH: { k1: 1, k2: 0 },
+      kV: { k1: 0, k2: 1 },
+      det: 1,
+    };
+    const { degree, dir } = resolveStokes(s, basis);
+    expect(degree).toBeCloseTo(0.8, 12);
+    expect(Math.abs(dir[0])).toBeCloseTo(1, 12);
+  });
+});
