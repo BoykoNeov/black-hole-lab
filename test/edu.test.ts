@@ -534,6 +534,15 @@ describe("criticalLyapunov against traced rays, off the equator", () => {
     expect(r.fitted / r.closed).toBeLessThan(1.05);
   };
 
+  /**
+   * a = 0.998 is deliberately not in this loop, and the tolerance is not the
+   * reason to add it. Measured there, the fit runs +0.3% over most of the ring
+   * but +3.0% on the prograde edge and +6.8% beside it — where gamma is 0.19
+   * and a ray hovers for so much winding that the stepper's overstatement
+   * compounds. That is the integrator, not the formula (see docs/DESIGN.md,
+   * slice 14), so the spin is left out rather than the ceiling raised to
+   * swallow a bias worth naming.
+   */
   it("holds at every screen azimuth at a = 0.9", () => {
     for (const deg of [0, 45, 90, 135, 180, 270]) {
       expectFit(fitAtAzimuth(CAM, ...EDGE, 0.9, (deg * Math.PI) / 180));
