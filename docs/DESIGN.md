@@ -786,6 +786,179 @@ the excluded cells were measured, and they sit where the answer moves 22
 degrees across one pixel while the two sides differ by 5. Three cells over the
 whole sweep.
 
+## Slices 11 and 12 — the band closed, and the pole crossed
+
+Slice 8 established that no finite march budget reaches the critical curve:
+settling a ray at offset δ from it takes ~(1/γ) ln(1/δ) half-orbits, so the
+step count *diverges* at the edge. Slice 9c drew the rays that ran out as their
+own colour rather than passing them off as sky. These two slices are what earns
+the right to stop drawing that colour — and neither of them moves
+`MARCH_MAX_STEPS`, because a slice that worked by raising it would not have
+worked at all.
+
+### Separated, not tabulated
+
+`docs/ROADMAP.md` originally proposed a precomputed table over the critical
+curve, looked up by a ray's conserved constants. That is under-specified, and
+the reason is worth keeping: **the escape direction is not a function of
+(λ, q) alone.** Where the photon freezes on the near-critical shell depends on
+the remaining Mino time and therefore on the *phase* at exhaustion — two rays
+with the same constants and different phases leave in different directions.
+
+What works instead is that a Kerr null geodesic *separates*. In Mino time
+(dτ = dσ/Σ) the radial and polar motions are independent one-dimensional
+problems, and with u = cos θ both potentials are polynomials. Squaring the
+usual first-order equations once removes the square roots and all the
+turning-point sign bookkeeping — the classic place these implementations
+break — leaving five scalars, no metric and no metric gradients. The deepest
+sampled band ray needs 291,419 steps of a converged march and finishes here in
+a few hundred. On the rays that need it this is not merely cheaper than
+marching, it is *more accurate*, because it holds the constants exactly instead
+of accumulating them.
+
+### The constants come from the launch, not from the handoff
+
+The continuation starts from the exhausted march but takes only its *phase*:
+r, u, az and the two signs. λ and q come from the camera, where nothing has
+drifted, and the momenta are re-projected onto ±√R and ±√U with those
+constants — which puts the ray back exactly on the null cone.
+
+Taking the constants from the exhausted state instead costs an order of
+magnitude where it matters most: 0.68° against 0.00024° on the deep-band ray.
+Worse, it *plateaus* — refining the step does not help, because the drifted
+constants are the error floor. By 320 steps the march has drifted the
+Hamiltonian to 3.6e-6, which near a turning point is a percent of the radial
+potential, and γ turns that into an exponentially growing phase error. This is
+why `test/mino.test.ts` insists the error *fall* with the step scale rather
+than merely clear a threshold: the wrong variant passes an absolute bound and
+then stops improving.
+
+### The pole was registered, then closed
+
+`src/mino.ts` works in the separated (r, θ, φ) chart, and that chart is
+singular on the spin axis. A ray passing over the pole must swing its azimuth
+by very nearly π inside a Mino interval of order 2e-5, and at λ exactly zero
+the term λ/(1 − u²) is 0/0 — so the crossing degenerates into a *reflection* no
+matter how fine the step. Slice 11a measured it (every ray whose closest
+approach to the axis stayed above 1e-5 landed within 0.009°, the ones below
+reached 126°), refused to guess, and registered it as H9.
+
+Slice 12 closes it, and the shape of the fix is the interesting part. The
+passage past the turning point costs two integrals, both counting *both* legs:
+
+    dτ      = ∫ dv / (√(1−v) √U)
+    dφ_sing = ∫ λ dv / (v √(1−v) √U)
+
+with v = 1 − u², U = −λ² + Bv − a²v² and B = a² + q + λ². Substituting
+v = v_min + √D·w² makes √U = √D·w·√(1 − a²w²), so the turning point's 1/√U
+cancels identically — **and nothing divides by the spin.** The roadmap's
+recorded arcsin form does, and a = 0 is not hypothetical: at zero spin the
+default camera still has 384 band pixels and rays that cross the pole.
+
+Geometrically, θ² ≈ v = v_min + √D·w² with the azimuth swinging as
+2·arctan(w/w_c) is a *straight line at distance √v_min from the pole*, in the
+tangent plane there. That is why the swing is π, why an arctangent is the whole
+answer, and why the swept angle takes the closest-approach point rather than
+the endpoints — for a straight line, two chords through its nearest point are
+exact where one chord across is 1.1·√v_min short.
+
+λ = 0 is then not a special case at all, provided it is written carefully:
+`atan2` gives π/2 against a vanishing w_c where a division would give an
+infinity, and the sign takes zero to +1. The apparent discontinuity between +π
+and −π is not one — **they are the same azimuth.** The whole of H9 is that this
+limit exists and the ODE cannot see it.
+
+### Reflecting and jumping is exact, not a shortcut
+
+Two facts make it so. The polar motion is autonomous and symmetric about its
+turning point, so the ray leaves at the v it entered with pu reversed. And
+dr/dτ, dpr/dτ and the *regular* part of the azimuth contain no u at all — that
+is what separation means — so the radial pair can be advanced across the
+passage without knowing where in the polar swing the ray is. What is left is an
+O(v²) truncation and RK4 on a two-scalar system over a Mino interval of ~0.02.
+
+### Two guards that reasoning did not produce and measurement did
+
+Both were found after the derivation had already concluded, and both are large.
+
+**A ray may leave before its polar swing finishes.** Rays at r = 11 to 31
+heading out, inbound in u and bound for the pole, cross the escape radius first
+at very nearly the same Mino time. Jumping one through a crossing that never
+happens is worth **14°**. The passage is therefore trialled and refused, and
+the trial is not repeated: pr > 0 outside the escape radius is monotone.
+
+**A step may jump clean over the trigger window.** With no cap on how fast
+1 − u² may fall, a single step goes from above the trigger to past the turning
+point, the trigger never fires, and the ray reflects without its half-turn —
+**155°**, which is the original H9 failure wearing a new hat. `MINO_V_FALL`
+caps the *fractional* fall and converges: 2.2e-2, 2.1e-3, 2.1e-4, 1.3e-4 and
+1.2e-4 degrees at no cap, 0.6, 0.3, 0.15 and 0.05.
+
+Slice 11's azimuth step bound survives both, and that is measured too. It is
+tempting to delete it once the sharp part is analytic, but it watches the
+*approach* to the trigger, not only the crossing: removing it costs 5.8e-2°
+against 1.3e-4° for 189 saved steps.
+
+### What the magenta means now, and why it is not deleted
+
+Slice 11b turned the off-ladder colour from a feature into a tripwire: it means
+"the continuation spent `MINO_MAX_STEPS`", and it should read zero pixels at
+every reachable setting. An instrument that reads zero is a passing check, not
+dead UI — which is exactly why it earns its keep. It did *not* read zero when
+slice 12 measured it: over a 1280×800 grid at fifteen cameras, an ordinary
+deep-band ray at a = 0.998 from the default camera needs 1053 steps against a
+cap of 1024, and two pixels were clipping. Nothing near the spin axis is
+involved; slice 11's camera set simply missed it. The cap moved to 1536.
+
+Slice 11b's *second* off-ladder colour is gone. It said "over the spin axis —
+chart cannot follow", which is no longer true of any ray, and leaving it would
+have left the tripwire sharing a frame with a colour meaning "expected".
+
+### What the band shows, and what it does not claim
+
+The rays these slices fix are exponentially sensitive to their own state — that
+is what γ *means*. The 320-step prefix has already drifted before the
+continuation starts, so a given band pixel is not guaranteed to show the star an
+exact computation would put there. What is guaranteed is that it shows a
+correct member of the right ensemble: a real escape direction of a real null
+geodesic with this ray's exact constants, rather than a frozen mid-orbit
+snapshot. That region of sky is a chaotic scattering region holding
+exponentially compressed copies of the whole sky, and the point is that it now
+*looks* like one. Claiming pixel-exactness there would be claiming something no
+method can deliver.
+
+### Reading a false-colour view is not reading its colours
+
+`npm run band` checks the GLSL copy, and how it does that took two wrong turns
+worth recording, because both are about the difference between the picture and
+the quantity behind it.
+
+Classifying each pixel by which rung colour it is nearest reported 36% of a row
+on the wrong rung — and was measuring the tonemap. The composite's ACES curve
+plus bloom desaturate a rung until it sits *nearer its neighbour's chromaticity
+than its own*: the 1–2 rung reads 0.196, 0.357, 0.447 against its own 0.118,
+0.324, 0.559 and the 0–1 rung's 0.283, 0.321, 0.396. So the check reads the
+**hairlines** instead. The shader draws a dark line at every whole turn, so a
+line's *position* is where the winding crosses an integer — a claim about the
+physics, to sub-pixel precision, and a local minimum survives any monotone
+curve that a colour does not.
+
+The tripwire has the same problem and a different answer: it counts by the
+*direction* of the chromaticity away from neutral rather than the distance to
+it, because desaturation slides a colour along that direction and leaves it
+alone. A distance test called 48 pixels of the 5+ rung magenta; those same
+pixels score 0.99 against their own direction and 0.59 against the magenta.
+Tightening the distance would have hidden them — and hidden a real magenta with
+them, which for a tripwire is the failure that matters.
+
+Crossings where the winding turns faster than 0.05 half-turns per pixel are not
+compared at all. Toward the critical curve the rungs crowd geometrically — that
+is the whole point of the view — and a line there is thinner than a pixel, so
+asking where it sits reads 1.25 half-turns "off" purely because four pixels is
+more than a rung. Those crossings are checked by the tripwire and on the CPU
+instead. Over the ones a frame can locate, the shader and the oracle agree to
+0.027 half-turns, and that is the float32 question the unit tests cannot reach.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

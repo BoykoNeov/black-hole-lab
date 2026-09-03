@@ -80,67 +80,86 @@ Units are geometrized (G = c = M = 1) throughout.
       the marks actually drawn and recomputes each on the CPU: mean 0.24°,
       worst 1.20° ✅
 
+11. **Closing the band** — a ray still winding when the march's budget ends
+    no longer takes the sky at whatever direction it happened to be pointing ✅
+    - 11a `src/mino.ts`: the continuation, in the separated system where the
+      radial and polar motions are independent 1-D polynomial problems. The
+      deepest band ray needs 291,419 steps of a converged march and finishes
+      here in 786. The constants come from the LAUNCH, not from the drifted
+      exhausted state — worth 0.68° against 0.00024° on that ray, and the
+      difference plateaus rather than shrinking, which is what a convergence
+      test catches and an absolute threshold does not ✅
+    - 11b the GLSL mirror, wired into the one place the renderer still guessed.
+      The magenta rung stops meaning "budget spent" and becomes a tripwire for
+      the continuation spending its OWN budget ✅
+    - 11c `npm run band` — landed with slice 12, which needed the same
+      instrument ✅
+
+12. **The pole the continuation could not cross** — hurdle H9, closed ✅
+    - 12a `axisPassage`: the whole polar passage near the spin axis in closed
+      form, so the half-turn of azimuth that no step size can find is not
+      integrated at all. The substitution v = v_min + √D·w² cancels the turning
+      point identically and leaves no 1/a anywhere, so it holds at zero spin
+      too — where the band and its pole crossings are real (384 band pixels at
+      a = 0 from the default camera). 43 near-axis band rays at 60 cameras go
+      from a worst 156.197° to 1.27e-4°, and 1255 rays away from the axis do
+      not move (worst 4.0e-6°, no step count changing). Two guards the
+      measurement insisted on: a ray may LEAVE before its swing finishes (14°
+      if jumped anyway) and a step may leap the trigger window (155°) ✅
+    - 12b the GLSL mirror, and the near-axis legend row removed — there is no
+      longer a class of ray the chart cannot follow ✅
+    - 12c `npm run band`: the tripwire reads zero at five views, and 36
+      whole-turn crossings match the CPU's own winding to 0.027 half-turns,
+      which is the float32 answer the unit tests cannot reach ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
 to closing it. Ordered by how much of the picture they touch.
 
-### H1 — the colour of the budget-exhausted band
+### H1 — the ring's inner rungs are under-lit
 
-**Status: open, now visible.** Rays near the critical curve are still winding
-when `MARCH_MAX_STEPS` ends. Their *fate* is exact (slice 8a); their *colour*
-is the sky at the direction they had when the budget ran out, which is nothing
-like their asymptotic direction. With the disk on, they also miss the disk
-crossings later half-orbits would have added — so the photon ring's inner
-rungs are under-lit exactly where γ is small. The ladder view (9c) paints the
-band magenta so its extent is on screen: ~50 px on the a = 0.998 prograde
-edge at fov 30, sub-pixel at a = 0.
+**Status: half closed by slices 11 and 12.** The first half — a
+budget-exhausted ray taking the sky at whatever direction it happened to be
+pointing — is done: those rays now get a real escape direction and a real
+winding out of `src/mino.ts`, and the ladder view's off-ladder colour reads
+zero pixels at every camera sampled.
 
-The march cannot fix it (steps diverge as ~(1/γ) ln(1/δ)). Two honest paths:
+What is left is the light. An exhausted ray also misses the equatorial
+crossings its later half-orbits would have made, so the photon ring's inner
+rungs stay under-lit exactly where γ is small. The march cannot fix that
+either, for the same reason: the crossings keep coming as the ray winds, and
+the step count diverges.
 
-- **Analytic continuation for the sky.** For a ray that has settled onto the
-  near-critical shell, the remaining trajectory is the unstable manifold of
-  the spherical photon orbit at its (λ, q). Its asymptotic direction is a
-  function of (λ, q, side) plus the *phase* at exhaustion, expressible via
-  the Kerr elliptic integrals (Gralla–Lupsasca 2020 give closed forms). A
-  small precomputed table over the critical curve, looked up by the ray's
-  constants, would replace "direction at exhaustion" with the true escape
-  direction for the dominant rung.
-- **Ladder-aware disk lighting.** Each further half-orbit crosses the
-  equatorial plane once more, at a radius that converges geometrically to the
-  photon orbit's. Summing the remaining crossings analytically (radius
-  sequence from the near-critical expansion, shift from `diskShift`) would
-  restore the ring's brightness without stepping.
+Path: each further half-orbit crosses the equatorial plane once more, at a
+radius converging geometrically to the photon orbit's. Summing the remaining
+crossings analytically — radius sequence from the near-critical expansion,
+shift from `diskShift` — would restore the brightness without stepping. The
+continuation already knows *where* those crossings are: they are exactly where
+`u` changes sign, which it computes anyway. What is missing is the shift factor
+and the compositing order, not the geometry. Needs its own oracle; bundling it
+into slice 11 would have let that slice's acceptance test pass while this half
+was wrong.
 
-Both are a slice's worth of work with a testable CPU oracle each.
+### H9 — the continuation could not follow a ray over the spin axis
 
-### H9 — the continuation cannot follow a ray over the spin axis
+**Status: closed by slice 12.** The separated chart is singular on the spin
+axis, and a ray crossing the pole has to swing its azimuth by very nearly π
+inside a Mino interval of order 2e-5 — at λ exactly zero the term λ/(1 − u²) is
+0/0, so the crossing degenerated into a *reflection* at any step size. Slice
+11a flagged those rays rather than guessing; slice 12 takes the whole passage
+in closed form instead of stepping through it.
 
-**Status: open, flagged rather than guessed (slice 11a).** `src/mino.ts`
-continues an exhausted ray in the separated (r, θ, φ) system, and that chart is
-singular on the spin axis. A ray that crosses the pole must swing its azimuth by
-very nearly π, packed into a Mino interval of order λ/(a²+q) — about 2e-5 for
-the rays that fail — and at λ exactly zero the term λ/(1−u²) is 0/0, so the
-crossing degenerates into a *reflection* no matter how fine the step. The
-Cartesian march has no such trouble, which is why it is the module's oracle.
+The fix is not the arcsin form this entry used to record. That one divides by
+the spin, and a = 0 has band rays and pole crossings of its own. Substituting
+v = v_min + √D·w² cancels the turning point's 1/√U identically and leaves no
+1/a anywhere; in that variable the passage is a straight line in the tangent
+plane at the pole, so an arctangent is the whole answer and the π falls out as
+a limit that survives λ = 0. See `docs/DESIGN.md` for the derivation and for
+the two guards measurement added around it.
 
-Measured against that march over 379 band rays at eight cameras, the closest
-approach to the axis separates the two groups by three orders of magnitude:
-every ray whose sin²θ stays above 1e-5 lands within 0.009°, and the ones below
-reach 126°. `axisApproach` computes that closest approach in closed form from
-(λ, q, a) alone, and `continueToEscape` returns `nearAxis` rather than a
-direction it cannot justify. Over a full 1280-wide grid at fifteen cameras this
-flags **115 of 14,147 band pixels (0.81%)** — all of them at cameras within
-0.12 rad of face-on, none at any camera within half a radian of the equator.
-
-Path, and it is a closed form rather than more steps: the singular part of the
-azimuth across the turning point is ∫λ dτ/(1−u²), which in v = 1−u² is
-∫λ dv/(v·√U) with U = −λ² + Bv − a²v² and B = a²+q+λ². That is the standard
-∫dv/(v√(c+bv+av²)) with c = −λ² < 0, giving (1/|λ|)·arcsin((Bv−2λ²)/(v√(B²−4a²λ²)))
-— so the whole passage contributes sign(λ)·π in the limit, exactly as the
-geometry demands. Switching to that form inside a v-threshold and resuming with
-the flipped `pu` sign would close it. Needs its own oracle and its own sign
-work, which is why slice 11 registered it instead of bundling it.
+Measured: worst direction error over 43 near-axis band rays at 60 cameras,
+156.197° → 1.27e-4°, with rays away from the axis unmoved to 4.0e-6°.
 
 ### H2 — γ is quoted per equatorial edge, not around the ring
 
@@ -215,9 +234,12 @@ frame-count-based wait would make it portable.
 
 ## Queued
 
-- **Slice 11 — closing the band** (H1). Escape-direction table over the
-  critical curve; the ladder view's magenta band is the acceptance test — it
-  should shrink to nothing without the budget moving.
-- **γ around the ring** (H2). Small; could ride with slice 11.
+- **Ladder-aware disk lighting** (H1's remaining half). The photon ring's inner
+  rungs are under-lit because an exhausted ray misses the equatorial crossings
+  its later half-orbits would have made. The continuation already knows where
+  those crossings are; what is missing is the shift factor and the compositing
+  order. `npm run band` is the instrument it will be measured with.
+- **γ around the ring** (H2). Small. It touches the ladder legend, so it should
+  not ride along with anything else that changes the same legend.
 - **Chandrasekhar's table** (H8). Smaller still: source twenty numbers and
   replace a fitted curve with them. Tick directions do not change.

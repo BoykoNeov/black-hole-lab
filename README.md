@@ -21,6 +21,7 @@ npm test        # physics unit tests (geodesic integrator)
 npm run build   # typecheck + production build
 npm run shot    # visual harness smoke run (needs `npm run dev` up)
 npm run pol     # slice 10: the drawn polarization ticks vs the CPU oracle
+npm run band    # slices 11-12: the drawn photon-ring ladder vs the CPU oracle
 ```
 
 ## Architecture
@@ -289,6 +290,15 @@ worth the algebra, is in
   (direction exact, polarized fraction fitted between two exact endpoints).
   `pixelPolarization` runs the whole chain for one pixel and is the oracle
   `npm run pol` checks the shader against (pure, tested)
+- `src/mino.ts` — the separated continuation (slices 11–12): what happens to a
+  ray still winding at the photon shell when the march's step budget runs out.
+  In Mino time the radial and polar motions are independent 1-D polynomial
+  problems, so a ray needing ~291,000 marched steps finishes here in a few
+  hundred cheap ones — which is the only way to close it, since the step count
+  DIVERGES at the critical curve. `axisPassage` takes the polar turning point
+  near the spin axis in closed form instead of stepping into a 0/0, and
+  `continueToEscape` returns both the escape direction and the winding still to
+  sweep (pure, tested against a step-refined march in different coordinates)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -493,6 +503,18 @@ and `tsconfig` covers `src` + `test`.
   it also covers the projection and the tick pass. It
   borrows vite's own module loader to reach the TypeScript oracle, rather than
   adding a TS runner as a dependency
+- `tools/visual/band.mjs` — `npm run band`. The same problem as `npm run pol`,
+  for the photon-ring ladder: `src/mino.ts` is tested and its GLSL copy is not.
+  Three measurements at five views. The ladder's magenta means "the
+  continuation spent its own budget" and must read zero pixels — it is a
+  passing check, not dead UI, and it was reading two when slice 12 looked.
+  Whole-turn crossings are matched against the CPU's own winding through the
+  HAIRLINES the shader draws at each one, because a line's position is the
+  winding and a local minimum survives a tonemap that a colour does not: worst
+  offset 0.027 half-turns over 36 crossings, which is the float32 answer the
+  CPU tests cannot reach. And the frame rate, which sits on the display's
+  ceiling either way — an upper bound on the cost, and the tool says so rather
+  than dressing it up as a measurement
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame
