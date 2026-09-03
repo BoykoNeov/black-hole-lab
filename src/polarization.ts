@@ -37,12 +37,15 @@ import {
   ksRadius,
   lower,
   raise,
+  rayCaptured,
+  rayConstants,
   traceRayKerr,
   uCircCart,
   type Tetrad,
   type V3,
   type V4,
 } from "./kerr.js";
+import { continueToEscape, minoStateAt, rayPotentials } from "./mino.js";
 
 /**
  * The Walker–Penrose constant, as its real and imaginary parts.
@@ -449,6 +452,13 @@ export interface PixelPolarization {
  * measure. `weight` is how much a crossing contributes to the pixel's
  * brightness — the shader passes its own composited disk emission; tests pass
  * a constant, since every claim about DIRECTION is weight-blind.
+ *
+ * A ray that spends the march's budget is finished in the separated chart and
+ * the crossings it makes there are added too (slice 13), because the shader
+ * does exactly that and this is the shader's oracle. Without it the two would
+ * disagree at band pixels and `npm run pol` would not be able to say so: it
+ * compares single-crossing pixels, and a band pixel gaining one is precisely
+ * where the counts would stop matching.
  */
 export function pixelPolarization(
   camPos: V3,
@@ -469,13 +479,30 @@ export function pixelPolarization(
   const basis = skyBasis(camPos, a, tet, n);
   const scale = Math.hypot(basis.kH.k1, basis.kH.k2) * Math.hypot(basis.kV.k1, basis.kV.k2);
   const degenerate = !(Math.abs(basis.det) > 1e-9 * Math.max(scale, 1e-30));
-  const trace = traceRayKerr(camPos, mCov, a, { maxSteps: opts.maxSteps });
+  // Mirrors traceRayKerr's own default rather than leaving it implicit: the
+  // budget has to be nameable here to tell "spent it" from the march's other
+  // exits, which leave a state the continuation must never be fed.
+  const maxSteps = opts.maxSteps ?? 4000;
+  const trace = traceRayKerr(camPos, mCov, a, { maxSteps });
   const w = opts.weight ?? (() => 1);
+
+  const crossings = [...trace.crossings];
+  if (!trace.escaped && trace.steps === maxSteps && !rayCaptured(camPos, mCov, a)) {
+    const rc = rayConstants(camPos, mCov, a);
+    const C = rayPotentials(rc.lambda, rc.q, a);
+    const cont = continueToEscape(
+      minoStateAt(trace.pos, [trace.mt, ...trace.mv] as V4, a, C),
+      C,
+      a,
+      { mt: trace.mt }
+    );
+    crossings.push(...cont.crossings);
+  }
 
   let s = ZERO_STOKES;
   let used = 0;
   if (!degenerate) {
-    for (const c of trace.crossings) {
+    for (const c of crossings) {
       if (c.r < opts.rInner || c.r > opts.rOuter) continue;
       const P = raise(c.pos, a, [trace.mt, c.mv[0], c.mv[1], c.mv[2]]);
       const pol = diskPolarization(c.pos, a, c.r, P);

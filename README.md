@@ -294,7 +294,9 @@ worth the algebra, is in
   bookkeeping over a ray's disk crossings, and the electron-scattering emitter
   (direction exact, polarized fraction fitted between two exact endpoints).
   `pixelPolarization` runs the whole chain for one pixel and is the oracle
-  `npm run pol` checks the shader against (pure, tested)
+  `npm run pol` checks the shader against — including, since slice 13, the
+  crossings a budget-exhausted ray makes in the separated continuation, because
+  the shader shades those too (pure, tested)
 - `src/mino.ts` — the separated continuation (slices 11–13): what happens to a
   ray still winding at the photon shell when the march's step budget runs out.
   In Mino time the radial and polar motions are independent 1-D polynomial

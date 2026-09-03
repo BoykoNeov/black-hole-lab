@@ -41,6 +41,13 @@
  * evidence that the crossing RADII have converged by the time the shader
  * stops, which is the useful claim — not that the two integrations are
  * identical, which they are not.
+ *
+ * Both sides do finish a budget-exhausted ray the same way, though: since
+ * slice 13 `pixelPolarization` hands one to the separated continuation and
+ * counts the disk crossings it makes, exactly as the shader does. Before that
+ * the oracle simply stopped, and the two would have disagreed at band pixels
+ * on the COUNT — which is what this tool filters on, so it could not have
+ * reported the disagreement.
  */
 
 import { createServer } from "vite";

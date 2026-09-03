@@ -1126,6 +1126,33 @@ rather than from the drawn frame: the sky around the shadow is dark enough in
 places to fool a luminance threshold, and the band is precisely where being
 wrong about the shadow's edge would cost the samples the check is made of.
 
+The negative control's presence is itself asserted. At a = 0.998 from the
+default camera *every* band pixel the march leaves dark gains a crossing, so
+there is no control group at that view and only the absolute gain is checked;
+counting only the views that had enough lit pixels would let a run pass green
+with the control never once evaluated. `npm run band` counts the two separately
+and fails if the control never ran — the same reasoning as the tripwire's, that
+a check which can silently miss is worse than no check.
+
+### The polarization oracle had to learn the same thing
+
+Adding these crossings to the shader's Stokes sum quietly broke the rule slice
+10 set up: the physics lives twice and a tool checks the copy. `npm run pol`
+compares the shader against `pixelPolarization`, which stopped where the march
+stopped — so at band pixels the shader and its own oracle now modelled different
+rays, and the tool could not have said so, because it filters on the crossing
+COUNT and a band pixel gaining one is exactly where the counts stop matching.
+A passing run would have proved nothing: at a = 0 there are no continuation
+crossings on the disk to disagree about, and at a = 0.998 only 45 of 84 cells
+are compared at all, one mark per grid cell sampled at its centre.
+
+So `pixelPolarization` hands a budget-exhausted ray to the continuation too, and
+counts the crossings it makes. The two sides still do not integrate the same
+march — the oracle runs 4000 steps where the shader spends 320, deliberately, so
+that agreement means the crossing radii have converged by the time the shader
+stops — but they now finish the same way, which is the part that was a
+transcription rather than a convergence claim.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

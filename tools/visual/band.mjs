@@ -517,7 +517,7 @@ async function checkDiskLight(lab, rows, lit, dark) {
     // Said out loud rather than skipped: a view that stops finding band pixels
     // the march leaves dark looks exactly like a view where the check passed.
     console.log(`          slice 13: no band px here the march leaves dark — nothing to check`);
-    return 0;
+    return { judged: 0, controlled: 0 };
   }
   const on = new Map();
   for (const y of rows) on.set(y, await lumRow(lab, y));
@@ -533,16 +533,18 @@ async function checkDiskLight(lab, rows, lit, dark) {
       `continuation lights, ${dark.length} it leaves dark; median luminance the ` +
       `disk adds ${lit.length ? gLit.toFixed(4) : "n/a"} vs ${dark.length ? gDark.toFixed(4) : "n/a"}`
   );
-  if (lit.length >= MIN_LIT) {
+  const judged = lit.length >= MIN_LIT ? 1 : 0;
+  const controlled = judged && dark.length >= MIN_LIT ? 1 : 0;
+  if (judged) {
     if (!(gLit > MIN_LIT_GAIN))
       fail(`the disk adds only ${gLit.toFixed(4)} to band px the continuation says it lights`);
-    if (dark.length >= MIN_LIT && !(gLit > LIT_MARGIN * gDark))
+    if (controlled && !(gLit > LIT_MARGIN * gDark))
       fail(
         `band px the continuation lights gain ${gLit.toFixed(4)}, ones it does not ` +
           `gain ${gDark.toFixed(4)} — not separated`
       );
   }
-  return lit.length >= MIN_LIT ? 1 : 0;
+  return { judged, controlled };
 }
 
 /**
@@ -563,8 +565,23 @@ async function frameTime(lab, label) {
   console.log(`${label}: ${text.trim()}`);
 }
 
-/** Views where slice 13's disk-light check had enough pixels to judge. */
+/**
+ * Views where slice 13's disk-light check had enough pixels to judge, and — the
+ * one that matters — where the NEGATIVE CONTROL ran as well.
+ *
+ * Counted separately because they come apart: at a = 0.998 from the default
+ * camera every band pixel the march leaves dark gains a crossing, so the
+ * control group is empty and only the absolute gain is checked there. A run
+ * that never once evaluated the control would otherwise pass green, which is
+ * the failure countCapped's own comment names — a check that can miss is worse
+ * than none.
+ */
 let judged = 0;
+let controlled = 0;
+const tally = (r) => {
+  judged += r.judged;
+  controlled += r.controlled;
+};
 
 const lab = await openLab({ controls: { spin: SPINS[0], timespeed: 0, "edu-ladder": true } });
 try {
@@ -572,7 +589,7 @@ try {
   for (const spin of SPINS) {
     await lab.set({ spin });
     await lab.settle(1500);
-    judged += await checkView(lab, "default camera");
+    tally(await checkView(lab, "default camera"));
   }
   // and at the pitch clamp, which is where the pole crossings are. The camera
   // has no control to set — it is dragged, and the clamp is main.ts own — so
@@ -589,9 +606,11 @@ try {
   for (const spin of [0.9, 0.998]) {
     await lab.set({ spin });
     await lab.settle(1500);
-    judged += await checkView(lab, "pitch clamp");
+    tally(await checkView(lab, "pitch clamp"));
   }
   if (judged === 0) fail("no view had enough band px to judge slice 13's disk light");
+  if (controlled === 0)
+    fail("slice 13's negative control never ran — every view was lit-only");
   await lab.set({ "edu-ladder": false, timespeed: 1 });
   await frameTime(lab, "\nframe time at the pitch clamp, ladder off");
   await lab.set({ "edu-ladder": true });
