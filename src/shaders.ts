@@ -90,6 +90,11 @@ uniform vec4 uTetT;          // camera tetrad, covariant legs (t, x, y, z):
 uniform vec4 uTetR;          //   m_mu = d.r*R + d.u*U + d.f*F - T
 uniform vec4 uTetU;
 uniform vec4 uTetF;
+uniform vec4 uTetTv;         // the same legs CONTRAVARIANT. Slice 10 needs the
+uniform vec4 uTetRv;         //   ray's tangent and its two sky polarizations as
+uniform vec4 uTetUv;         //   vectors, not covectors, and uploading them is
+uniform vec4 uTetFv;         //   free next to raising three covectors per pixel
+uniform float uPolarization; // 1 = also work out how the disk's light is polarized
 uniform vec4 uStarPos[${STAR_COUNT}];  // xyz world position, w gaussian radius
 uniform vec4 uStarU[${STAR_COUNT}];    // contravariant 4-velocity (t, x, y, z)
 uniform float uStarTemp[${STAR_COUNT}];
@@ -103,7 +108,12 @@ uniform vec4 uTdeInfo[${TDE_MAX}];     // x temperature K, y brightness, z capsu
 
 const float PI = 3.14159265358979;
 
-out vec4 outColor;
+layout(location = 0) out vec4 outColor;
+// (Q, U, I, hit) of the disk light this pixel receives — the polarization
+// target slice 10's tick overlay reads. Q and U are the SCREEN-basis Stokes
+// pair, already projected, so a filtered read of this texture averages
+// something that adds linearly; an angle in here would wrap and smear.
+layout(location = 1) out vec4 outPol;
 
 // ---------- hash & noise ----------
 float hash13(vec3 p) {
@@ -620,17 +630,125 @@ vec3 matterSegment(vec3 a, vec3 b, float mt, vec3 mv) {
 
 // Composite one equatorial crossing: gas blobs (additive, they ride on the
 // disk surface) then the disk sheet itself (absorbing).
-void shadeCrossing(float rc, vec3 pc, float mt, vec3 mv, float lam,
-                   inout vec3 accum, inout float thru) {
+// Returns how much light the DISK SHEET added, which is the weight slice 10
+// gives this crossing's polarization. The gas is deliberately not counted:
+// nothing in this lab models how an infalling blob polarizes, so its light is
+// carried as unpolarized rather than assigned a direction it has not earned.
+float shadeCrossing(float rc, vec3 pc, float mt, vec3 mv, float lam,
+                    inout vec3 accum, inout float thru) {
   if (uGasOn > 0.5) {
     accum += thru * gasEmit(rc, pc, mt, mv);
   }
+  float wgt = 0.0;
   if (uDiskOn > 0.5 && rc > uIsco) {
     float g = uDoppler > 0.5 ? diskG(rc, mt, lam) : 1.0;
     vec4 d = diskSample(rc, pc, g);
-    accum += thru * d.rgb * d.a;
+    vec3 add = thru * d.rgb * d.a;
+    accum += add;
+    wgt = dot(add, vec3(0.2126, 0.7152, 0.0722));
     thru *= 1.0 - d.a;
   }
+  return wgt;
+}
+
+// ---------- polarization (slice 10) ----------
+// Mirrors src/polarization.ts, which is the tested oracle; keep the two in
+// step. Every line below runs at most a few times per pixel (once per disk
+// crossing), never per march step — the whole point of carrying the light's
+// polarization on a conserved constant instead of dragging it along the ray.
+
+float gDot4(vec3 p, vec4 A, vec4 B) {
+  float f; vec3 l; ksFL(p, f, l);
+  return -A.x * B.x + dot(A.yzw, B.yzw)
+       + f * (A.x + dot(l, A.yzw)) * (B.x + dot(l, B.yzw));
+}
+
+vec4 lower4(vec3 p, vec4 V) {
+  float f; vec3 l; ksFL(p, f, l);
+  float lv = V.x + dot(l, V.yzw);
+  return vec4(-V.x + f * lv, V.yzw + f * lv * l);
+}
+
+// eps^{mu nu rho sigma} B_nu C_rho D_sigma: orthogonal to all three. Cheap in
+// Kerr-Schild, where det(g) = -1 exactly, so the Levi-Civita tensor is the
+// bare permutation symbol. The alternating signs are the whole content.
+vec4 cross4(vec3 p, vec4 B, vec4 C, vec4 D) {
+  vec4 b = lower4(p, B), c = lower4(p, C), d = lower4(p, D);
+  float m123 = b.y*(c.z*d.w - c.w*d.z) - b.z*(c.y*d.w - c.w*d.y) + b.w*(c.y*d.z - c.z*d.y);
+  float m023 = b.x*(c.z*d.w - c.w*d.z) - b.z*(c.x*d.w - c.w*d.x) + b.w*(c.x*d.z - c.z*d.x);
+  float m013 = b.x*(c.y*d.w - c.w*d.y) - b.y*(c.x*d.w - c.w*d.x) + b.w*(c.x*d.y - c.y*d.x);
+  float m012 = b.x*(c.y*d.z - c.z*d.y) - b.y*(c.x*d.z - c.z*d.x) + b.z*(c.x*d.y - c.y*d.x);
+  return vec4(-m123, m023, -m013, m012);
+}
+
+// The Walker-Penrose constant of the pair (P, F): conserved along the ray, so
+// two evaluations settle the whole trip. Written straight in Kerr-Schild —
+// the 1/Delta that Boyer-Lindquist would carry cancels before it is used, and
+// the azimuth's singularity on the spin axis expands away. See
+// src/polarization.ts for why neither survives.
+vec2 wpConst(vec3 pos, vec4 P, vec4 F) {
+  float x = pos.x, y = pos.y, z = pos.z;
+  float r = ksRadius(pos);
+  float r2 = r * r;
+  float a2 = uSpin * uSpin;
+  float D = r2 + a2;
+  float ku = r * r2 / (r2 * r2 + a2 * y * y);
+
+  float drP = ku * (x * P.y + z * P.w + (D * y / r2) * P.z);
+  float drF = ku * (x * F.y + z * F.w + (D * y / r2) * F.z);
+  float wAP = P.x - (uSpin / D) * (z * P.y - x * P.w);
+  float wAF = F.x - (uSpin / D) * (z * F.y - x * F.w);
+  float A = drP * wAF - drF * wAP;
+
+  float s2r2 = r2 * (x * x + z * z) / D;
+  float kb = ku / r2;
+  float wBP = kb * (y * (x * P.y + z * P.w) - s2r2 * P.z);
+  float wBF = kb * (y * (x * F.y + z * F.w) - s2r2 * F.z);
+  float om = y * D * (P.y * F.w - P.w * F.y)
+           + r2 * (P.z * (z * F.y - x * F.w) - (z * P.y - x * P.w) * F.z);
+  float B = -kb * om - uSpin * (wBP * F.x - wBF * P.x);
+
+  float ct = uSpin * y / r;
+  return vec2(r * A - ct * B, -(ct * A + r * B));
+}
+
+// Polarized fraction of light leaving a scattering atmosphere at |cos| = mu to
+// its normal. Endpoints exact (0 face-on, 11.7% grazing); the curve between
+// them is a fit, and it scales tick LENGTHS only. See polarization.ts.
+float scatDegree(float mu) {
+  float m = min(1.0, abs(mu));
+  return 0.117 * (1.0 - m) / (1.0 + m);
+}
+
+// A world direction as the unit spatial direction an emitter with 4-velocity u
+// sees.
+vec4 frameDir(vec3 p, vec4 u, vec4 d) {
+  vec4 s = d + gDot4(p, d, u) * u;
+  return s * inversesqrt(max(gDot4(p, s, s), 1e-12));
+}
+
+// One crossing's arriving polarization, as its components (c1, c2) on the
+// camera's sky basis plus the polarized fraction. Returns zero where the light
+// leaves along the disk normal: the scattering plane is undefined there and
+// the light is genuinely unpolarized, not polarized along whatever direction a
+// normalization would have invented.
+vec3 crossingPol(float rc, vec3 pc, float mt, vec3 mv, vec2 kH, vec2 kV, float det) {
+  float f; vec3 l; ksFL(pc, f, l);
+  float Pl = -mt + dot(l, mv);
+  vec4 P = vec4(-mt + f * Pl, mv - f * Pl * l);
+  float ut = circUt(rc);
+  float om = 1.0 / (pow(rc, 1.5) + uSpin);
+  vec4 u = vec4(ut, ut * om * pc.z, 0.0, -ut * om * pc.x); // daz/dt = -Omega
+  vec4 nrm = frameDir(pc, u, vec4(0.0, 0.0, 1.0, 0.0));
+  float E = -gDot4(pc, P, u);
+  vec4 k = P / E - u;
+  vec4 w = cross4(pc, u, nrm, k);
+  float n2 = gDot4(pc, w, w);
+  if (n2 < 1e-10) return vec3(0.0);
+  vec2 ke = wpConst(pc, P, w * inversesqrt(n2));
+  return vec3((ke.x * kV.y - ke.y * kV.x) / det,
+              (kH.x * ke.y - kH.y * ke.x) / det,
+              scatDegree(gDot4(pc, nrm, k)));
 }
 
 // ---------- the photon ring's ladder (slice 9) ----------
@@ -692,10 +810,18 @@ void main() {
   bool matterOn = uStarsOn > 0.5 || uJetsOn > 0.5 || uTdeN > 0;
   float swept = 0.0;      // ladder view: position angle swept, radians
   bool unresolved = false; // ladder view: the budget ran out before a verdict
+  // slice 10: Stokes of the disk light, accumulated in the camera's sky basis
+  vec3 eH = vec3(0.0), eV = vec3(0.0);
+  vec2 kH = vec2(0.0), kV = vec2(0.0);
+  float polDet = 0.0, polI = 0.0, polQ = 0.0, polU = 0.0;
+
+  // Local view direction in the camera's orthonormal frame. Hoisted out of
+  // the lensing branch because the polarization tail projects its director
+  // back onto the screen through exactly this vector — the gnomonic chart the
+  // ray was launched in.
+  vec3 nl = normalize(vec3(ndc.x * uTanHalfFov * aspect, ndc.y * uTanHalfFov, 1.0));
 
   if (uLensing > 0.5) {
-    // launch: local view direction in the camera's orthonormal frame
-    vec3 nl = normalize(vec3(ndc.x * uTanHalfFov * aspect, ndc.y * uTanHalfFov, 1.0));
     vec4 mC = nl.x * uTetR + nl.y * uTetU + nl.z * uTetF - uTetT;
     float mt = mC.x;
     vec3 mv = mC.yzw;
@@ -709,6 +835,21 @@ void main() {
     bool crossings = uDiskOn > 0.5 || uGasOn > 0.5;
     // Launch direction, for the fate test: dr/dsigma = grad(r) . dx/dsigma with
     // grad(r) = (r/Sigma)(r^2 x, (r^2+a^2) y, r^2 z) — kerr.ts radialDirection.
+    // The camera's two sky legs are themselves polarizations: spatial in the
+    // static frame and perpendicular to the view direction, hence orthogonal
+    // to the ray. Their constants form the basis every crossing is read
+    // against, which is what makes this exact at the orbit camera's r = 3.2
+    // instead of only far away. eH cannot degenerate: nl always points
+    // forward, so it never aligns with the tetrad's right leg.
+    if (uPolarization > 0.5) {
+      eH = normalize(vec3(1.0, 0.0, 0.0) - nl * nl.x);
+      eV = cross(nl, eH);
+      vec4 Pc = nl.x * uTetRv + nl.y * uTetUv + nl.z * uTetFv - uTetTv;
+      kH = wpConst(p, Pc, eH.x * uTetRv + eH.y * uTetUv + eH.z * uTetFv);
+      kV = wpConst(p, Pc, eV.x * uTetRv + eV.y * uTetUv + eV.z * uTetFv);
+      polDet = kH.x * kV.y - kH.y * kV.x;
+    }
+
     bool outward;
     {
       vec3 dp0, dm0;
@@ -745,7 +886,19 @@ void main() {
         if (rc2 > 0.0) {
           float rc = sqrt(rc2);
           if (rc > uHorizon && rc < uDiskOuter) {
-            shadeCrossing(rc, pc, mt, mix(mv, mvN, fr), lam, accum, thru);
+            vec3 mvc = mix(mv, mvN, fr);
+            float wgt = shadeCrossing(rc, pc, mt, mvc, lam, accum, thru);
+            // Each crossing is resolved BEFORE it is added: two images of the
+            // disk overlap with their planes turned differently, and where
+            // they do the light really is depolarized. Summing the conserved
+            // constants instead would look valid — they are linear — but
+            // Stokes parameters are quadratic in the polarization.
+            if (uPolarization > 0.5 && wgt > 0.0 && abs(polDet) > 1e-20) {
+              vec3 cd = crossingPol(rc, pc, mt, mvc, kH, kV, polDet);
+              polI += wgt;
+              polQ += wgt * cd.z * (cd.x * cd.x - cd.y * cd.y);
+              polU += wgt * cd.z * 2.0 * cd.x * cd.y;
+            }
           }
         }
       }
@@ -827,6 +980,23 @@ void main() {
     if (tHole < 1e29) haveSky = false;
   }
 
+  // Resolve the accumulated Stokes and project the director onto the screen.
+  // Resolving first and projecting once is the right order: the projection is
+  // a perspective map, not a rotation, so combining the crossings inside it
+  // would bend the angles it is meant only to draw.
+  vec2 polOut = vec2(0.0);
+  if (polI > 0.0) {
+    float pmag = length(vec2(polQ, polU));
+    if (pmag > 0.0) {
+      float chi = 0.5 * atan(polU, polQ);
+      vec3 e = cos(chi) * eH + sin(chi) * eV;
+      vec2 sv = e.xy - nl.xy * (e.z / nl.z);
+      float psi = atan(sv.y, sv.x);
+      polOut = pmag * vec2(cos(2.0 * psi), sin(2.0 * psi));
+    }
+  }
+  outPol = vec4(polOut, polI, polI > 0.0 ? 1.0 : 0.0);
+
   vec3 col = accum + (haveSky ? thru * skyColor(normalize(sky)) : vec3(0.0));
   if (uLadder > 0.5) col = ladderColor(col, swept / PI, haveSky, unresolved);
   // float16 fence: one Inf/NaN/negative pixel would smear black blocks
@@ -884,18 +1054,89 @@ void main() {
   outColor = vec4(c / 12.0, 1.0);
 }`;
 
+/**
+ * How long the longest tick is drawn, as a fraction of the grid pitch. Short
+ * of half, so a fully polarized cell's tick still stops clear of its
+ * neighbour's and the two read as separate marks rather than a solid line.
+ */
+export const TICK_MAX_LENGTH = 0.42;
+/** Tick spacing in CSS pixels. */
+export const TICK_PITCH = 26;
+
 export const FS_COMPOSITE = `#version 300 es
 precision highp float;
 uniform sampler2D uScene;
 uniform sampler2D uBloomTex;
+uniform sampler2D uPolTex;
 uniform float uBloom;
 uniform float uExposure;
+uniform float uTicks;      // 1 = draw slice 10's polarization ticks
+uniform vec2 uFrame;       // frame size in device pixels
+uniform float uTickPitch;  // tick spacing, device pixels
+uniform float uSplitX;     // compare mode's divider in device pixels, else -1
 in vec2 vUv;
 out vec4 outColor;
+
+/**
+ * Polarization ticks, drawn after the tone curve so the disk's brightness
+ * cannot wash them out and the bloom cannot smear them.
+ *
+ * Each tick is sampled AT ITS OWN CELL CENTRE — one fetch, so its direction is
+ * the polarization of the ray through that point rather than a per-fragment
+ * value that would bend the mark. What is stored there is the screen-basis
+ * (Q, U) pair, not an angle: angles wrap, and the scene renders below native
+ * resolution, so this texture is filtered on the way in and only a linear
+ * quantity survives that.
+ *
+ * Length carries the polarized fraction, so a face-on disk shows almost
+ * nothing and a grazing one shows the full mark. Direction is the electric
+ * vector as it arrives — the thing the black hole has turned.
+ *
+ * A mark also fades with the light it describes. The polarized FRACTION says
+ * nothing about brightness, so without this the disk's invisible outer fringe
+ * — where its opacity has faded to a millionth but not to zero — would carry
+ * ticks as bold as the inner ring's, and the overlay would claim a disk out
+ * to the corners of the frame. The fade runs on the disk's own tone-mapped
+ * contribution, so the ticks stop exactly where the disk does.
+ */
+vec3 ticks(vec3 c, vec2 pix) {
+  vec2 ctr = (floor(pix / uTickPitch) + 0.5) * uTickPitch;
+  vec4 pol = texture(uPolTex, ctr / uFrame);
+  if (pol.w < 0.5 || pol.z <= 0.0) return c;
+  // Through the same exposure and tone curve the frame itself went through, so
+  // "bright enough to carry a tick" means what the eye sees, not what the
+  // linear buffer holds.
+  float lit = pol.z * uExposure;
+  lit = (lit * (2.51 * lit + 0.03)) / (lit * (2.43 * lit + 0.59) + 0.14);
+  float vis = smoothstep(0.03, 0.18, lit);
+  if (vis <= 0.0) return c;
+  // not "half": that is a reserved word in GLSL ES
+  float halfLen = uTickPitch * ${TICK_MAX_LENGTH.toFixed(2)} * clamp(length(pol.xy) / (pol.z * 0.117), 0.0, 1.0);
+  // A tick belongs to the half its centre was traced in; one that would reach
+  // across compare mode's divider is dropped rather than drawn over a
+  // spacetime it does not describe.
+  if (uSplitX >= 0.0 && abs(ctr.x - uSplitX) < halfLen + 2.0) return c;
+  if (halfLen < 1.0) return c;
+  float psi = 0.5 * atan(pol.y, pol.x);
+  vec2 dir = vec2(cos(psi), sin(psi));
+  vec2 d = pix - ctr;
+  float t = clamp(dot(d, dir), -halfLen, halfLen);
+  float dist = length(d - t * dir);
+  float ink = 1.0 - smoothstep(0.7, 1.6, dist);
+  // The disk runs from near-black at its rim to blown-out white at the inner
+  // ring, and one tick colour cannot be read against both. Flip the mark
+  // instead of picking a compromise nobody can see.
+  vec3 shade = dot(c, vec3(0.2126, 0.7152, 0.0722)) > 0.45
+             ? vec3(0.05, 0.06, 0.10)
+             : vec3(0.97, 0.98, 1.0);
+  return mix(c, shade, 0.85 * ink * vis);
+}
+
 void main() {
   vec3 c = texture(uScene, vUv).rgb + uBloom * texture(uBloomTex, vUv).rgb;
   c *= uExposure;
   c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14); // ACES approx
   c = pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2));
+  if (uTicks > 0.5) c = ticks(c, vUv * uFrame);
   outColor = vec4(c, 1.0);
 }`;

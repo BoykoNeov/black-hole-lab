@@ -28,6 +28,13 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { PORTS, TITLE, findServer } from "../find-server.mjs";
 
+/**
+ * Tick spacing, mirrored from src/shaders.ts. Plain .mjs cannot import the TS
+ * module, so this is the one number the harness restates — and tickField's
+ * caller can override it if it ever moves.
+ */
+export const TICK_PITCH = 26;
+
 /** Set to skip discovery and use one server. Otherwise the ports are scanned. */
 export const LAB_URL = process.env.LAB_URL ?? null;
 
@@ -189,6 +196,78 @@ function installLab() {
       if (lum >= threshold) set.add(i);
     }
     return set;
+  };
+
+  /**
+   * Orientation of each drawn polarization tick (slice 10), from the
+   * DIFFERENCE between a ticks-on and a ticks-off frame of the same frozen
+   * scene — so what is measured is the mark the viewer sees, not a buffer
+   * behind it.
+   *
+   * A tick is a straight segment, so its direction is the principal axis of
+   * the ink it laid down: second moments about the cell centre, then a
+   * half-angle. `elong` says how line-like the ink was, which is what
+   * separates a real tick from a stray pixel or two.
+   *
+   * Angles come back in IMAGE coordinates, where y grows downward — the
+   * opposite of the screen convention the shader projects into, so a caller
+   * comparing against the CPU has a sign to flip.
+   *
+   * The rows are counted from the BOTTOM, because that is where GL's origin
+   * is and therefore where the shader's tick grid starts. Counting them from
+   * the top instead puts every cell boundary half a tick out whenever the
+   * frame height is not a multiple of the pitch, and each measured cell then
+   * straddles two real marks and reports the average of their directions.
+   */
+  lab.tickField = async (onUrl, offUrl, pitch, floor) => {
+    const [ia, ib] = [await decode(onUrl), await decode(offUrl)];
+    const px = (img) =>
+      draw(img.width, img.height, (ctx) => ctx.drawImage(img, 0, 0))
+        .getContext("2d", { willReadFrequently: true })
+        .getImageData(0, 0, img.width, img.height).data;
+    const [da, db] = [px(ia), px(ib)];
+    const W = ia.width;
+    const cells = [];
+    for (let cy = 0; cy * pitch < ia.height; cy++) {
+      for (let cx = 0; cx * pitch < W; cx++) {
+        const ox = (cx + 0.5) * pitch;
+        const oy = ia.height - (cy + 0.5) * pitch; // GL counts rows upward
+        let sxx = 0, syy = 0, sxy = 0, wsum = 0;
+        const x1 = Math.min(W, Math.ceil((cx + 1) * pitch));
+        const y1 = Math.min(ia.height, Math.ceil(ia.height - cy * pitch));
+        for (let y = Math.max(0, Math.floor(ia.height - (cy + 1) * pitch)); y < y1; y++) {
+          for (let x = Math.floor(cx * pitch); x < x1; x++) {
+            const o = (y * W + x) * 4;
+            const w =
+              Math.abs(da[o] - db[o]) +
+              Math.abs(da[o + 1] - db[o + 1]) +
+              Math.abs(da[o + 2] - db[o + 2]);
+            if (w < floor) continue;
+            const dx = x + 0.5 - ox;
+            const dy = y + 0.5 - oy;
+            sxx += w * dx * dx;
+            syy += w * dy * dy;
+            sxy += w * dx * dy;
+            wsum += w;
+          }
+        }
+        if (wsum <= 0) continue;
+        const tr = sxx + syy;
+        const disc = Math.sqrt(Math.max((tr * tr) / 4 - (sxx * syy - sxy * sxy), 0));
+        const l1 = tr / 2 + disc;
+        const l2 = tr / 2 - disc;
+        cells.push({
+          cx,
+          cy,
+          x: ox,
+          y: oy,
+          angle: 0.5 * Math.atan2(2 * sxy, sxx - syy),
+          weight: wsum,
+          elong: l1 > 0 ? (l1 - l2) / (l1 + l2) : 0,
+        });
+      }
+    }
+    return cells;
   };
 
   lab.snap = async (name, layerName, half, threshold) => {
@@ -367,6 +446,28 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
       return page.evaluate(
         ({ a, b, half, tol }) => window.__lab.pixelDiff(a, b, half, tol),
         { a, b, half, tol }
+      );
+    },
+
+    /**
+     * Measure the polarization ticks the lab actually drew.
+     *
+     * Freeze the clock first (`timespeed: 0`) — this compares two separate
+     * frames, so anything still moving between them would be read as ink.
+     * Leaves the toggle on.
+     */
+    async tickField({ pitch, floor = 10 } = {}) {
+      await lab.set({ "edu-polarization": true });
+      const layout = await lab.capture();
+      const on = await lab.dataUrl({ layer: "gl" });
+      await lab.set({ "edu-polarization": false });
+      await lab.capture();
+      const off = await lab.dataUrl({ layer: "gl" });
+      await lab.set({ "edu-polarization": true });
+      const p = pitch ?? TICK_PITCH * (layout.gl.w / layout.css.w);
+      return page.evaluate(
+        ([on, off, p, floor]) => window.__lab.tickField(on, off, p, floor),
+        [on, off, p, floor]
       );
     },
 

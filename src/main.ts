@@ -88,7 +88,15 @@ import {
   type InsetView,
 } from "./insets";
 import { cameraBasis, attachControls, type CameraState } from "./camera";
-import { VS_QUAD, FS_SCENE, FS_BRIGHT, FS_DOWN, FS_UP, FS_COMPOSITE } from "./shaders";
+import {
+  VS_QUAD,
+  FS_SCENE,
+  FS_BRIGHT,
+  FS_DOWN,
+  FS_UP,
+  FS_COMPOSITE,
+  TICK_PITCH,
+} from "./shaders";
 import {
   GAS_COUNT,
   STAR_COUNT,
@@ -168,7 +176,10 @@ let bloomFbos: Fbo[] = [];
 function allocateTargets(w: number, h: number) {
   if (sceneFbo) destroyFbo(gl, sceneFbo);
   bloomFbos.forEach((f) => destroyFbo(gl, f));
-  sceneFbo = createFbo(gl, w, h, hdr);
+  // The scene target carries a second attachment for slice 10's Stokes pair:
+  // the polarization falls out of the march the scene pass already ran, so it
+  // rides along rather than paying for a second one.
+  sceneFbo = createFbo(gl, w, h, hdr, true);
   bloomFbos = [];
   for (let i = 0; i < BLOOM_LEVELS; i++) {
     const s = 2 << i; // 2, 4, 8, 16, 32
@@ -228,6 +239,7 @@ const params = {
   eduCallouts: false,
   eduShadow: false,
   eduLadder: false,
+  eduPolarization: false,
   eduTrails: false,
   eduClocks: false,
   eduPotential: false,
@@ -639,6 +651,7 @@ bindCheckbox("compare", (v) => {
 bindCheckbox("edu-callouts", (v) => (params.eduCallouts = v));
 bindCheckbox("edu-shadow", (v) => (params.eduShadow = v));
 bindCheckbox("edu-ladder", (v) => (params.eduLadder = v));
+bindCheckbox("edu-polarization", (v) => (params.eduPolarization = v));
 bindCheckbox("edu-trails", (v) => (params.eduTrails = v));
 bindCheckbox("edu-clocks", (v) => (params.eduClocks = v));
 bindCheckbox("edu-potential", (v) => (params.eduPotential = v));
@@ -970,6 +983,7 @@ function render() {
     gl.uniform1f(U(progScene, "uJetPower"), params.jetPower);
     gl.uniform1i(U(progScene, "uMaxSteps"), QUALITY[params.quality].maxSteps);
     gl.uniform1f(U(progScene, "uLadder"), params.eduLadder ? 1 : 0);
+    gl.uniform1f(U(progScene, "uPolarization"), params.eduPolarization ? 1 : 0);
     gl.uniform1f(U(progScene, "uStepScale"), QUALITY[params.quality].stepScale);
     gl.uniform1f(U(progScene, "uSpin"), spin);
     gl.uniform1f(U(progScene, "uHorizon"), ctx.rHor);
@@ -979,6 +993,10 @@ function render() {
     gl.uniform4fv(U(progScene, "uTetR"), tet.rightCov);
     gl.uniform4fv(U(progScene, "uTetU"), tet.upCov);
     gl.uniform4fv(U(progScene, "uTetF"), tet.fwdCov);
+    gl.uniform4fv(U(progScene, "uTetTv"), tet.u);
+    gl.uniform4fv(U(progScene, "uTetRv"), tet.right);
+    gl.uniform4fv(U(progScene, "uTetUv"), tet.up);
+    gl.uniform4fv(U(progScene, "uTetFv"), tet.fwd);
     gl.uniform4fv(U(progScene, "uStarPos"), starPosArr);
     gl.uniform4fv(U(progScene, "uStarU"), starUArr);
     gl.uniform1fv(U(progScene, "uStarTemp"), starTempArr);
@@ -1069,8 +1087,23 @@ function render() {
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, bloomFbos[0].tex);
   gl.uniform1i(U(progComposite, "uBloomTex"), 1);
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, sceneFbo.tex2!);
+  gl.uniform1i(U(progComposite, "uPolTex"), 2);
   gl.uniform1f(U(progComposite, "uBloom"), params.bloom);
   gl.uniform1f(U(progComposite, "uExposure"), params.exposure);
+  gl.uniform1f(U(progComposite, "uTicks"), params.eduPolarization ? 1 : 0);
+  gl.uniform2f(U(progComposite, "uFrame"), canvas.width, canvas.height);
+  gl.uniform1f(U(progComposite, "uTickPitch"), TICK_PITCH * (canvas.width / Math.max(canvas.clientWidth, 1)));
+  // The ticks are drawn in device pixels over the whole frame, so compare
+  // mode has to say where its divider is: a mark whose centre was traced on
+  // one side must not reach across into the other spacetime.
+  gl.uniform1f(
+    U(progComposite, "uSplitX"),
+    params.compare
+      ? (COMPARE_X0 + compareW / 2) * (canvas.width / Math.max(canvas.clientWidth, 1))
+      : -1
+  );
   drawQuad();
   gl.activeTexture(gl.TEXTURE0);
 
@@ -1516,6 +1549,20 @@ function render() {
       hud: { w: hudCtx.canvas.width, h: hudCtx.canvas.height },
       css: { w: canvas.clientWidth, h: canvas.clientHeight },
       split, // scene-target px, x/w only — y is gl.viewport's, which the HUD flips
+      // What a ray needs to be re-launched outside the page: the camera the
+      // frame was drawn with and the spin it was drawn at. Published rather
+      // than reconstructed, so a check that recomputes a pixel on the CPU is
+      // aiming at the same view the GPU marched and not a near miss.
+      cam: {
+        pos: [...basis.pos],
+        right: [...basis.right],
+        up: [...basis.up],
+        fwd: [...basis.fwd],
+        tanHalfFov,
+        spin: params.spin,
+        isco: spinCtx.isco,
+        diskOuter: params.diskOuter,
+      },
     };
   }
 

@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "shot": "node tools/visual/smoke.mjs"
+    "shot": "node tools/visual/smoke.mjs",
+    "pol": "node tools/visual/polarization.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1",
