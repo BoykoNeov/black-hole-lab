@@ -267,15 +267,19 @@ export const MINO_STEP_SCALE = 0.05;
 /**
  * Hard cap on the continuation's own step count.
  *
- * Measured, not guessed: over the full 1280-wide pixel grid at fifteen cameras
- * spanning a = 0 to 0.998, distances 3.2 to 380 and inclinations from edge-on
- * to the pitch clamp, the worst ray costs 786 steps, one pixel in 14,147
- * exceeds 768, and none exceeds 1024. A cap that clips at some spin nobody
- * sampled resurrects the band this slice exists to remove, and does it looking
- * like a physics bug rather than a budget one — so the headroom is deliberate
- * and the tests assert the margin rather than the cap.
+ * Measured, not guessed, and measured twice: slice 11's sweep found a worst of
+ * 786 and set the cap at 1024. A wider sweep for slice 12 — the full 1280x800
+ * grid at fifteen cameras, 57,104 band pixels — found an ordinary deep-band ray
+ * at a = 0.998, pitch 0.15, distance 25 needing **1053**, with two pixels there
+ * clipping at 1024 and eight more between 896 and 1023. Nothing near the spin
+ * axis is involved; slice 11's camera set simply missed it.
+ *
+ * That matters more than the 29 steps, because the cap is what the ladder's
+ * magenta rung now means: it has to read zero everywhere or it stops being a
+ * tripwire. 1536 puts the measured worst at 69% of the cap, and the tests assert
+ * the margin rather than the cap.
  */
-export const MINO_MAX_STEPS = 1024;
+export const MINO_MAX_STEPS = 1536;
 
 /**
  * Cap on how much world azimuth one step may advance, in radians.
@@ -329,26 +333,112 @@ export function axisApproach(C: RayPotentials, a: number): number {
 }
 
 /**
- * Below this closest approach, the continuation cannot resolve the ray and says
- * so instead of guessing.
+ * The polar turning point's whole passage, in closed form (slice 12).
  *
- * A ray that passes over the pole must swing its azimuth by very nearly pi, and
- * in the limit lambda -> 0 by exactly pi — the whole swing packed into a Mino
- * interval of order lambda/(a^2+q), which is 2e-5 for the rays that fail. That
- * is a genuine feature of the (r, theta, phi) chart rather than a step-size
- * problem: at lambda exactly zero the term is 0/0 and the integration misses
- * the jump entirely no matter how fine the step, turning the pole CROSSING into
- * a reflection. The Cartesian march the rest of the lab uses has no such
- * trouble, which is why it is the oracle here.
+ * A ray heading for a turning point near the axis has to swing its azimuth by
+ * very nearly pi — exactly pi in the limit lambda -> 0 — inside a Mino interval
+ * of order lambda/(a^2+q), which is 2e-5 for the rays that need this. Stepping
+ * cannot find that swing: at lambda exactly zero the term lambda/(1 - u^2) is
+ * 0/0, so the pole CROSSING degenerates into a reflection no matter how fine
+ * the step. That was hurdle H9, and this is what closes it.
  *
- * 1e-5 is not a taste: measured against that march over 379 band rays at eight
- * cameras, every ray above it lands within 0.009 deg and the ones below reach
- * 126 deg, with three clear orders of magnitude between the two groups. It
- * flags 30 of those 379 — all at near-face-on cameras, none at any camera
- * within half a radian of the equator. See docs/ROADMAP.md for the closed form
- * that would fix them.
+ * Returns the Mino time and the SINGULAR part of the azimuth for the whole
+ * passage — from v_e = 1 - u^2 down to the turning point and back out to v_e,
+ * both legs — leaving the regular part, which depends on r alone, to be
+ * integrated over the same dtau by the caller.
+ *
+ *     dtau    = integral(vmin..ve)  dv / (sqrt(1-v) sqrt(U))
+ *     dazSing = integral(vmin..ve)  lambda dv / (v sqrt(1-v) sqrt(U))
+ *
+ * Both already count both legs: du = -dv/(2u) halves each integral and the two
+ * symmetric legs double it again.
+ *
+ * The substitution is the whole trick. With v = vmin + sqrt(D) w^2,
+ *
+ *     sqrt(U) = sqrt(D) w sqrt(1 - a^2 w^2)     dv/sqrt(U) = 2 dw/sqrt(1-a^2 w^2)
+ *
+ * the turning point's 1/sqrt(U) cancels identically AND — the part that decides
+ * it — nothing divides by the spin. The roadmap's arcsin form does, and a = 0
+ * is not a hypothetical: at zero spin the default camera still has 384 band
+ * pixels and rays that cross the pole.
+ *
+ * Geometrically, theta^2 ~ v = vmin + sqrt(D) w^2 with the azimuth swinging as
+ * 2 atan(w/w_c) is a STRAIGHT LINE at distance sqrt(vmin) from the pole, in the
+ * tangent plane there. That is why the swing is pi, why an arctangent is the
+ * whole answer, and why continueToEscape adds the closest-approach point to the
+ * swept angle instead of just the endpoints — for a straight line, two chords
+ * through the nearest point are exact where the chord alone is not.
+ *
+ * lambda = 0 is not a special case if it is written carefully: the prefactor is
+ * sgn exactly, atan2 gives pi/2 against a vanishing w_c where a division would
+ * give an infinity, and sgn takes lambda = 0 to +1. The +pi and -pi that the
+ * two sides of lambda = 0 produce are THE SAME AZIMUTH, so the discontinuity is
+ * only apparent.
+ *
+ * The two O(v) corrections are not polish: without the first, the Mino time is
+ * 1.7e-3 out at an entry of 1e-2 instead of 7.5e-6, and r is advanced over it.
+ * What is left is O(v^2), i.e. 1e-8 at MINO_AXIS_V.
  */
-export const MINO_AXIS_EPS = 1e-5;
+export function axisPassage(
+  C: RayPotentials,
+  a: number,
+  ve: number
+): { dtau: number; dazSing: number; vmin: number; we: number; wc: number } {
+  const a2 = a * a;
+  const lam2 = C.lambda * C.lambda;
+  const B = a2 + C.q + lam2;
+  // (|lambda| - a)^2 + q >= 0 makes this non-negative, with equality only for an
+  // equatorial q = 0 ray, which never comes near the axis to begin with.
+  const sD = Math.sqrt(Math.max(B * B - 4 * a2 * lam2, 1e-300));
+  const vmin = (2 * lam2) / Math.max(B + sD, 1e-300); // axisApproach, same form
+  const wc = Math.sqrt(vmin / sD);
+  const we = Math.sqrt(Math.max((ve - vmin) / sD, 0));
+  const A = Math.atan2(we, wc);
+  const sgn = C.lambda >= 0 ? 1 : -1;
+  const pref = Math.sqrt((B + sD) / (2 * sD));
+  return {
+    dtau: 2 * we + ((a2 + sD) * we * we * we) / 3 + vmin * we,
+    dazSing: 2 * sgn * pref * A + C.lambda * (we + (a2 / sD) * (we - wc * A)),
+    vmin,
+    we,
+    wc,
+  };
+}
+
+/**
+ * Below this sin^2(theta), a ray heading for its polar turning point is handed
+ * to axisPassage instead of stepped.
+ *
+ * It replaces slice 11's MINO_AXIS_EPS, and it means the opposite thing: that
+ * constant was "closer than this and we give up", this one is "closer than this
+ * and we switch to the closed form". The passage is exact at any threshold, so
+ * this is a pure cost/accuracy trade, measured over 43 near-axis band rays at
+ * 60 cameras against a step-refined march: 1.3e-4 deg at 3e-3 (worst 566
+ * steps), 1.0e-3 at 1e-2 (370), 4.8e-3 at 3e-2 (331).
+ *
+ * 1e-1 fails outright at 6 deg, and the reason is worth keeping: the passage's
+ * Mino time is then long enough for r to make a large excursion during it, and
+ * neither the O(v^2) truncation above nor a bounded radial advance covers that.
+ * 3e-3 is the most accurate threshold that is also cheap, and it is cheap
+ * because an ordinary deep-band ray already costs 1053 steps.
+ */
+export const MINO_AXIS_V = 3e-3;
+
+/**
+ * The most a single step may let 1 - u^2 fall, as a fraction of itself.
+ *
+ * Nothing else in the step control watches this, and without it a step goes
+ * from above MINO_AXIS_V straight past the turning point: the trigger never
+ * fires, the ray reflects without its half-turn of azimuth, and the answer is
+ * the same wrong one H9 described — measured at 155 deg. It is the bound that
+ * makes the trigger window unmissable rather than likely.
+ *
+ * It converges, which is how it was chosen rather than guessed: worst error
+ * 2.2e-2 deg with no cap, 2.1e-3 at 0.6, 2.1e-4 at 0.3, 1.3e-4 at 0.15, and
+ * 1.2e-4 at 0.05 for 804 steps against 566. 0.15 is where the improvement
+ * stops paying for itself.
+ */
+export const MINO_V_FALL = 0.15;
 
 export interface MinoResult {
   /** False only if the continuation reached the horizon. rayCaptured remains
@@ -358,14 +448,13 @@ export interface MinoResult {
    *  it is the tripwire the ladder's magenta now stands for. */
   capped: boolean;
   /**
-   * The ray passes too close to the spin axis for this chart to follow it (see
-   * MINO_AXIS_EPS). `dir` and `swept` are then not to be believed.
-   *
-   * Deliberately NOT folded into `capped`: one means the step budget ran out
-   * and the other means the physics is out of reach, and a caller that cannot
-   * tell them apart cannot tell a budget regression from a chart problem.
+   * How many polar turning points near the axis were taken in closed form
+   * (slice 12). Reported rather than kept private because a passage that
+   * silently stops firing looks exactly like nothing being wrong: the tests
+   * assert this is non-zero on the rays that must use it and zero on the ray
+   * that must not.
    */
-  nearAxis: boolean;
+  passages: number;
   /** Unit travel direction at escape. */
   dir: V3;
   /** Angle swept by the position direction over the continuation, in
@@ -378,8 +467,102 @@ export interface MinoResult {
 }
 
 /**
+ * The radial pair on its own, with the REGULAR part of the azimuth rate beside
+ * it — everything in minoDeriv that does not mention u.
+ *
+ * That such a subsystem exists is what makes the pole passage a jump rather
+ * than an approximation: dr/dtau and dpr/dtau contain no u at all (that is what
+ * separation means), and neither does (a/Delta)(r^2+a^2-a lambda) - a - twist*pr.
+ * So the radial motion during the passage can be advanced without knowing where
+ * in the polar swing the ray is.
+ */
+function radialDeriv(
+  r: number,
+  pr: number,
+  C: RayPotentials,
+  a: number
+): { dr: number; dpr: number; daz: number } {
+  const a2 = a * a;
+  const r2 = r * r;
+  const Delta = r2 - 2 * r + a2;
+  const twist = (2 * a * r) / (Delta * (r2 + a2));
+  return {
+    dr: pr,
+    dpr: 2 * r * r2 + C.c2 * r + C.k,
+    daz: (a / Delta) * (r2 + a2 - a * C.lambda) - a - twist * pr,
+  };
+}
+
+/**
+ * RK4 the radial pair over a fixed Mino interval, accumulating the regular
+ * azimuth.
+ *
+ * `gone` is the load-bearing return value. A ray can be inbound in u — so bound
+ * for the pole eventually — and still cross the escape radius first, at very
+ * nearly the same Mino time: measured on rays at r = 11 to 31 heading out whose
+ * 1 - u^2 dips below the trigger on the way. Jumping such a ray through a pole
+ * crossing that never happens costs 14 deg, so the caller trials the passage
+ * and refuses it when this comes back set.
+ */
+function radialAdvance(
+  r: number,
+  pr: number,
+  C: RayPotentials,
+  a: number,
+  dtau: number,
+  stepScale: number,
+  rHor: number,
+  rEscape: number
+): { r: number; pr: number; az: number; steps: number; dead: boolean; gone: boolean } {
+  let az = 0;
+  let t = 0;
+  let steps = 0;
+  for (; steps < 64 && t < dtau; steps++) {
+    const h = Math.min(
+      stepScale / Math.max(Math.sqrt(Math.abs(6 * r * r + C.c2)), 1e-9),
+      (0.08 * Math.max(r, 1)) / Math.max(Math.abs(pr), 1e-9),
+      dtau - t
+    );
+    const k1 = radialDeriv(r, pr, C, a);
+    const k2 = radialDeriv(r + (h / 2) * k1.dr, pr + (h / 2) * k1.dpr, C, a);
+    const k3 = radialDeriv(r + (h / 2) * k2.dr, pr + (h / 2) * k2.dpr, C, a);
+    const k4 = radialDeriv(r + h * k3.dr, pr + h * k3.dpr, C, a);
+    az += (h / 6) * (k1.daz + 2 * (k2.daz + k3.daz) + k4.daz);
+    const rNext = r + (h / 6) * (k1.dr + 2 * (k2.dr + k3.dr) + k4.dr);
+    pr += (h / 6) * (k1.dpr + 2 * (k2.dpr + k3.dpr) + k4.dpr);
+    r = rNext;
+    t += h;
+    if (!Number.isFinite(r) || r < rHor) return { r, pr, az, steps: steps + 1, dead: true, gone: false };
+    if (r > rEscape && pr > 0) return { r, pr, az, steps: steps + 1, dead: false, gone: true };
+  }
+  return { r, pr, az, steps, dead: false, gone: false };
+}
+
+/** Position alone, for the swept angle — the same map minoToCartesian uses. */
+function positionAt(r: number, u: number, az: number, a: number): V3 {
+  const Rr = Math.sqrt(r * r + a * a);
+  const sn = Math.sqrt(Math.max(1 - u * u, 0));
+  return [Rr * sn * Math.cos(az), r * u, Rr * sn * Math.sin(az)];
+}
+
+/** Angle between two position directions — the winding measure, per step. */
+function sweptBetween(p: V3, c: V3): number {
+  const cx = p[1] * c[2] - p[2] * c[1];
+  const cy = p[2] * c[0] - p[0] * c[2];
+  const cz = p[0] * c[1] - p[1] * c[0];
+  return Math.atan2(Math.hypot(cx, cy, cz), p[0] * c[0] + p[1] * c[1] + p[2] * c[2]);
+}
+
+/**
  * Run the separated system from a handoff state until the ray escapes or falls
  * through the horizon.
+ *
+ * One event is not stepped at all: a polar turning point near the spin axis,
+ * where the azimuth's swing is a half-turn packed into nothing and the chart is
+ * 0/0 on the axis itself. axisPassage supplies that in closed form and the
+ * radial pair is advanced across it separately — see both for why that is exact
+ * rather than a shortcut, and MINO_V_FALL for why the trigger window has to be
+ * unmissable.
  *
  * Step control follows the two oscillators' own local frequencies rather than a
  * flat cap on h. A flat cap gets tuned to whatever rays you happened to sample:
@@ -395,47 +578,102 @@ export function continueToEscape(
   s0: MinoState,
   C: RayPotentials,
   a: number,
-  opts: { stepScale?: number; maxSteps?: number; rEscape?: number; azStep?: number } = {}
+  opts: {
+    stepScale?: number;
+    maxSteps?: number;
+    rEscape?: number;
+    azStep?: number;
+    axisV?: number;
+    vFall?: number;
+  } = {}
 ): MinoResult {
   const stepScale = opts.stepScale ?? MINO_STEP_SCALE;
   const maxSteps = opts.maxSteps ?? MINO_MAX_STEPS;
   const rEscape = opts.rEscape ?? 64;
   const azStep = opts.azStep ?? MINO_AZ_STEP;
+  const axisV = opts.axisV ?? MINO_AXIS_V;
+  const vFall = opts.vFall ?? MINO_V_FALL;
   const rHor = horizonRadius(a) + 0.01;
   const a2 = a * a;
   const wuConst = C.q + C.lambda * C.lambda - a2;
 
-  const nearAxis = axisApproach(C, a) < MINO_AXIS_EPS;
   let s = s0;
   let prev = minoToCartesian(s, C, a).pos;
   let swept = 0;
   let steps = 0;
+  let passages = 0;
   let capped = false;
   let hit = false;
+  // Set once the escape trial below refuses a passage. pr > 0 outside rEscape
+  // is monotone (dpr/dtau > 0 there), so a ray that would leave during its
+  // passage cannot come back and there is no point paying for the trial twice.
+  let leaving = false;
   for (;;) {
     if (steps >= maxSteps) {
       capped = true;
       break;
     }
+    const v = 1 - s.u * s.u;
+
+    // Heading for a polar turning point near the axis: take the whole passage
+    // in closed form rather than stepping into a 0/0.
+    if (v < axisV && s.u * s.pu > 0 && !leaving) {
+      const P = axisPassage(C, a, v);
+      const half = P.dtau / 2;
+      const h1 = radialAdvance(s.r, s.pr, C, a, half, stepScale, rHor, rEscape);
+      const h2 = h1.dead || h1.gone
+        ? h1
+        : radialAdvance(h1.r, h1.pr, C, a, half, stepScale, rHor, rEscape);
+      steps += h1.steps + h2.steps;
+      if (h1.gone || h2.gone) {
+        leaving = true;
+        continue;
+      }
+      if (h1.dead || h2.dead) {
+        hit = true;
+        break;
+      }
+      // The polar motion is autonomous and symmetric about its turning point,
+      // so the ray leaves at the v it entered with pu reversed and u untouched.
+      const uApex = (s.u >= 0 ? 1 : -1) * Math.sqrt(Math.max(1 - P.vmin, 0));
+      const azApex = s.az + h1.az + P.dazSing / 2;
+      // The closest-approach point, not just the endpoints: near the pole the
+      // path is a straight line in the tangent plane, and two chords through
+      // its nearest point are exact where one chord across is 1.1 sqrt(vmin)
+      // short.
+      const apex = positionAt(h1.r, uApex, azApex, a);
+      swept += sweptBetween(prev, apex);
+      s = {
+        r: h2.r,
+        pr: h2.pr,
+        u: s.u,
+        pu: -s.pu,
+        az: azApex + h2.az + P.dazSing / 2,
+      };
+      const out = positionAt(s.r, s.u, s.az, a);
+      swept += sweptBetween(apex, out);
+      prev = out;
+      passages++;
+      if (s.r > rEscape && s.pr > 0) break;
+      continue;
+    }
+
     const wu = Math.sqrt(Math.abs(6 * a2 * s.u * s.u + wuConst));
     const wr = Math.sqrt(Math.abs(6 * s.r * s.r + C.c2));
     const h = Math.min(
       stepScale / Math.max(wu, wr, 1e-9),
       (0.08 * Math.max(s.r, 1)) / Math.max(Math.abs(s.pr), 1e-9),
       0.08 / Math.max(Math.abs(s.pu), 1e-9),
-      azStep / Math.max(Math.abs(C.lambda) / (1 - s.u * s.u), 1e-9)
+      azStep / Math.max(Math.abs(C.lambda) / v, 1e-9),
+      // and v itself may not fall by more than MINO_V_FALL of itself, or a
+      // single step jumps clean over the trigger window above
+      (vFall * v) / Math.max(2 * Math.abs(s.u * s.pu), 1e-9)
     );
     s = minoStep(s, C, a, h);
     steps++;
 
     const cur = minoToCartesian(s, C, a).pos;
-    const cx = prev[1] * cur[2] - prev[2] * cur[1];
-    const cy = prev[2] * cur[0] - prev[0] * cur[2];
-    const cz = prev[0] * cur[1] - prev[1] * cur[0];
-    swept += Math.atan2(
-      Math.hypot(cx, cy, cz),
-      prev[0] * cur[0] + prev[1] * cur[1] + prev[2] * cur[2]
-    );
+    swept += sweptBetween(prev, cur);
     prev = cur;
 
     if (!Number.isFinite(s.r) || s.r < rHor) {
@@ -449,7 +687,7 @@ export function continueToEscape(
   return {
     escaped: !hit,
     capped,
-    nearAxis,
+    passages,
     dir: [vel[0] / n, vel[1] / n, vel[2] / n],
     swept: swept / Math.PI,
     steps,

@@ -19,11 +19,13 @@ import {
   type V4,
 } from "../src/kerr";
 import {
-  MINO_AXIS_EPS,
+  MINO_AXIS_V,
   MINO_AZ_STEP,
   MINO_MAX_STEPS,
   MINO_STEP_SCALE,
+  MINO_V_FALL,
   axisApproach,
+  axisPassage,
   continueToEscape,
   minoDeriv,
   minoStateAt,
@@ -140,12 +142,17 @@ const angleDeg = (u: V3, v: V3) =>
  * more than every test in this file put together. Pinning the coordinates also
  * pins WHICH rays are being claimed about.
  *
- * `flagged` is what the near-axis guard should say. Both answers are
- * represented on purpose: the last two entries sit a hair OUTSIDE the guard
- * (closest approach 1.5e-5 and 1.0e-5 against a threshold of 1e-5) and must
- * both pass the guard and be accurate, so the threshold is pinned from below as
- * well as above. Without them, a guard that flagged everything would still make
- * every other test in this file pass.
+ * Slice 12 changed what the last few entries are for rather than replacing
+ * them. The two `over the pole` rays used to be the ones the chart could not
+ * follow at all; they are now ordinary members of the accuracy tests, which is
+ * the whole claim of that slice. The two former guard-boundary rays sit at a
+ * closest approach of 1.5e-5 and 1.0e-5, which is now well INSIDE the trigger
+ * rather than a hair outside it, and they stay because they are the rays that
+ * used to be integrated and are now handed to the closed form: if the passage
+ * is worse than the stepping it replaced, they say so.
+ *
+ * `noPassage` marks the ray that must be REFUSED — it would reach the pole, but
+ * it leaves first.
  */
 const FIXTURES: {
   tag: string;
@@ -153,7 +160,7 @@ const FIXTURES: {
   pitch: number;
   sx: number;
   sy: number;
-  flagged?: boolean;
+  noPassage?: boolean;
 }[] = [
   // prograde edge, edge-on-ish camera: the deep band, where gamma is smallest
   { tag: "a=0.998 prograde, deepest", a: 0.998, pitch: 0.15, sx: -0.199515028, sy: 0 },
@@ -168,18 +175,28 @@ const FIXTURES: {
   { tag: "a=0.998 near-face-on, tiny R", a: 0.998, pitch: 1.45, sx: -0.412893915, sy: 0 },
   { tag: "a=0.998 near-face-on, R<0 handoff", a: 0.998, pitch: 1.45, sx: -0.282696927, sy: 0.5 },
   { tag: "a=0.998 near-face-on, retrograde", a: 0.998, pitch: 1.45, sx: 0.465561373, sy: 0 },
-  // over the pole: lambda = 0 to four decimals, the case the guard exists for
-  { tag: "a=0.9 over the pole", a: 0.9, pitch: 1.5707, sx: -0.447732144, sy: 0, flagged: true },
-  { tag: "a=0.9 over the pole, off-centre", a: 0.9, pitch: 1.5707, sx: 0.419617565, sy: 0.25, flagged: true },
-  // just outside the guard, at the camera's own pitch clamp: must NOT be flagged
-  { tag: "a=0.9 guard boundary", a: 0.9, pitch: 1.5508, sx: -0.086317435, sy: 0.702128 },
-  { tag: "a=0.998 guard boundary", a: 0.998, pitch: 1.5508, sx: 0.071305708, sy: -0.699625 },
+  // over the pole: lambda = 0 to four decimals, and 156 deg out before slice 12
+  { tag: "a=0.9 over the pole", a: 0.9, pitch: 1.5707, sx: -0.447732144, sy: 0 },
+  { tag: "a=0.9 over the pole, off-centre", a: 0.9, pitch: 1.5707, sx: 0.419617565, sy: 0.25 },
+  // stepped before slice 12, handed to the closed form after it
+  { tag: "a=0.9 just inside the trigger", a: 0.9, pitch: 1.5508, sx: -0.086317435, sy: 0.702128 },
+  { tag: "a=0.998 just inside the trigger", a: 0.998, pitch: 1.5508, sx: 0.071305708, sy: -0.699625 },
+  // bound for the pole (closest approach 4e-35) but escaping from r = 11.7
+  // first: the passage must be refused, and is 14 deg wrong if it is not
+  {
+    tag: "a=0.9 leaves before the pole",
+    a: 0.9,
+    pitch: Math.PI / 2,
+    sx: -0.047619048,
+    sy: -0.714285714,
+    noPassage: true,
+  },
 ];
 
 interface Case {
   tag: string;
   a: number;
-  flagged: boolean;
+  noPassage: boolean;
   C: RayPotentials;
   handoff: MinoState;
   /** R and U at the handoff, before minoStateAt's clamp at zero. */
@@ -230,7 +247,7 @@ beforeAll(() => {
     cases.push({
       tag: f.tag,
       a: f.a,
-      flagged: f.flagged ?? false,
+      noPassage: f.noPassage ?? false,
       C,
       handoff,
       rawR: radialPotential(r, C.lambda, C.q, f.a),
@@ -244,8 +261,47 @@ beforeAll(() => {
   }
 }, 300_000);
 
-/** The fixtures the continuation actually claims to get right. */
-const resolvable = () => cases.filter((c) => !c.flagged);
+/**
+ * The passage, integrated the hard way, for slice 12's closed form to be
+ * checked against.
+ *
+ * RK4 on (u, pu) alone at a tiny fixed step, carrying the SINGULAR azimuth
+ * lambda/(1 - u^2) and the Mino time beside it, from the entry at v = ve
+ * inbound until v comes back out to ve. It shares no code with axisPassage,
+ * needs no radius and no metric — the polar pair is autonomous — and it carries
+ * only the singular term, so the comparison is clean at every spin rather than
+ * only at a = 0.
+ *
+ * It cannot reach small lambda, and that limitation IS hurdle H9: the peak in
+ * lambda/(1 - u^2) is ~B/lambda tall and ~sqrt(vmin/sqrt(D)) wide, so below
+ * lambda ~ 1e-2 no fixed step resolves it. The lambda -> 0 limit is checked
+ * analytically instead, which is the only way it can be checked at all.
+ */
+function finePassage(C: RayPotentials, a: number, ve: number, h = 1e-6) {
+  const a2 = a * a;
+  const dpu = (u: number) => -2 * a2 * u * u * u + (a2 - C.q - C.lambda * C.lambda) * u;
+  const dsing = (u: number) => C.lambda / (1 - u * u);
+  let u = Math.sqrt(1 - ve);
+  let pu = Math.sqrt(Math.max(polarPotential(u, C, a), 0)); // u rising: v falling
+  let tau = 0;
+  let sing = 0;
+  let turned = false;
+  for (let i = 0; i < 1_000_000; i++) {
+    const k1u = pu, k1p = dpu(u), k1s = dsing(u);
+    const k2u = pu + (h / 2) * k1p, k2p = dpu(u + (h / 2) * k1u), k2s = dsing(u + (h / 2) * k1u);
+    const k3u = pu + (h / 2) * k2p, k3p = dpu(u + (h / 2) * k2u), k3s = dsing(u + (h / 2) * k2u);
+    const k4u = pu + h * k3p, k4p = dpu(u + h * k3u), k4s = dsing(u + h * k3u);
+    const uN = u + (h / 6) * (k1u + 2 * (k2u + k3u) + k4u);
+    const puN = pu + (h / 6) * (k1p + 2 * (k2p + k3p) + k4p);
+    sing += (h / 6) * (k1s + 2 * (k2s + k3s) + k4s);
+    if (!turned && pu * puN <= 0) turned = true;
+    u = uN;
+    pu = puN;
+    tau += h;
+    if (turned && 1 - u * u >= ve) return { dtau: tau, dazSing: sing, u, pu };
+  }
+  throw new Error("finePassage did not come back");
+}
 
 describe("separated continuation (slice 11)", () => {
   /**
@@ -322,10 +378,9 @@ describe("separated continuation (slice 11)", () => {
   it("integrates as accurately as a Cartesian march from the same state", () => {
     let worstAngle = 0;
     let worstWind = 0;
-    for (const c of resolvable()) {
+    for (const c of cases) {
       const res = continueToEscape(c.handoff, c.C, c.a);
       expect(res.escaped, `${c.tag}: continuation fell in`).toBe(true);
-      expect(res.nearAxis, `${c.tag}: unexpectedly flagged near-axis`).toBe(false);
       const ang = angleDeg(res.dir, c.refOwn.dir);
       const dw = Math.abs(res.swept - c.refOwn.winding);
       expect(ang, `${c.tag}: direction`).toBeLessThan(0.05);
@@ -351,7 +406,7 @@ describe("separated continuation (slice 11)", () => {
    */
   it("end to end, prefix drift dominates and is bounded", () => {
     let worst = 0;
-    for (const c of resolvable()) {
+    for (const c of cases) {
       const res = continueToEscape(c.handoff, c.C, c.a);
       const ang = angleDeg(res.dir, c.refEnd.dir);
       expect(ang, `${c.tag}: end-to-end direction`).toBeLessThan(15);
@@ -373,15 +428,28 @@ describe("separated continuation (slice 11)", () => {
    * because the drifted constants become the error floor; and against the
    * camera-launched oracle EVERY variant plateaus, at the re-projection offset,
    * which is a false plateau that cost a whole experiment to see through.
+   *
+   * `R<0 handoff` is exempt from the ratio and gets an absolute bound instead.
+   * That ray's radial potential is 1.7e-5 NEGATIVE where the march handed it
+   * over, so minoStateAt clamps its pr to zero — a fixed perturbation that no
+   * step scale can remove, and it plateaus at 3.2e-3 deg. That is not new and
+   * not slice 12's: under slice 11's own settings the same ray runs
+   * 8.5e-3, 5.1e-3, 3.1e-3, 3.2e-3, 3.2e-3 over the five scales below. It
+   * showed up here only because slice 12's cap on the fall in 1 - u^2 improved
+   * the COARSE end (to 3.6e-3), which a ratio reads as a failure to converge.
    */
   it("converges as MINO_STEP_SCALE shrinks", () => {
-    for (const c of resolvable()) {
+    for (const c of cases) {
       const errs = [0.2, 0.1, 0.05, 0.025].map((stepScale) =>
         angleDeg(
           continueToEscape(c.handoff, c.C, c.a, { stepScale, maxSteps: 200_000 }).dir,
           c.refOwn.dir
         )
       );
+      if (c.tag.includes("R<0 handoff")) {
+        for (const e of errs) expect(e, `${c.tag}: clamped handoff floor moved`).toBeLessThan(0.01);
+        continue;
+      }
       expect(errs[3], `${c.tag}: 0.025 not better than 0.2`).toBeLessThan(errs[0] * 0.5 + 1e-4);
       expect(errs[2], `${c.tag}: 0.05 not better than 0.1`).toBeLessThan(errs[1] + 1e-4);
     }
@@ -415,7 +483,12 @@ describe("separated continuation (slice 11)", () => {
           MINO_STEP_SCALE / Math.max(wu, wr, 1e-9),
           (0.08 * Math.max(s.r, 1)) / Math.max(Math.abs(s.pr), 1e-9),
           0.08 / Math.max(Math.abs(s.pu), 1e-9),
-          MINO_AZ_STEP / Math.max(Math.abs(c.C.lambda) / (1 - s.u * s.u), 1e-9)
+          MINO_AZ_STEP / Math.max(Math.abs(c.C.lambda) / (1 - s.u * s.u), 1e-9),
+          // the same bounds continueToEscape uses, including slice 12's; this
+          // test deliberately steps THROUGH the near-axis region rather than
+          // taking the passage, because the invariants below are a property of
+          // the integrator and hold there too
+          (MINO_V_FALL * (1 - s.u * s.u)) / Math.max(2 * Math.abs(s.u * s.pu), 1e-9)
         );
         s = minoStep(s, c.C, c.a, h);
         worstR = Math.max(worstR, rel(s.pr, radialPotential(s.r, c.C.lambda, c.C.q, c.a)));
@@ -500,42 +573,186 @@ describe("separated continuation (slice 11)", () => {
   });
 
   /**
-   * Test 7: the near-axis guard, pinned from BOTH sides.
+   * Slice 12, test 1: the closed-form passage against a fine integration of the
+   * same passage.
    *
-   * A ray that crosses the spin axis must swing its azimuth by very nearly pi,
-   * packed into a Mino interval of order lambda/(a^2+q) — 2e-5 for the fixtures
-   * that fail — and at lambda exactly zero the term is 0/0, so the crossing
-   * degenerates into a reflection no matter how fine the step. The guard says
-   * so rather than guessing. Flagging everything would satisfy the positive
-   * half alone, which is what the boundary fixtures are for: they sit at 1.5e-5
-   * and 1.0e-5 against a threshold of 1e-5 and must come through both unflagged
-   * AND accurate.
+   * The comparison with no trajectory in it and no oracle to get wrong. Twice
+   * in slice 12's development an apparent error in the closed form was the code
+   * around it — once a ray leaving before its swing finished, once a step
+   * jumping over the trigger — so this is the check to reach for first.
    */
-  it("flags rays that cross the spin axis, and only those", () => {
-    for (const c of cases) {
-      const res = continueToEscape(c.handoff, c.C, c.a);
-      expect(res.nearAxis, `${c.tag}: guard verdict`).toBe(c.flagged);
-      expect(axisApproach(c.C, c.a) < MINO_AXIS_EPS, `${c.tag}: guard disagrees with its own criterion`).toBe(
-        c.flagged
-      );
+  it("axisPassage matches a fine integration of the same passage", () => {
+    let worstT = 0;
+    let worstA = 0;
+    for (const a of [0, 0.5, 0.9, 0.998])
+      for (const lambda of [1e-2, 5e-2, 0.2])
+        for (const q of [1, 20])
+          for (const ve of [MINO_AXIS_V, 1e-2]) {
+            const C = rayPotentials(lambda, q, a);
+            const P = axisPassage(C, a, ve);
+            if (!(P.we > 0)) continue;
+            const f = finePassage(C, a, ve);
+            const tag = `a=${a} lambda=${lambda} q=${q} ve=${ve}`;
+            // it really did come back to where it started, mirrored
+            expect(1 - f.u * f.u, `${tag}: fine run did not return to ve`).toBeCloseTo(ve, 5);
+            expect(f.pu, `${tag}: fine run did not reverse`).toBeLessThan(0);
+            const rT = Math.abs(P.dtau - f.dtau) / f.dtau;
+            const rA = Math.abs(P.dazSing - f.dazSing) / Math.abs(f.dazSing);
+            expect(rT, `${tag}: Mino time`).toBeLessThan(1e-3);
+            expect(rA, `${tag}: azimuth swing`).toBeLessThan(1e-3);
+            worstT = Math.max(worstT, rT);
+            worstA = Math.max(worstA, rA);
+          }
+    // measured 2.5e-4 and 5.5e-5; the bound above is not generous, it is 4x
+    expect(worstT).toBeLessThan(1e-3);
+    expect(worstA).toBeLessThan(1e-3);
+  });
+
+  /**
+   * Slice 12, test 2: the half-turn, which is the whole of H9.
+   *
+   * As lambda -> 0 the swing tends to +-pi and at lambda = 0 exactly the
+   * integrand is 0/0 — which is why no step size ever found it and why the
+   * closed form has to be written so the limit survives. The two one-sided
+   * limits differ by 2pi, so what is asserted is that they are the SAME
+   * AZIMUTH, not that the function is continuous: it is not, and claiming it
+   * were would be the wrong fix.
+   */
+  it("the swing over the pole is a half-turn, from both sides and at zero", () => {
+    for (const a of [0, 0.9, 0.998])
+      for (const q of [1, 23.4]) {
+        const ve = MINO_AXIS_V;
+        const plus = axisPassage(rayPotentials(1e-9, q, a), a, ve).dazSing;
+        const minus = axisPassage(rayPotentials(-1e-9, q, a), a, ve).dazSing;
+        const zero = axisPassage(rayPotentials(0, q, a), a, ve);
+        expect(plus, `a=${a} q=${q}: limit from above`).toBeCloseTo(Math.PI, 6);
+        expect(minus, `a=${a} q=${q}: limit from below`).toBeCloseTo(-Math.PI, 6);
+        expect(plus - minus, `a=${a} q=${q}: the two limits are one azimuth`).toBeCloseTo(2 * Math.PI, 6);
+        // and at lambda = 0, where a division by wc would be an infinity
+        expect(zero.dazSing, `a=${a} q=${q}: at lambda = 0`).toBeCloseTo(Math.PI, 12);
+        expect(zero.vmin, `a=${a} q=${q}: reaches the axis exactly`).toBe(0);
+        expect(Number.isFinite(zero.dtau), `a=${a} q=${q}: finite Mino time`).toBe(true);
+      }
+  });
+
+  /**
+   * Slice 12, test 3: nothing divides by the spin.
+   *
+   * The roadmap's arcsin form for this integral carries a 1/a, and a = 0 is not
+   * hypothetical — at zero spin the default camera still has 384 band pixels
+   * and rays that cross the pole. So a = 0 must be no worse than a = 0.998.
+   */
+  it("axisPassage is finite and accurate at zero spin", () => {
+    for (const [lambda, q] of [
+      [1e-2, 1],
+      [5e-2, 20],
+      [0.2, 20],
+    ] as const) {
+      const C = rayPotentials(lambda, q, 0);
+      const P = axisPassage(C, 0, 1e-2);
+      const f = finePassage(C, 0, 1e-2);
+      expect(Number.isFinite(P.dtau) && Number.isFinite(P.dazSing)).toBe(true);
+      expect(Math.abs(P.dtau - f.dtau) / f.dtau, `a=0 lambda=${lambda}: Mino time`).toBeLessThan(1e-3);
+      expect(
+        Math.abs(P.dazSing - f.dazSing) / Math.abs(f.dazSing),
+        `a=0 lambda=${lambda}: azimuth swing`
+      ).toBeLessThan(1e-3);
     }
-    const boundary = cases.filter((c) => c.tag.includes("guard boundary"));
-    expect(boundary.length).toBe(2);
-    for (const c of boundary) {
-      const v = axisApproach(c.C, c.a);
-      expect(v, `${c.tag}: fixture drifted inside the guard`).toBeGreaterThan(MINO_AXIS_EPS);
-      expect(v, `${c.tag}: fixture is no longer near the axis at all`).toBeLessThan(1e-4);
-      expect(angleDeg(continueToEscape(c.handoff, c.C, c.a).dir, c.refOwn.dir)).toBeLessThan(0.05);
+    expect(axisPassage(rayPotentials(0, 12, 0), 0, 1e-2).dazSing).toBeCloseTo(Math.PI, 12);
+  });
+
+  /**
+   * Slice 12, test 4: the passage is refused for a ray that leaves first.
+   *
+   * `a=0.9 leaves before the pole` is inbound in u with a closest approach of
+   * 4e-35 — it would reach the pole — but it is at r = 11.7 heading out and
+   * crosses the escape radius at very nearly the same Mino time. Jumping it
+   * through a crossing that never happens is 14 deg wrong, so the trial has to
+   * refuse it. Asserted at a WIDE trigger, because that is the setting where
+   * the situation is reachable at all; a guard that refused everything would
+   * fail the companion assertion below.
+   */
+  it("refuses the passage for a ray that escapes before reaching the pole", () => {
+    const wide = { axisV: 3e-2 };
+    for (const c of cases.filter((x) => x.noPassage)) {
+      const res = continueToEscape(c.handoff, c.C, c.a, wide);
+      expect(axisApproach(c.C, c.a), `${c.tag}: fixture is not near-polar`).toBeLessThan(1e-4);
+      expect(c.handoff.r, `${c.tag}: fixture is not far out`).toBeGreaterThan(8);
+      expect(res.passages, `${c.tag}: took a passage it should have refused`).toBe(0);
+      expect(angleDeg(res.dir, c.refOwn.dir), `${c.tag}: direction`).toBeLessThan(0.05);
     }
-    // and the flagged ones really are the pole-crossers
-    for (const c of cases.filter((x) => x.flagged)) {
-      expect(Math.abs(c.C.lambda), `${c.tag}: flagged but not near-polar`).toBeLessThan(1e-2);
+    // and the refusal is not blanket: the pole-crossers still take theirs
+    for (const c of cases.filter((x) => x.tag.includes("over the pole"))) {
+      expect(
+        continueToEscape(c.handoff, c.C, c.a, wide).passages,
+        `${c.tag}: refused a passage it needs`
+      ).toBeGreaterThan(0);
     }
   });
 
   /**
-   * axisApproach is the guard's whole content, so it is checked against the
-   * potential it claims to describe rather than only through the guard.
+   * Slice 12, test 5: the cap on how fast 1 - u^2 may fall is load-bearing.
+   *
+   * Without it a single step goes from above the trigger to past the turning
+   * point, the trigger never fires, and the ray reflects without its half-turn.
+   * A guard nobody can make fail is not a test, so this one relaxes it and
+   * asserts the answer gets materially worse — measured 1.3e-5 deg against
+   * 1.8e-2 on the a=0.9 fixture just inside the trigger, a factor of 1300.
+   */
+  it("gets materially worse when the cap on the fall in 1 - u^2 is relaxed", () => {
+    let bestRatio = 0;
+    for (const c of cases) {
+      const capped = angleDeg(continueToEscape(c.handoff, c.C, c.a).dir, c.refOwn.dir);
+      const loose = angleDeg(
+        continueToEscape(c.handoff, c.C, c.a, { vFall: 1e9 }).dir,
+        c.refOwn.dir
+      );
+      bestRatio = Math.max(bestRatio, loose / Math.max(capped, 1e-12));
+    }
+    expect(bestRatio, "relaxing the v-fall cap changed nothing — is it wired up?").toBeGreaterThan(100);
+    expect(MINO_V_FALL).toBeLessThan(1);
+  });
+
+  /**
+   * Slice 12, test 6: rays that never come near the axis are untouched.
+   *
+   * The passage is new code on a shared path, and the v-fall cap is a new bound
+   * on EVERY step. Against the same run with the trigger switched off and the
+   * cap removed, two claims, and they are deliberately different strengths
+   * because the measurements are:
+   *
+   * - a ray whose closest approach exceeds 0.1 is **bit-identical** in step
+   *   count and moves at most 1.2e-6 deg;
+   * - a ray between the trigger and 0.1 comes near enough for the cap to bind,
+   *   so it moves — by at most 4.4e-5 deg and 4 steps on the fixtures here,
+   *   which is a hundred times smaller than the error it already carries.
+   *
+   * The wider version of the first claim: 1255 band rays at 48 cameras, worst
+   * 4.0e-6 deg, no step count changing on any of them.
+   */
+  it("leaves rays away from the spin axis where they were", () => {
+    let worst = 0;
+    for (const c of cases) {
+      const vmin = axisApproach(c.C, c.a);
+      if (vmin < MINO_AXIS_V) continue;
+      const now = continueToEscape(c.handoff, c.C, c.a);
+      const before = continueToEscape(c.handoff, c.C, c.a, { axisV: 0, vFall: 1e9 });
+      expect(now.passages, `${c.tag}: took a passage it cannot reach`).toBe(0);
+      const d = angleDeg(now.dir, before.dir);
+      expect(d, `${c.tag}: direction moved`).toBeLessThan(1e-4);
+      if (vmin > 0.1) {
+        expect(now.steps, `${c.tag}: step count moved`).toBe(before.steps);
+        expect(d, `${c.tag}: moved despite being far from the axis`).toBeLessThan(1e-5);
+      }
+      worst = Math.max(worst, d);
+    }
+    expect(worst).toBeLessThan(1e-4);
+  });
+
+  /**
+   * axisApproach is the turning point the passage is built around, so it is
+   * checked against the potential it claims to describe, and against the copy
+   * axisPassage derives from the same B and sqrt(D) it needs anyway.
    */
   it("axisApproach is where the polar potential vanishes", () => {
     for (const [a, lambda, q] of [
@@ -551,6 +768,9 @@ describe("separated continuation (slice 11)", () => {
       expect(polarPotential(Math.sqrt(1 - v), C, a)).toBeCloseTo(0, 9);
       // and is positive just inside, so this really is the closest approach
       expect(polarPotential(Math.sqrt(Math.max(1 - 2 * v, 0)), C, a)).toBeGreaterThan(0);
+      // axisPassage derives the same root from its own B and sqrt(D); the two
+      // must not be allowed to drift apart
+      expect(axisPassage(C, a, Math.min(2 * v, 0.5)).vmin, `a=${a}: passage disagrees`).toBeCloseTo(v, 14);
     }
     // lambda = 0 reaches the axis exactly, with no epsilon and no cancellation
     expect(axisApproach(rayPotentials(0, 12, 0.9), 0.9)).toBe(0);
@@ -567,8 +787,10 @@ describe("separated continuation (slice 11)", () => {
   /**
    * MINO_MAX_STEPS must have real headroom over what the band costs: a cap that
    * clips resurrects the magenta band this slice exists to remove, and does it
-   * looking like a physics bug rather than a budget one. The constant was set
-   * from a full pixel-grid sweep whose worst ray is 786 steps.
+   * looking like a physics bug rather than a budget one. Slice 11 set it from a
+   * sweep whose worst ray was 786; slice 12's wider sweep found an ordinary
+   * deep-band ray needing 1053 and two pixels clipping at the old cap of 1024,
+   * which is why the constant moved and why this asserts against 1053.
    */
   it("finishes well inside MINO_MAX_STEPS", () => {
     let worst = 0;
@@ -578,7 +800,7 @@ describe("separated continuation (slice 11)", () => {
       worst = Math.max(worst, res.steps);
     }
     expect(worst).toBeLessThan(MINO_MAX_STEPS * 0.75);
-    expect(MINO_MAX_STEPS).toBeGreaterThan(786);
+    expect(MINO_MAX_STEPS).toBeGreaterThan(1053);
   });
 
   /**
