@@ -3,6 +3,7 @@ import { cameraBasis } from "../src/camera";
 import {
   MARCH_MAX_STEPS,
   buildStaticTetrad,
+  diskShift,
   gDot,
   hamiltonian,
   horizonRadius,
@@ -27,6 +28,7 @@ import {
   axisApproach,
   axisPassage,
   continueToEscape,
+  covariantMomentum,
   minoDeriv,
   minoStateAt,
   minoStep,
@@ -78,6 +80,12 @@ function marchRefined(p0: V3, mCov: V4, a: number, fine = 0.02, maxSteps = 8_000
   let p: V3 = [...p0];
   let mv: V3 = [mCov[1], mCov[2], mCov[3]];
   const rHor = horizonRadius(a) + 0.01;
+  const lam = p[2] * mv[0] - p[0] * mv[2];
+  // Slice 13's oracle: the equatorial crossings this march makes, located and
+  // shaded exactly as traceRayKerr locates and shades its own. Built here
+  // rather than borrowed from traceRayKerr for the reason the whole function
+  // exists — at 50x the step count these land where the crossings really are.
+  const crossings: { r: number; pos: V3; g: number }[] = [];
   let swept = 0;
   let steps = 0;
   for (; steps < maxSteps; steps++) {
@@ -88,11 +96,17 @@ function marchRefined(p0: V3, mCov: V4, a: number, fine = 0.02, maxSteps = 8_000
     const cy = p[2] * next.p[0] - p[0] * next.p[2];
     const cz = p[0] * next.p[1] - p[1] * next.p[0];
     swept += Math.atan2(Math.hypot(cx, cy, cz), p[0] * next.p[0] + p[1] * next.p[1] + p[2] * next.p[2]);
+    if (p[1] * next.p[1] < 0) {
+      const fr = p[1] / (p[1] - next.p[1]);
+      const pc: V3 = [p[0] + fr * (next.p[0] - p[0]), 0, p[2] + fr * (next.p[2] - p[2])];
+      const rc2 = pc[0] * pc[0] + pc[2] * pc[2] - a * a;
+      if (rc2 > 0) crossings.push({ r: Math.sqrt(rc2), pos: pc, g: diskShift(Math.sqrt(rc2), a, mt, lam) });
+    }
     p = next.p;
     mv = next.mv;
     const rN = ksRadius(p, a);
     if (rN < rHor || !Number.isFinite(rN)) {
-      return { escaped: false, dir: [0, 0, 0] as V3, winding: swept / Math.PI, steps, H: 0 };
+      return { escaped: false, dir: [0, 0, 0] as V3, winding: swept / Math.PI, steps, H: 0, crossings };
     }
     if (rN > 64 && p[0] * mv[0] + p[1] * mv[1] + p[2] * mv[2] > 0) break;
   }
@@ -104,6 +118,7 @@ function marchRefined(p0: V3, mCov: V4, a: number, fine = 0.02, maxSteps = 8_000
     winding: swept / Math.PI,
     steps,
     H: hamiltonian(p, a, mt, mv),
+    crossings,
   };
 }
 
@@ -209,6 +224,9 @@ interface Case {
   refOwnFine: ReturnType<typeof marchRefined>;
   /** Energy of the re-launched ray: the Hamiltonian's natural scale. */
   mtRe: number;
+  /** The march's own (m_t, mv) AT the handoff point — what slice 13 rebuilds. */
+  marchMt: number;
+  marchMv: V3;
   /** March from the camera: judges the march prefix and continuation together. */
   refEnd: ReturnType<typeof marchRefined>;
 }
@@ -257,6 +275,8 @@ beforeAll(() => {
       refOwnFine: marchRefined(pos, mRe, f.a, 0.005),
       refEnd: marchRefined(v.pos, m, f.a),
       mtRe: mRe[0],
+      marchMt: short.mt,
+      marchMv: short.mv,
     });
   }
 }, 300_000);
@@ -845,6 +865,202 @@ describe("separated continuation (slice 11)", () => {
       expect(ksRadius(pos, a)).toBeCloseTo(s.r, 9);
       expect(pos[1] / s.r).toBeCloseTo(s.u, 9);
       expect(Math.atan2(pos[2], pos[0])).toBeCloseTo(s.az, 9);
+    }
+  });
+});
+
+/**
+ * Slice 13: the light a band ray collects after the march gives up.
+ *
+ * A ray still winding at the photon shell goes on crossing the equatorial
+ * plane, and every one of those crossings is a pass through the accretion disk
+ * that nothing was shading. Hurdle H1 predicted a divergent series that would
+ * have to be summed in closed form; the measurements say otherwise, because
+ * the hovering crossings land at the photon orbit and that is INSIDE the disk's
+ * inner edge at low spin (r = 3 against an ISCO of 6 at a = 0). What actually
+ * reaches the disk is a handful of outbound crossings — one, two or three per
+ * pixel — which the loop already computes as the places `u` changes sign.
+ *
+ * So the claims here are not about a summation. They are that the crossings
+ * are the SAME ones a converged march makes, at the same radii, with the same
+ * shift factors, and that the covariant momentum rebuilt for them is the
+ * march's own.
+ */
+describe("equatorial crossings during the continuation (slice 13)", () => {
+  /**
+   * The reconstruction, at the one state both sides know.
+   *
+   * `covariantMomentum` inverts a five-scalar separated state back into the
+   * (m_t, mv) the shading wants, and the handoff is where that can be judged:
+   * the march arrived there carrying its own mv. Agreement is expected at the
+   * march's DRIFT, not to machine precision — `minoStateAt` deliberately
+   * re-projects the momenta onto sqrt(R) and sqrt(U) with launch constants that
+   * never drifted, so an exact match would mean the re-projection did nothing.
+   * The rebuilt momentum being null to 1e-12 while the march's is not is the
+   * same fact from the other side.
+   */
+  it("rebuilds the march's own covariant momentum at the handoff", () => {
+    let worst = 0;
+    for (const c of cases) {
+      const { pos, mv } = covariantMomentum(c.handoff, c.C, c.a, c.marchMt);
+      const mag = Math.hypot(c.marchMv[0], c.marchMv[1], c.marchMv[2]);
+      const d = Math.hypot(mv[0] - c.marchMv[0], mv[1] - c.marchMv[1], mv[2] - c.marchMv[2]) / mag;
+      expect(d, `${c.tag}: rebuilt mv`).toBeLessThan(3e-3);
+      // and it is exactly null, which is what the march's drift costs it
+      expect(Math.abs(hamiltonian(pos, c.a, c.marchMt, mv)), `${c.tag}: not null`).toBeLessThan(1e-12);
+      worst = Math.max(worst, d);
+    }
+    // Measured 1.5e-4 over a full-frame sweep at a = 0.9 and a = 0.998. It is
+    // asserted from BELOW as well: a reconstruction that agreed to machine
+    // precision would mean minoStateAt's re-projection had stopped happening.
+    expect(worst).toBeGreaterThan(1e-6);
+  });
+
+  /**
+   * The slice's acceptance test: the crossings against a march 50x finer, run
+   * from the SAME re-projected state, so the two lists are one-to-one with no
+   * prefix to line up. `refOwn` is that march.
+   *
+   * Not one fixture gains or loses a crossing, over 22 of them: worst radius
+   * 1.6e-4 of itself, worst shift factor 1.6e-5, worst world position 2.4e-3.
+   * A brightness that goes as the fourth power of the shift moves by 1e-4 of
+   * itself on that, which is four orders under the turbulence the same
+   * crossing is multiplied by.
+   *
+   * The position tolerance is the loosest because most of that gap is
+   * azimuthal — these rays have swept several turns by then — and the disk's
+   * turbulence is the only thing that reads the azimuth.
+   *
+   * Against `traceRayKerr` at 400,000 steps the same comparison reads 2.1e-3
+   * in radius, thirteen times worse. That is the COARSE march being wrong, not
+   * the continuation: `marchRefined` exists because the renderer's own
+   * stepLength does not converge on near-critical rays, and a slice measured
+   * against it would have set its tolerances by the reference's error.
+   */
+  it("finds the same equatorial crossings a refined march does", () => {
+    let seen = 0;
+    let worstR = 0;
+    let worstG = 0;
+    let worstPos = 0;
+    for (const c of cases) {
+      const res = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe });
+      expect(res.crossings.length, `${c.tag}: crossing count`).toBe(c.refOwn.crossings.length);
+      for (let i = 0; i < res.crossings.length; i++) {
+        const got = res.crossings[i];
+        const want = c.refOwn.crossings[i];
+        seen++;
+        worstR = Math.max(worstR, Math.abs(got.r - want.r) / want.r);
+        worstG = Math.max(worstG, Math.abs(got.g - want.g) / Math.abs(want.g));
+        worstPos = Math.max(
+          worstPos,
+          Math.hypot(got.pos[0] - want.pos[0], got.pos[1] - want.pos[1], got.pos[2] - want.pos[2])
+        );
+      }
+    }
+    expect(seen, "no fixture crossed the equator at all").toBeGreaterThan(20);
+    expect(worstR, `worst dr/r ${worstR}`).toBeLessThan(1e-3);
+    expect(worstG, `worst dg/g ${worstG}`).toBeLessThan(1e-4);
+    expect(worstPos, `worst position gap ${worstPos}`).toBeLessThan(2e-2);
+  });
+
+  /**
+   * A crossing is defined to be IN the plane, and the renderer's own radius
+   * reconstruction has to agree. `u` is snapped to zero after the refinement
+   * sub-step for exactly this: the disk shader recovers rc from the world
+   * point as rc^2 = |pos.xz|^2 - a^2, and that must return the r the shift
+   * factor was evaluated at, not nearly.
+   */
+  it("puts each crossing exactly in the equatorial plane", () => {
+    for (const c of cases) {
+      for (const x of continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe }).crossings) {
+        expect(x.pos[1], `${c.tag}: off the plane`).toBe(0);
+        const rc = Math.sqrt(x.pos[0] * x.pos[0] + x.pos[2] * x.pos[2] - c.a * c.a);
+        expect(rc, `${c.tag}: radius round-trip`).toBeCloseTo(x.r, 9);
+        expect(x.g, `${c.tag}: shift factor`).toBe(diskShift(x.r, c.a, c.mtRe, -c.C.lambda * c.mtRe));
+      }
+    }
+  });
+
+  /**
+   * Slice 12 jumps the whole polar passage near the spin axis in closed form,
+   * which is the one stretch of the continuation where `u` is not looked at
+   * step by step. It cannot hide an equatorial crossing, and the reason is
+   * structural rather than lucky: a passage fires only at 1 - u^2 < MINO_AXIS_V
+   * and v only falls further inside it, so |u| stays above 0.998 throughout
+   * while a crossing needs u = 0.
+   *
+   * Asserted rather than argued, on the fixtures that really take a passage —
+   * and the count test above already runs on those same rays against a march
+   * that steps through the pole rather than jumping it.
+   */
+  it("cannot hide a crossing inside an axis passage", () => {
+    let poled = 0;
+    for (const c of cases) {
+      const res = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe });
+      if (res.passages === 0) continue;
+      poled++;
+      const vmin = axisApproach(c.C, c.a);
+      expect(vmin, `${c.tag}: passage reaches below the trigger`).toBeLessThan(MINO_AXIS_V);
+      // |u| = sqrt(1 - v) >= sqrt(1 - MINO_AXIS_V) for the whole jump
+      expect(Math.sqrt(1 - MINO_AXIS_V)).toBeGreaterThan(0.998);
+    }
+    expect(poled, "no fixture took a passage; the claim is untested").toBeGreaterThan(0);
+  });
+
+  /**
+   * Without the march's energy there is nothing to collect. The separated
+   * system knows lambda and q, which are quotients — the normalization drops
+   * out of them — so a shift factor built without m_t would be wrong by an
+   * unknown constant. Silence is the honest answer, and it keeps every caller
+   * that only wants a direction (the ladder's winding, band.mjs's hairline
+   * scan) paying nothing for this slice.
+   */
+  it("collects nothing without the march's energy", () => {
+    for (const c of cases) {
+      expect(continueToEscape(c.handoff, c.C, c.a).crossings, `${c.tag}`).toEqual([]);
+    }
+  });
+
+  /**
+   * The refinement sub-step is charged against MINO_MAX_STEPS, so the budget
+   * has to hold with crossings ON — which is how the renderer runs whenever the
+   * disk is drawn. The ladder's magenta means "the continuation spent its
+   * budget" and nothing else, and slice 12 was already bitten once by a cap
+   * that clipped; a slice that quietly ate the headroom would resurrect that
+   * band looking like a physics bug.
+   */
+  it("still finishes well inside MINO_MAX_STEPS with crossings on", () => {
+    let worst = 0;
+    let extra = 0;
+    for (const c of cases) {
+      const on = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe });
+      const off = continueToEscape(c.handoff, c.C, c.a);
+      expect(on.capped, `${c.tag}: hit its cap`).toBe(false);
+      // exactly one extra step per crossing, which is what makes the GLSL
+      // mirror's budget predictable from the CPU's
+      expect(on.steps - off.steps, `${c.tag}: unexpected extra steps`).toBe(on.crossings.length);
+      worst = Math.max(worst, on.steps);
+      extra = Math.max(extra, on.steps - off.steps);
+    }
+    expect(worst).toBeLessThan(MINO_MAX_STEPS * 0.75);
+    expect(extra).toBeLessThan(8);
+  });
+
+  /**
+   * The direction and the winding are the previous two slices' claims, and this
+   * one must not move them: the crossings are read out of the trajectory, not
+   * imposed on it. The refinement sub-step starts from the pre-step state and
+   * its result is discarded, so this is a structural claim, asserted because a
+   * future edit could easily make it false by stepping `s` through the
+   * crossing instead.
+   */
+  it("does not move the ray it now reads the disk from", () => {
+    for (const c of cases) {
+      const on = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe });
+      const off = continueToEscape(c.handoff, c.C, c.a);
+      expect(on.dir, `${c.tag}: direction`).toEqual(off.dir);
+      expect(on.swept, `${c.tag}: winding`).toBe(off.swept);
+      expect(on.passages, `${c.tag}: passages`).toBe(off.passages);
     }
   });
 });

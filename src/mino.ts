@@ -27,12 +27,21 @@
  *
  * This is only valid where nothing but gravity acts on the ray, which is why it
  * runs from the EXHAUSTED state outward and never replaces the march: the march
- * is what samples the disk, the matter and the crossings.
+ * is what samples the matter.
+ *
+ * Since slice 13 it does sample the DISK. A ray still winding when the budget
+ * ends goes on crossing the equatorial plane, and those crossings are passes
+ * through the disk that nothing was shading: 116 of 248 band pixels at a = 0.9
+ * gain disk light, 98 of them from nothing at all. They are exactly where `u`
+ * changes sign, which the loop computes anyway — see `MinoCrossing`.
  */
 
 import {
+  diskShift,
   horizonRadius,
+  ksMetric,
   ksRadius,
+  lower,
   radialPotential,
   raise,
   type V3,
@@ -440,6 +449,24 @@ export const MINO_AXIS_V = 3e-3;
  */
 export const MINO_V_FALL = 0.15;
 
+/**
+ * An equatorial crossing made after the march gave up — the same shape as
+ * kerr.ts's `KerrCrossing`, and deliberately so: the renderer composites the
+ * two with one function, and the tests compare them entry for entry against a
+ * converged march.
+ */
+export interface MinoCrossing {
+  /** Boyer-Lindquist radius. It is the state's own `r`: at u = 0 the world
+   *  position reconstructs with |pos.xz|^2 - a^2 = r^2 identically. */
+  r: number;
+  pos: V3;
+  /** Exact circular-orbit disk shift factor, from the conserved constants. */
+  g: number;
+  /** Covariant spatial momentum, rescaled to the march's own normalization —
+   *  every shift factor in the lab is homogeneous of degree -1 in it. */
+  mv: V3;
+}
+
 export interface MinoResult {
   /** False only if the continuation reached the horizon. rayCaptured remains
    *  the authority on fate; this is a cross-check, never the source of truth. */
@@ -461,6 +488,18 @@ export interface MinoResult {
    *  half-turns — the same measure and units as KerrTraceResult.winding, so
    *  the caller adds the two. */
   swept: number;
+  /**
+   * Equatorial crossings made during the continuation, in the order the ray
+   * makes them — which is also the order they composite in, since the
+   * continuation runs outward along the same ray and everything it finds sits
+   * behind everything the march already shaded.
+   *
+   * Empty unless `opts.mt` is given. The separated system carries five scalars
+   * and no metric, so it cannot know the march's energy normalization; without
+   * it a shift factor would be off by an unknown constant, which is worse than
+   * no shift factor at all.
+   */
+  crossings: MinoCrossing[];
   steps: number;
   /** Final separated state, for diagnostics and for the tests' invariants. */
   state: MinoState;
@@ -538,6 +577,116 @@ function radialAdvance(
   return { r, pr, az, steps, dead: false, gone: false };
 }
 
+/**
+ * The covariant momentum the shading wants, rebuilt from a separated state
+ * (slice 13).
+ *
+ * The continuation carries five scalars and no metric, but `shadeCrossing`
+ * needs `mv` — the same covariant spatial momentum the march hands it — for
+ * the gas blobs and for slice 10's polarization. Three steps, and the middle
+ * one is the only place this can go wrong:
+ *
+ *  1. `minoToCartesian` returns d(pos)/dtau and Mino time is
+ *     dtau = dsigma / Sigma, so V^i = vel^i / Sigma is the affine tangent at
+ *     the E = 1 normalization the potentials are written in.
+ *
+ *  2. V^t comes from the NULL CONDITION, which is a quadratic in it:
+ *     (f - 1) T^2 + 2 f L T + (f L^2 + |V|^2) = 0, with L = l.V. Two roots,
+ *     one per time orientation; the one whose lowered time component shares
+ *     the sign of `mt` is the ray's.
+ *
+ *     Solving the LINEAR constraint m_t = g_(t mu) V^mu instead looks simpler
+ *     and is a trap: it gives P = (l.V - m_t)/(1 - f), and f = 1 is exactly
+ *     the ergosphere — a surface these rays really do cross — where it has no
+ *     second root to fall back on. The quadratic passes through A = 0 there
+ *     with one finite root, which is why it is written in the stable form
+ *     (q = -(B + sign(B) sqrt(disc))/2, roots q/A and C/q) rather than the
+ *     schoolbook one.
+ *
+ *  3. Lower, then rescale the spatial part so the time component is exactly
+ *     `mt`. Every shift factor in the lab is homogeneous of degree -1 in the
+ *     momentum, so that scaling is what makes these crossings shade
+ *     identically to the march's.
+ *
+ * Exported for that pinning and for nothing else: it is the one step in slice
+ * 13 where a sign or a scale can go wrong silently, and it is checkable
+ * against the march at a state the march also knows.
+ *
+ * Pinned by rebuilding `mv` at the HANDOFF state and comparing with the
+ * march's own there: 1.5e-4 relative, which is the march's drift at 320 steps
+ * and not this function's error — the rebuilt momentum is null to 1e-14, and
+ * the march's is not. Agreement closer than 1e-4 would be evidence of a bug.
+ */
+export function covariantMomentum(
+  s: MinoState,
+  C: RayPotentials,
+  a: number,
+  mt: number
+): { pos: V3; mv: V3 } {
+  const { pos, vel } = minoToCartesian(s, C, a);
+  const Sigma = s.r * s.r + a * a * s.u * s.u;
+  const V: V3 = [vel[0] / Sigma, vel[1] / Sigma, vel[2] / Sigma];
+  const { f, l } = ksMetric(pos, a);
+  const L = l[0] * V[0] + l[1] * V[1] + l[2] * V[2];
+  const V2 = V[0] * V[0] + V[1] * V[1] + V[2] * V[2];
+  const A = f - 1;
+  const B = 2 * f * L;
+  const Cq = f * L * L + V2;
+  const disc = Math.sqrt(Math.max(B * B - 4 * A * Cq, 0));
+  const qq = -0.5 * (B + (B >= 0 ? 1 : -1) * disc);
+  const roots = [
+    Math.abs(A) > 1e-12 ? qq / A : Cq / qq,
+    Math.abs(qq) > 1e-30 ? Cq / qq : -Cq / B,
+  ];
+  for (const T of roots) {
+    if (!Number.isFinite(T)) continue;
+    const m = lower(pos, a, [T, V[0], V[1], V[2]]);
+    if (m[0] * mt > 0) {
+      const k = mt / m[0];
+      return { pos, mv: [k * m[1], k * m[2], k * m[3]] };
+    }
+  }
+  // Both roots refused: only reachable if V is not null, which the potentials
+  // forbid. Fall back to the E = 1 spatial part rather than emit a NaN into
+  // the shading — a slightly wrong shift beats a black pixel.
+  return { pos, mv: V };
+}
+
+/**
+ * The crossing a step straddled, located and shaded (slice 13).
+ *
+ * `u` is interpolated LINEARLY across the step, which is what the march does
+ * to its own y — so the two agree by construction rather than by coincidence —
+ * and then the state is re-stepped to that fraction. Measured, the |u| left
+ * over is 1.4e-6 to 2.7e-6, and fitting a quadratic through (u0, pu0, u1)
+ * changes nothing at the precision the crossing radius is checked to (2e-3
+ * relative against a 400,000-step march).
+ *
+ * `u` is then SNAPPED to zero. That is what a crossing is, and it puts the
+ * reconstructed position exactly in the plane, so kerr.ts's own
+ * rc^2 = |pos.xz|^2 - a^2 returns r^2 identically instead of nearly.
+ */
+function crossingAt(
+  s: MinoState,
+  C: RayPotentials,
+  a: number,
+  h: number,
+  uNext: number,
+  mt: number
+): MinoCrossing {
+  const stepped = minoStep(s, C, a, (h * s.u) / (s.u - uNext));
+  const at: MinoState = { ...stepped, u: 0 };
+  const { pos, mv } = covariantMomentum(at, C, a, mt);
+  return {
+    r: at.r,
+    pos,
+    // lam = z m_x - x m_z is the world-frame axial momentum the march carries;
+    // in the continuation's normalized constants it is exactly -lambda * m_t.
+    g: diskShift(at.r, a, mt, -C.lambda * mt),
+    mv,
+  };
+}
+
 /** Position alone, for the swept angle — the same map minoToCartesian uses. */
 function positionAt(r: number, u: number, az: number, a: number): V3 {
   const Rr = Math.sqrt(r * r + a * a);
@@ -556,6 +705,12 @@ function sweptBetween(p: V3, c: V3): number {
 /**
  * Run the separated system from a handoff state until the ray escapes or falls
  * through the horizon.
+ *
+ * With `opts.mt` it also collects the equatorial crossings it makes on the way
+ * out (slice 13). Those are real passes through the disk — at a = 0.9, 116 of
+ * 248 band pixels gain light from them and 98 of those had none at all — and
+ * they cost nothing extra to find, being where `u` changes sign in a loop that
+ * is tracking `u` anyway.
  *
  * One event is not stepped at all: a polar turning point near the spin axis,
  * where the azimuth's swing is a half-turn packed into nothing and the chart is
@@ -585,6 +740,13 @@ export function continueToEscape(
     azStep?: number;
     axisV?: number;
     vFall?: number;
+    /**
+     * The march's conserved m_t. Supplying it turns on equatorial crossing
+     * collection (slice 13) — the energy normalization is the one thing the
+     * separated system cannot recover on its own, and without it a shift
+     * factor would be off by an unknown constant.
+     */
+    mt?: number;
   } = {}
 ): MinoResult {
   const stepScale = opts.stepScale ?? MINO_STEP_SCALE;
@@ -593,6 +755,8 @@ export function continueToEscape(
   const azStep = opts.azStep ?? MINO_AZ_STEP;
   const axisV = opts.axisV ?? MINO_AXIS_V;
   const vFall = opts.vFall ?? MINO_V_FALL;
+  const mt = opts.mt;
+  const crossings: MinoCrossing[] = [];
   const rHor = horizonRadius(a) + 0.01;
   const a2 = a * a;
   const wuConst = C.q + C.lambda * C.lambda - a2;
@@ -672,7 +836,16 @@ export function continueToEscape(
       // single step jumps clean over the trigger window above
       (vFall * v) / Math.max(2 * Math.abs(s.u * s.pu), 1e-9)
     );
-    s = minoStep(s, C, a, h);
+    const sNext = minoStep(s, C, a, h);
+    // The equatorial plane passed during this step, if any. The refinement
+    // sub-step is charged against the budget like any other step: the ladder's
+    // magenta means "the continuation spent MINO_MAX_STEPS" and nothing else,
+    // and the GLSL mirror counts it the same way.
+    if (mt !== undefined && s.u * sNext.u < 0) {
+      crossings.push(crossingAt(s, C, a, h, sNext.u, mt));
+      steps++;
+    }
+    s = sNext;
     steps++;
 
     const cur = minoToCartesian(s, C, a).pos;
@@ -693,6 +866,7 @@ export function continueToEscape(
     passages,
     dir: [vel[0] / n, vel[1] / n, vel[2] / n],
     swept: swept / Math.PI,
+    crossings,
     steps,
     state: s,
   };
