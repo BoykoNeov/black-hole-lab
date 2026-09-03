@@ -6,12 +6,18 @@ import {
   ksRadius,
   raise,
   rk4Step,
+  uCircCart,
   type V3,
   type V4,
 } from "../src/kerr";
 import {
+  cross4,
+  diskPolarization,
   emitterPolarization,
+  frameDirection,
   photonDirInFrame,
+  scatteringDegree,
+  SCATTERING_DEGREE_MAX,
   skyBasis,
   skyLeg,
   skyToScreen,
@@ -193,6 +199,12 @@ function launch(camPos: V3, a: number, n: V3) {
   ) as V4;
   return { tet, mCov };
 }
+
+/** A 4-vector scaled to unit spacelike norm. */
+const unit4 = (pos: V3, a: number, v: V4): V4 => {
+  const n = 1 / Math.sqrt(gDot(pos, a, v, v));
+  return [v[0] * n, v[1] * n, v[2] * n, v[3] * n];
+};
 
 const unit = (v: V3): V3 => {
   const n = Math.hypot(v[0], v[1], v[2]);
@@ -532,5 +544,92 @@ describe("screen projection and Stokes bookkeeping", () => {
     const { degree, dir } = resolveStokes(s, basis);
     expect(degree).toBeCloseTo(0.8, 12);
     expect(Math.abs(dir[0])).toBeCloseTo(1, 12);
+  });
+});
+
+describe("the disk's own polarization (electron scattering)", () => {
+  // A photon leaving the sheet at BL radius rc, in the direction dirLocal of
+  // the orbiting matter's own frame (built from the disk normal and a leg
+  // lying in the surface).
+  function nullAtDisk(pos: V3, a: number, rc: number, dirLocal: V3) {
+    const az = Math.atan2(pos[2], pos[0]);
+    const u = uCircCart(rc, az, a);
+    const nrm = frameDirection(pos, a, u, [0, 0, 1, 0]);
+    const e1 = frameDirection(pos, a, u, [0, 1, 0, 0]);
+    const e2 = unit4(pos, a, cross4(pos, a, u, nrm, e1));
+    const k = [0, 1, 2, 3].map(
+      (i) => dirLocal[0] * e1[i] + dirLocal[1] * nrm[i] + dirLocal[2] * e2[i]
+    ) as V4;
+    return { u, k, P: [0, 1, 2, 3].map((i) => u[i] + k[i]) as V4 };
+  }
+
+  it("is unpolarized face-on and 11.7% at grazing incidence", () => {
+    expect(scatteringDegree(1)).toBeCloseTo(0, 12);
+    expect(scatteringDegree(0)).toBeCloseTo(SCATTERING_DEGREE_MAX, 12);
+    expect(scatteringDegree(-1)).toBeCloseTo(0, 12); // the sheet's two faces agree
+  });
+
+  it("rises monotonically as the view grazes the surface", () => {
+    let prev = -1;
+    for (let mu = 1; mu >= 0; mu -= 0.05) {
+      const d = scatteringDegree(mu);
+      expect(d).toBeGreaterThan(prev);
+      prev = d;
+    }
+  });
+
+  it("polarizes parallel to the disk surface, and transverse to the ray", () => {
+    const a = 0.7;
+    const rc = 9;
+    const az = 0.8;
+    const R = Math.sqrt(rc * rc + a * a);
+    const pos: V3 = [R * Math.cos(az), 0, R * Math.sin(az)];
+    // a photon leaving the sheet well off the normal
+    const { P } = nullAtDisk(pos, a, rc, unit([0.3, 0.85, -0.43]));
+    const got = diskPolarization(pos, a, rc, P)!;
+    expect(got).not.toBeNull();
+    const u = uCircCart(rc, az, a);
+    expect(gDot(pos, a, got.f, got.f)).toBeCloseTo(1, 9);
+    expect(gDot(pos, a, got.f, P)).toBeCloseTo(0, 9);
+    expect(gDot(pos, a, got.f, u)).toBeCloseTo(0, 9);
+    // parallel to the surface: orthogonal to the disk normal as the orbiting
+    // matter sees it
+    const nrm = frameDirection(pos, a, u, [0, 0, 1, 0]);
+    expect(gDot(pos, a, got.f, nrm)).toBeCloseTo(0, 9);
+  });
+
+  it("reports light leaving along the normal as unpolarized", () => {
+    const a = 0.5;
+    const rc = 12;
+    const R = Math.sqrt(rc * rc + a * a);
+    const pos: V3 = [R, 0, 0];
+    const u = uCircCart(rc, 0, a);
+    const nrm = frameDirection(pos, a, u, [0, 0, 1, 0]);
+    const P: V4 = [
+      u[0] + nrm[0],
+      u[1] + nrm[1],
+      u[2] + nrm[2],
+      u[3] + nrm[3],
+    ];
+    expect(diskPolarization(pos, a, rc, P)).toBeNull();
+  });
+
+  it("gives a nearly grazing ray nearly the full 11.7%", () => {
+    const a = 0.3;
+    const rc = 14;
+    const R = Math.sqrt(rc * rc + a * a);
+    const pos: V3 = [R, 0, 0];
+    const u = uCircCart(rc, 0, a);
+    const nrm = frameDirection(pos, a, u, [0, 0, 1, 0]);
+    // a direction in the surface, orthogonal to the normal and to u
+    const along = frameDirection(pos, a, u, [0, 1, 0, 0]);
+    const inSurf = unit4(pos, a, cross4(pos, a, u, nrm, along));
+    const k: V4 = [0, 1, 2, 3].map(
+      (i) => 0.02 * nrm[i] + Math.sqrt(1 - 0.0004) * inSurf[i]
+    ) as V4;
+    const P: V4 = [0, 1, 2, 3].map((i) => u[i] + k[i]) as V4;
+    const got = diskPolarization(pos, a, rc, P)!;
+    expect(got.degree).toBeGreaterThan(0.11);
+    expect(got.degree).toBeLessThan(SCATTERING_DEGREE_MAX);
   });
 });

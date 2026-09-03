@@ -32,7 +32,15 @@
  *    the singular pieces were the coordinates', not the geometry's.
  */
 
-import { gDot, ksRadius, type Tetrad, type V3, type V4 } from "./kerr.js";
+import {
+  gDot,
+  ksRadius,
+  lower,
+  uCircCart,
+  type Tetrad,
+  type V3,
+  type V4,
+} from "./kerr.js";
 
 /**
  * The Walker–Penrose constant, as its real and imaginary parts.
@@ -302,4 +310,108 @@ export function emitterPolarization(
   if (!(n2 > 1e-10)) return null;
   const n = 1 / Math.sqrt(n2);
   return [f[0] * n, f[1] * n, f[2] * n, f[3] * n];
+}
+
+// ---------- the emitter: an electron-scattering disk surface ----------
+
+/**
+ * Polarized fraction of light leaving a scattering atmosphere at angle
+ * mu = |cos| to the surface normal, in the surface's own rest frame.
+ *
+ * The disk this lab renders is the zero-torque Novikov–Thorne sheet, whose
+ * light escapes through an atmosphere dominated by electron scattering, and
+ * scattering polarizes: light leaving straight up carries no preferred
+ * direction and is unpolarized, light leaving nearly along the surface is
+ * polarized parallel to it. Chandrasekhar solved this exactly in 1960; the
+ * answer is his Table XXIV.
+ *
+ * PHYSICAL FORM, APPROXIMATE COEFFICIENTS — the same class of knob as the
+ * jet's g <= 1.6 clamp, and labelled the same way. The two endpoints here are
+ * the real ones: exactly 0 face-on, and 11.7% at grazing incidence, which is
+ * the number the accretion-disk literature quotes from that table. The shape
+ * between them is the (1-mu)/(1+mu) curve scaled to meet them, not
+ * Chandrasekhar's own; it is monotonic, correctly slow to rise, and within a
+ * fraction of a percent of the published endpoints, but it is a fit. Table
+ * XXIV itself was not obtainable from any secondary source. Swapping the fit
+ * for the tabulated curve changes tick LENGTHS only — every tick direction in
+ * the render comes from the geometry below, which is exact. See
+ * docs/ROADMAP.md, hurdle H8.
+ */
+export const SCATTERING_DEGREE_MAX = 0.117;
+
+export function scatteringDegree(mu: number): number {
+  const m = Math.min(1, Math.abs(mu));
+  return (SCATTERING_DEGREE_MAX * (1 - m)) / (1 + m);
+}
+
+/** A world direction as the unit spatial direction an observer with 4-velocity u sees. */
+export function frameDirection(pos: V3, a: number, u: V4, d: V4): V4 {
+  const du = gDot(pos, a, d, u);
+  const s: V4 = [d[0] + du * u[0], d[1] + du * u[1], d[2] + du * u[2], d[3] + du * u[3]];
+  const n = 1 / Math.sqrt(gDot(pos, a, s, s));
+  return [s[0] * n, s[1] * n, s[2] * n, s[3] * n];
+}
+
+/**
+ * The 4-dimensional cross product of three vectors: eps^mu_{nu rho sigma}
+ * B^nu C^rho D^sigma, which is orthogonal to all three.
+ *
+ * Kerr–Schild's one great convenience makes this trivial: det(g) = -1
+ * exactly, because g = eta + f l l with l null with respect to the flat
+ * metric, so the volume element is the flat one and the Levi-Civita tensor is
+ * the bare permutation symbol. No metric determinant to carry, no square
+ * roots. The result is NOT normalized — its length is the volume of the
+ * parallelepiped, which vanishes when the three collapse into a plane.
+ */
+export function cross4(pos: V3, a: number, B: V4, C: V4, D: V4): V4 {
+  const b = lower(pos, a, B);
+  const c = lower(pos, a, C);
+  const d = lower(pos, a, D);
+  const m = (i: number, j: number, k: number) =>
+    b[i] * (c[j] * d[k] - c[k] * d[j]) -
+    b[j] * (c[i] * d[k] - c[k] * d[i]) +
+    b[k] * (c[i] * d[j] - c[j] * d[i]);
+  // eps^{mu nu rho sigma} = -[mu nu rho sigma], since eps_{0123} = +sqrt(-g) = 1
+  // and raising all four indices multiplies by det(g^-1) = -1. Each component
+  // then carries the sign of the permutation that brings its own index to the
+  // front, which alternates — writing them all alike silently breaks the
+  // orthogonality this whole construction exists for.
+  return [-m(1, 2, 3), m(0, 2, 3), -m(0, 1, 3), m(0, 1, 2)];
+}
+
+/**
+ * How the disk emits at one equatorial crossing: the polarization direction
+ * and the polarized fraction, for circular-orbit matter at BL radius rc.
+ *
+ * The electric vector of scattered light lies perpendicular to the plane
+ * containing the surface normal and the outgoing ray — parallel to the disk
+ * surface, in other words — which is exactly the 4-cross product of the
+ * emitter's 4-velocity, the disk normal and the photon direction. That is
+ * exact geometry and carries no fitted number; only the fraction does.
+ *
+ * The normal is taken with its sign discarded (mu = |cos|): the sheet has
+ * zero thickness and two identical faces, so a ray leaving downward is the
+ * mirror of one leaving up. Returns null looking straight down the normal,
+ * where the scattering plane is undefined and the light is unpolarized —
+ * which is the honest answer, not a direction the normalization invented.
+ */
+export function diskPolarization(
+  pos: V3,
+  a: number,
+  rc: number,
+  P: V4
+): { f: V4; degree: number } | null {
+  const az = Math.atan2(pos[2], pos[0]);
+  const u = uCircCart(rc, az, a);
+  const nrm = frameDirection(pos, a, u, [0, 0, 1, 0]);
+  const k = photonDirInFrame(pos, a, u, P);
+  const mu = gDot(pos, a, nrm, k);
+  const w = cross4(pos, a, u, nrm, k);
+  const n2 = gDot(pos, a, w, w);
+  if (!(n2 > 1e-12)) return null;
+  const n = 1 / Math.sqrt(n2);
+  return {
+    f: [w[0] * n, w[1] * n, w[2] * n, w[3] * n],
+    degree: scatteringDegree(mu),
+  };
 }
