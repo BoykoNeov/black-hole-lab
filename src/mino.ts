@@ -119,6 +119,15 @@ export function polarPotential(u: number, C: RayPotentials, a: number): number {
  * Net: dazBL - twist * pr. Getting the twist sign wrong is a ~30% error in the
  * azimuth rate at r = 1.4; getting step 2 wrong builds the MIRROR-IMAGE
  * trajectory, which passes every winding test there is.
+ *
+ * `1 - u*u` is left as written, deliberately, even though it is a difference of
+ * nearly equal numbers when the ray runs near the spin axis and the shader will
+ * evaluate it in float32. Carrying sn2 = 1 - u^2 as a sixth state variable with
+ * d(sn2)/dtau = -2 u pu removes the cancellation and is WORSE: on the ray that
+ * comes closest to the axis without being flagged (1 - u^2 down to 1.5e-5) the
+ * plain form costs 0.018 deg in float64 and 0.031 in float32, while the carried
+ * variable costs 0.26, because it then drifts away from u instead of being
+ * defined by it. Measured, not assumed — do not "fix" this in the GLSL mirror.
  */
 export function minoDeriv(s: MinoState, C: RayPotentials, a: number): MinoState {
   const a2 = a * a;
