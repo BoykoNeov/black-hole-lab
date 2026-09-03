@@ -114,6 +114,34 @@ The march cannot fix it (steps diverge as ~(1/γ) ln(1/δ)). Two honest paths:
 
 Both are a slice's worth of work with a testable CPU oracle each.
 
+### H9 — the continuation cannot follow a ray over the spin axis
+
+**Status: open, flagged rather than guessed (slice 11a).** `src/mino.ts`
+continues an exhausted ray in the separated (r, θ, φ) system, and that chart is
+singular on the spin axis. A ray that crosses the pole must swing its azimuth by
+very nearly π, packed into a Mino interval of order λ/(a²+q) — about 2e-5 for
+the rays that fail — and at λ exactly zero the term λ/(1−u²) is 0/0, so the
+crossing degenerates into a *reflection* no matter how fine the step. The
+Cartesian march has no such trouble, which is why it is the module's oracle.
+
+Measured against that march over 379 band rays at eight cameras, the closest
+approach to the axis separates the two groups by three orders of magnitude:
+every ray whose sin²θ stays above 1e-5 lands within 0.009°, and the ones below
+reach 126°. `axisApproach` computes that closest approach in closed form from
+(λ, q, a) alone, and `continueToEscape` returns `nearAxis` rather than a
+direction it cannot justify. Over a full 1280-wide grid at fifteen cameras this
+flags **115 of 14,147 band pixels (0.81%)** — all of them at cameras within
+0.12 rad of face-on, none at any camera within half a radian of the equator.
+
+Path, and it is a closed form rather than more steps: the singular part of the
+azimuth across the turning point is ∫λ dτ/(1−u²), which in v = 1−u² is
+∫λ dv/(v·√U) with U = −λ² + Bv − a²v² and B = a²+q+λ². That is the standard
+∫dv/(v√(c+bv+av²)) with c = −λ² < 0, giving (1/|λ|)·arcsin((Bv−2λ²)/(v√(B²−4a²λ²)))
+— so the whole passage contributes sign(λ)·π in the limit, exactly as the
+geometry demands. Switching to that form inside a v-threshold and resuming with
+the flipped `pu` sign would close it. Needs its own oracle and its own sign
+work, which is why slice 11 registered it instead of bundling it.
+
 ### H2 — γ is quoted per equatorial edge, not around the ring
 
 **Status: open, labelled honestly.** `photonOrbitLyapunov` is the exponent of
