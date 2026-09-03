@@ -2,6 +2,12 @@
 
 import { MARCH_MAX_STEPS } from "./kerr";
 import { GAS_COUNT, STAR_COUNT } from "./matter";
+import {
+  MINO_AXIS_EPS,
+  MINO_AZ_STEP,
+  MINO_MAX_STEPS,
+  MINO_STEP_SCALE,
+} from "./mino";
 import { TDE_MAX } from "./tde";
 
 /**
@@ -23,10 +29,33 @@ export const LADDER_RUNGS: readonly LadderRung[] = [
   { label: "4–5", rgb: [0.98, 0.5, 0.2] },
   { label: "5+", rgb: [0.95, 0.25, 0.35] },
 ];
-/** Rays still winding when the march budget ended: fate exact, colour not. */
+/**
+ * The continuation spent its OWN step budget (slice 11b).
+ *
+ * Until slice 11 this marked every ray the march left winding — ~50 px of the
+ * a = 0.998 prograde edge — and it meant "fate exact, colour not". Those rays
+ * now get a real escape direction out of src/mino.ts, so the colour is an
+ * instrument rather than a feature: it should read zero pixels at every
+ * reachable setting, and a band of it means MINO_MAX_STEPS has been clipped by
+ * some camera the sweep behind that constant never sampled. A tripwire that
+ * reads zero is a passing check, not dead UI.
+ */
 export const LADDER_UNRESOLVED: LadderRung = {
-  label: "budget spent — fate exact, colour not",
+  label: "continuation capped — should never appear",
   rgb: [0.85, 0.3, 0.95],
+};
+/**
+ * The ray passes too close to the spin axis for the separated chart to follow
+ * it (hurdle H9; see MINO_AXIS_EPS in src/mino.ts).
+ *
+ * Its own colour rather than magenta's, because the two say different things:
+ * this one is expected — 0.8% of band pixels, only within ~0.12 rad of
+ * face-on — and magenta is not. Sharing one swatch would make the tripwire
+ * camera-dependent and hide a budget regression behind a known chart problem.
+ */
+export const LADDER_NEAR_AXIS: LadderRung = {
+  label: "over the spin axis — chart cannot follow (H9)",
+  rgb: [0.35, 0.95, 0.95],
 };
 const vec3 = (c: readonly number[]) => `vec3(${c.map((v) => v.toFixed(2)).join(", ")})`;
 
@@ -273,6 +302,99 @@ bool capturedByConstants(float lambda, float q, float rCam, bool outward) {
     if (roots[i] > rCam) turnsAbove = true;
   }
   return !outward || turnsAbove;
+}
+
+// ---------- the separated continuation (slice 11) ----------
+// Mirrors src/mino.ts, which is the tested oracle: every comment justifying a
+// sign, a bound or a form written the way it is lives there, and the numbers
+// below are interpolated from it so the two cannot drift. Keep them in sync.
+//
+// The march cannot finish a near-critical ray at any budget, but away from the
+// disk a Kerr null geodesic SEPARATES: in Mino time (dtau = dsigma / Sigma) the
+// radial and polar motions are independent 1-D polynomial problems. Five
+// scalars, no metric and no metric gradients, so a step costs a fraction of an
+// RK4 march step — which is how a ray needing ~291,000 marched steps finishes
+// here in a few hundred.
+//
+// State is packed as s = (r, pr, u, pu) with the world azimuth carried beside
+// it: az never feeds back into the other four, so integrating it with the same
+// RK4 weights off the same stage derivatives is exact. Constants are packed as
+// C = (lambda, q, k, c2), built once — recomputing k and c2 inside a function
+// that runs four times per step costs more than the step.
+
+// U(u) = (1 - u^2) Theta, the polar partner of radialPotential. In u = cos
+// theta rather than theta for the same reason the radial side is in r: it is
+// then a polynomial, with no trigonometry in the loop and no coordinate
+// singularity on the spin axis.
+float polarPotential(float u, vec4 C) {
+  float a2 = uSpin * uSpin;
+  float u2 = u * u;
+  return (-a2 * u2 + (a2 - C.y - C.x * C.x)) * u2 + C.y;
+}
+
+// The five-scalar derivative. Everything that can go wrong goes wrong in daz:
+// three sign decisions live in it, and getting any of them wrong produces a
+// trajectory with IDENTICAL winding and a wrong sky direction. The net is
+// dazBL - twist * pr; mino.ts derives it and test/mino.test.ts pins the rate
+// numerically against the march. Do not re-derive it here.
+//
+// 1 - u*u is left as written even though it is a near-cancellation close to
+// the axis and this is float32. Carrying 1 - u^2 as a sixth state variable
+// removes the cancellation and is measurably WORSE — see mino.ts.
+vec4 minoDeriv(vec4 s, vec4 C, out float daz) {
+  float a = uSpin, a2 = a * a;
+  float r2 = s.x * s.x;
+  float Delta = r2 - 2.0 * s.x + a2;
+  float twist = (2.0 * a * s.x) / (Delta * (r2 + a2));
+  daz = (a / Delta) * (r2 + a2 - a * C.x) - a + C.x / (1.0 - s.z * s.z)
+      - twist * s.y;
+  return vec4(s.y,
+              2.0 * s.x * r2 + C.w * s.x + C.z,
+              s.w,
+              -2.0 * a2 * s.z * s.z * s.z + (a2 - C.y - C.x * C.x) * s.z);
+}
+
+// One RK4 step of the separated system, by Mino time h.
+vec4 minoStep(vec4 s, vec4 C, float h, inout float az) {
+  float d1, d2, d3, d4;
+  vec4 k1 = minoDeriv(s, C, d1);
+  vec4 k2 = minoDeriv(s + 0.5 * h * k1, C, d2);
+  vec4 k3 = minoDeriv(s + 0.5 * h * k2, C, d3);
+  vec4 k4 = minoDeriv(s + h * k3, C, d4);
+  az += (h / 6.0) * (d1 + 2.0 * (d2 + d3) + d4);
+  return s + (h / 6.0) * (k1 + 2.0 * (k2 + k3) + k4);
+}
+
+// Back to the Cartesian Kerr-Schild the rest of the shader works in: the same
+// map ksRadius inverts, differentiated once for the travel direction.
+void minoCart(vec4 s, vec4 C, float az, out vec3 pos, out vec3 vel) {
+  float a = uSpin;
+  float Rr = sqrt(s.x * s.x + a * a);
+  float sn = sqrt(max(1.0 - s.z * s.z, 0.0));
+  float cf = cos(az), sf = sin(az);
+  float daz;
+  minoDeriv(s, C, daz);
+  float dRr = s.x * s.y / Rr;
+  // On the axis sn vanishes with pu (U(+-1) = -lambda^2 forces lambda = 0
+  // there), so this is 0/0 rather than a pole; the guard only keeps float
+  // arithmetic out of it.
+  float dsn = sn > 1e-12 ? (-s.z * s.w) / sn : 0.0;
+  pos = vec3(Rr * sn * cf, s.x * s.z, Rr * sn * sf);
+  vel = vec3(dRr * sn * cf + Rr * dsn * cf - Rr * sn * sf * daz,
+             s.y * s.z + s.x * s.w,
+             dRr * sn * sf + Rr * dsn * sf + Rr * sn * cf * daz);
+}
+
+// Closest approach to the spin axis, as sin^2(theta), from the constants alone:
+// the small root of a^2 v^2 - B v + lambda^2 with v = 1 - u^2. Written as
+// 2c/(b + sqrt(...)) rather than the usual quadratic formula, which is a
+// difference of nearly equal numbers exactly when the root is small — the only
+// regime this is asked about.
+float axisApproach(vec4 C) {
+  float lam2 = C.x * C.x;
+  float B = uSpin * uSpin + C.y + lam2;
+  float disc = sqrt(max(B * B - 4.0 * uSpin * uSpin * lam2, 0.0));
+  return (2.0 * lam2) / max(B + disc, 1e-30);
 }
 
 // f = 2r^3/(r^4 + a^2 y^2) and the spatial null vector l (l_t = 1).
@@ -763,17 +885,20 @@ vec3 crossingPol(float rc, vec3 pc, float mt, vec3 mv, vec2 kH, vec2 kV, float d
 // The hue is the rung; the scene's own luminance survives as brightness so the
 // disk's crossings and the sky still read through it, Reinhard-squashed to
 // keep an HDR disk from whiting the band out. Captured pixels stay black.
-// unresolved marks rays still winding when the budget ended — their fate is
-// exact (lambda and q), their colour in the normal view is not, and this is
-// the one place that band is drawn as what it is rather than as sky.
+// Since slice 11 the budget-exhausted band has a real winding of its own — the
+// march's plus the continuation's — so it colours as an ordinary rung. The two
+// off-ladder colours are what is LEFT: unresolved means the continuation spent
+// its own budget (a tripwire that should read zero everywhere), nearAxis means
+// the separated chart cannot follow this ray over the pole.
 // A hairline at every integer is drawn constant-width from the derivative,
 // so the rungs stay countable where they crowd toward the critical curve.
-vec3 ladderColor(vec3 scene, float w, bool escaped, bool unresolved) {
+vec3 ladderColor(vec3 scene, float w, bool escaped, bool unresolved, bool nearAxis) {
   if (!escaped) return vec3(0.0);
   float l = max(scene.r, max(scene.g, scene.b));
   float bright = 0.35 + 0.65 * l / (1.0 + l);
   vec3 hue;
   if (unresolved) hue = ${vec3(LADDER_UNRESOLVED.rgb)};
+  else if (nearAxis) hue = ${vec3(LADDER_NEAR_AXIS.rgb)};
 ${LADDER_RUNGS.map((r, i) =>
     i < LADDER_RUNGS.length - 1
       ? `  else if (w < ${(i + 1).toFixed(1)}) hue = ${vec3(r.rgb)};`
@@ -809,7 +934,8 @@ void main() {
   bool haveSky = true;    // false = captured by the hole (or occluded)
   bool matterOn = uStarsOn > 0.5 || uJetsOn > 0.5 || uTdeN > 0;
   float swept = 0.0;      // ladder view: position angle swept, radians
-  bool unresolved = false; // ladder view: the budget ran out before a verdict
+  bool unresolved = false; // the continuation spent its own budget — see below
+  bool nearAxis = false;   // the separated chart cannot follow this ray (H9)
   // slice 10: Stokes of the disk light, accumulated in the camera's sky basis
   vec3 eH = vec3(0.0), eV = vec3(0.0);
   vec2 kH = vec2(0.0), kV = vec2(0.0);
@@ -932,12 +1058,105 @@ void main() {
     // half-orbits, which diverges at the edge, and gamma there is 0.19. So do
     // not ask the march. lambda and q already know, and cost nothing.
     // See docs/DESIGN.md, "what gamma costs the renderer".
-    if (!settled) {
-      unresolved = true; // still winding when the budget ended
-      if (!capturedByConstants(lambdaC, qC, rCam, outward)) escaped = true;
+    //
+    // The colour is not the march's to give either, and since slice 11 it does
+    // not have to guess: the ray is handed to the separated continuation above,
+    // which finishes it in a few hundred cheap steps and returns both the
+    // escape direction and the winding still to sweep. Both, because the ladder
+    // colours BY winding — fixing only the direction would move these pixels to
+    // the wrong rung while removing the colour that announced them.
+    bool continued = false;
+    if (!settled && !capturedByConstants(lambdaC, qC, rCam, outward)) {
+      escaped = true;
+      continued = true;
+      float a2 = uSpin * uSpin;
+      float k = (lambdaC - uSpin) * (lambdaC - uSpin) + qC;
+      vec4 C = vec4(lambdaC, qC, k, 2.0 * a2 - 2.0 * uSpin * lambdaC - k);
+
+      // The handoff takes only the march's PHASE — r, u, az and the two signs.
+      // Everything else comes from the launch constants, which never drifted:
+      // by 320 steps the march has drifted the Hamiltonian to ~3.6e-6, which
+      // near a turning point is a percent of the radial potential, and gamma
+      // turns that into an exponentially growing phase error. Re-projecting the
+      // momenta onto sqrt(R) and sqrt(U) with the exact constants also puts the
+      // ray back on the null cone and fixes the Mino scale to the conserved
+      // energy. mino.ts measures what each of those buys.
+      vec3 dpF, dmF;
+      geoDeriv(p, mv, mt, dpF, dmF);
+      float rH = ksRadius(p);
+      float rH2 = rH * rH;
+      float Sq = rH2 * rH2 + a2 * p.y * p.y;
+      float drds = (rH / Sq) * (rH2 * p.x * dpF.x + (rH2 + a2) * p.y * dpF.y
+                                + rH2 * p.z * dpF.z);
+      float uH = p.y / rH;
+      float duds = (dpF.y * rH - p.y * drds) / rH2;
+      // (drds >= 0 ? 1 : -1), not sign(): sign(0.0) is 0.0, which would erase
+      // pr on a ray handed off exactly at its turning point.
+      vec4 s = vec4(rH,
+                    (drds >= 0.0 ? 1.0 : -1.0)
+                      * sqrt(max(radialPotential(rH, lambdaC, qC), 0.0)),
+                    uH,
+                    (duds >= 0.0 ? 1.0 : -1.0)
+                      * sqrt(max(polarPotential(uH, C), 0.0)));
+      float az = atan(p.z, p.x);
+
+      // The chart is singular on the spin axis, and a ray that passes over the
+      // pole swings its azimuth by nearly pi in a Mino interval of order 2e-5 —
+      // at lambda exactly zero the term is 0/0 and no step size finds the jump.
+      // The closest approach is closed-form from the constants, so say so
+      // rather than guess: measured, every ray above this lands within 0.009
+      // deg and the ones below reach 126.
+      nearAxis = axisApproach(C) < ${MINO_AXIS_EPS.toExponential()};
+
+      float rStopM = uHorizon + 0.01;
+      float wuConst = qC + lambdaC * lambdaC - a2;
+      vec3 prevP, velC;
+      if (uLadder > 0.5) minoCart(s, C, az, prevP, velC);
+      for (int i = 0; i < ${MINO_MAX_STEPS}; i++) {
+        // Step control follows the two oscillators' own local frequencies, not
+        // a flat cap on h: off the equator Carter q reaches 20-25 and the polar
+        // swing runs 2-3x faster, and the cap tuned to the near-equatorial band
+        // was 129.7 deg out there. Each omega^2 is |d(acceleration)/d(coord)|.
+        // The next two bounds stop overshoot in the coordinates themselves,
+        // which matters at large r where pr grows like r^2. The last watches
+        // the azimuth's only genuinely sharp feature, lambda/(1 - u^2): without
+        // it the near-axis rays do not merely lose accuracy, they FAIL TO
+        // CONVERGE, getting worse as the step shrinks.
+        float wu = sqrt(abs(6.0 * a2 * s.z * s.z + wuConst));
+        float wr = sqrt(abs(6.0 * s.x * s.x + C.w));
+        float h = min(min(${MINO_STEP_SCALE.toFixed(3)} / max(max(wu, wr), 1e-9),
+                          0.08 * max(s.x, 1.0) / max(abs(s.y), 1e-9)),
+                      min(0.08 / max(abs(s.w), 1e-9),
+                          ${MINO_AZ_STEP.toFixed(4)}
+                            / max(abs(C.x) / (1.0 - s.z * s.z), 1e-9)));
+        s = minoStep(s, C, h, az);
+
+        if (uLadder > 0.5) {
+          vec3 curP;
+          minoCart(s, C, az, curP, velC);
+          swept += atan(length(cross(prevP, curP)), dot(prevP, curP));
+          prevP = curP;
+        }
+
+        // Through the horizon, or out past the shader's own escape radius and
+        // outgoing. The first is only a cross-check — capturedByConstants has
+        // already ruled on fate and keeps the last word — so it stops the
+        // integration rather than changing the verdict.
+        if (isnan(s.x) || s.x < rStopM) break;
+        if (s.x > 64.0 && s.y > 0.0) break;
+        if (i == ${MINO_MAX_STEPS - 1}) unresolved = true;
+      }
+      vec3 posC;
+      minoCart(s, C, az, posC, velC);
+      sky = velC;
+      haveSky = true;
     }
 
-    if (escaped) {
+    // rayCaptured stays the sole authority on fate; the continuation supplies
+    // colour and winding only. If the two ever disagreed the criterion would
+    // win — it is exact and closed-form where the continuation is an
+    // integration — and test/mino.test.ts pins that they do not.
+    if (escaped && !continued) {
       vec3 dpF, dmF;
       geoDeriv(p, mv, mt, dpF, dmF);
       sky = dpF;
@@ -998,7 +1217,7 @@ void main() {
   outPol = vec4(polOut, polI, polI > 0.0 ? 1.0 : 0.0);
 
   vec3 col = accum + (haveSky ? thru * skyColor(normalize(sky)) : vec3(0.0));
-  if (uLadder > 0.5) col = ladderColor(col, swept / PI, haveSky, unresolved);
+  if (uLadder > 0.5) col = ladderColor(col, swept / PI, haveSky, unresolved, nearAxis);
   // float16 fence: one Inf/NaN/negative pixel would smear black blocks
   // through the bloom chain, so clamp and zero anything non-finite
   col = clamp(col, vec3(0.0), vec3(4096.0));
