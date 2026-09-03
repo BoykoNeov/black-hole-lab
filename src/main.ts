@@ -39,6 +39,7 @@ import {
   drawCompareDivider,
   drawEmbedding,
   drawLadderLegend,
+  drawPolarizationLegend,
   drawPotential,
   drawResizeGrip,
   drawShadowOutline,
@@ -81,6 +82,7 @@ import {
   insetBox,
   insetSides,
   legendBox,
+  polLegendBox,
   sameGrip,
   type Grip,
   type InsetId,
@@ -1386,17 +1388,31 @@ function render() {
   // The ladder view's legend (slice 9): one per strip, since the gammas it
   // quotes are per spin. Under the clock row when that is up, which it can
   // only be in single view.
+  const legendTop = params.eduClocks && !params.compare ? CLOCKS_BLOCK_H : 0;
   if (params.eduLadder) {
-    const topInset = params.eduClocks && !params.compare ? CLOCKS_BLOCK_H : 0;
     if (params.compare) {
       const l = legendBox(iv, "left", 0);
       drawLadderLegend(hudCtx, l.x, l.y, COMPARE_SPIN_LEFT);
       const r = legendBox(iv, "right", 0);
       drawLadderLegend(hudCtx, r.x, r.y, params.spin);
     } else {
-      const b = legendBox(iv, null, topInset);
+      const b = legendBox(iv, null, legendTop);
       drawLadderLegend(hudCtx, b.x, b.y, params.spin);
     }
+  }
+
+  // Slice 10's legend stacks under the ladder's in the same column. One copy
+  // even while comparing, unlike the ladder's: what it explains is the tick
+  // scale, which is the same on both halves — only the drawn field differs,
+  // and that is the thing the two sides are there to be compared on.
+  if (params.eduPolarization) {
+    const b = polLegendBox(
+      iv,
+      params.compare ? "right" : null,
+      params.compare ? 0 : legendTop,
+      params.eduLadder
+    );
+    drawPolarizationLegend(hudCtx, b.x, b.y);
   }
 
   if (iv.shown.pot) {

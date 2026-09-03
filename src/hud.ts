@@ -19,8 +19,22 @@ import {
 import type { EmbeddingProfile, Projected, ShadowEdge, Trail, V3 } from "./edu";
 import type { CameraBasis } from "./camera";
 import { COMPARE_SPIN_LEFT, splitMidpoint } from "./compare";
-import { EMBED_H, EMBED_W, LEGEND_H, LEGEND_W, POTENTIAL_H, POTENTIAL_W } from "./insets";
-import { LADDER_RUNGS, LADDER_UNRESOLVED } from "./shaders";
+import {
+  EMBED_H,
+  EMBED_W,
+  LEGEND_H,
+  LEGEND_W,
+  POL_LEGEND_H,
+  POTENTIAL_H,
+  POTENTIAL_W,
+} from "./insets";
+import {
+  LADDER_RUNGS,
+  LADDER_UNRESOLVED,
+  TICK_MAX_LENGTH,
+  TICK_PITCH,
+} from "./shaders";
+import { SCATTERING_DEGREE_MAX } from "./polarization";
 
 /** Shared look for every HUD element — matches the control-panel CSS. */
 export const HUD_STYLE = {
@@ -1116,6 +1130,64 @@ export function drawLadderLegend(
     x + 10,
     ry
   );
+  ctx.restore();
+}
+
+/**
+ * The polarization overlay's legend (slice 10).
+ *
+ * Two things a viewer cannot read off the ticks themselves: what a mark's
+ * LENGTH means, and why there are none where the disk is faint. The sample
+ * marks are drawn at exactly the lengths the shader draws — same pitch, same
+ * fraction of it — so the scale can be held against the frame rather than
+ * merely believed.
+ */
+export function drawPolarizationLegend(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number
+): void {
+  ctx.save();
+  ctx.fillStyle = HUD_STYLE.panelBg;
+  ctx.strokeStyle = HUD_STYLE.panelBorder;
+  ctx.lineWidth = 1;
+  panelPath(ctx, x, y, LEGEND_W, POL_LEGEND_H, 8);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.font = HUD_STYLE.font;
+  ctx.fillStyle = HUD_STYLE.stroke;
+  ctx.fillText("polarization — which way the light shakes", x + 10, y + 14);
+
+  // The scale, drawn the way the shader draws it: a full mark is the most a
+  // scattering surface can polarize, and length falls off with the fraction.
+  const full = TICK_PITCH * TICK_MAX_LENGTH;
+  let ry = y + 34;
+  const row = (frac: number, label: string) => {
+    const len = full * (frac / SCATTERING_DEGREE_MAX);
+    ctx.strokeStyle = HUD_STYLE.stroke;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x + 10 + (full - len), ry);
+    ctx.lineTo(x + 10 + full + len, ry);
+    ctx.stroke();
+    ctx.fillStyle = HUD_STYLE.stroke;
+    ctx.font = HUD_STYLE.small;
+    ctx.fillText(label, x + 14 + 2 * full, ry);
+    ry += 16;
+  };
+  row(SCATTERING_DEGREE_MAX, `${(100 * SCATTERING_DEGREE_MAX).toFixed(1)}% — grazing the surface`);
+  row(SCATTERING_DEGREE_MAX / 2, `${((100 * SCATTERING_DEGREE_MAX) / 2).toFixed(1)}%`);
+  row(SCATTERING_DEGREE_MAX / 6, "≈2% — nearly face-on");
+
+  ctx.fillStyle = HUD_STYLE.faint;
+  ctx.font = HUD_STYLE.small;
+  ry += 3;
+  ctx.fillText("marks fade out with the disk's own light,", x + 10, ry);
+  ry += LEGEND_ROW;
+  ctx.fillText("and shorten where two images overlap", x + 10, ry);
   ctx.restore();
 }
 

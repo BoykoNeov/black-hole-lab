@@ -632,6 +632,150 @@ cannot name a band the shader paints differently. The legend's own layout is
 `insets.ts`'s `legendBox`, tested, because a panel drawn at a position nothing
 checks is how the insets' grips ended up unreachable once already.
 
+## Slice 10 — polarization, and what it does not cost
+
+Light from the disk arrives polarized, and Kerr turns the plane of that
+polarization on the way out. The obvious way to render that is the one this
+slice does not take: carry a polarization vector alongside the momentum and
+parallel-transport it every march step. That would add four components to the
+hot loop and roughly double the most expensive shader in the lab, for a
+quantity that is drawn once per pixel.
+
+It is not necessary. A polarization dragged along a null geodesic in Kerr
+carries a conserved complex number, the Walker–Penrose constant. Conserved
+means it can be evaluated at the disk and read at the camera with nothing in
+between — two closed forms per crossing, and no per-step cost at all. The
+polarization is the third thing this spacetime hands over for free, after the
+axial momentum and Carter's constant, and for the same reason: Kerr has more
+symmetry than it looks like it has.
+
+### The camera is not at infinity, so the textbook screen formulas do not apply
+
+Every treatment of this writes the observed polarization angle in terms of the
+impact parameters of an observer infinitely far away. The orbit camera goes
+down to r = 3.2. So instead: the camera's own two sky legs — the tetrad
+directions perpendicular to the pixel's ray — are themselves legitimate
+polarizations, and their constants form a basis. The emitted constant is
+resolved against that basis by a 2x2 solve, which is exact at any radius and
+reduces to the textbook answer far away.
+
+That basis turns out to be better than merely correct. The map from
+polarizations to constants is a *similarity* — a rotation and a scale — and
+the scale is the same at both ends of a geodesic, because a unit polarization
+stays unit and the constant does not move. So a unit emitted polarization
+comes back as a unit sky vector, exactly, and `test/polarization.test.ts`
+checks that every step along a traced ray. It is the cheapest single statement
+that the closed form, the basis and the tangent all agree.
+
+### Boyer–Lindquist's singularities are the coordinates', not the geometry's
+
+The constant is normally written in Boyer–Lindquist components. The lab
+marches in Cartesian Kerr–Schild, so it needed rewriting there, and two of the
+four 1-forms involved naively carry a `1/Delta` that blows up on the horizon,
+while the azimuth is singular on the spin axis a face-on camera sits on.
+
+Neither survives the algebra. The whole `dr` part of `(r^2+a^2) dphi - a dt`
+cancels identically — its coefficient is `a - a*Delta/Delta` — and the `dr`
+part of the other drops out of the wedge it appears in. The axis-singular
+piece is only ever needed as a product that is the round sphere's area form in
+disguise; expanded, a factor of `sin^2(theta)` cancels top and bottom and
+leaves a polynomial. No epsilons, no special cases. This is the same story
+`carterQ` told in slice 8, and the fact that the `1/Delta` cancels *exactly*
+is itself evidence that the sign conventions cohere, since a single wrong sign
+leaves a residue.
+
+Kerr–Schild pays once more: `det(g) = -1` there exactly, so the Levi-Civita
+tensor is the bare permutation symbol and the cross product the emitter model
+needs costs no determinant and no square root. Its four components carry
+alternating signs, and writing them alike — which is easy to do — silently
+destroys the orthogonality the construction exists for. The tests caught that.
+
+### The emitter is the one fitted thing, and it moves lengths only
+
+Light escaping the Novikov–Thorne sheet passes through an atmosphere where
+electron scattering dominates, and scattering polarizes: nothing face-on,
+parallel to the surface at grazing incidence. The **direction** that fixes is
+exact geometry — the 4-cross product of the orbiting matter's 4-velocity, the
+disk normal and the photon direction — with no fitted number in it, and it is
+a director, so there is no handedness left to get wrong.
+
+The polarized **fraction** is fitted. Its endpoints are real: 0 face-on and
+11.7% grazing, the value the accretion-disk literature quotes from
+Chandrasekhar's 1960 Table XXIV. That table was not obtainable from any
+secondary source, so the curve between the endpoints is a `(1-mu)/(1+mu)`
+shape scaled to meet them. It is labelled as a fit, in the same class as the
+jet's `g <= 1.6` clamp, and it moves tick *lengths* and nothing else.
+`ROADMAP.md`'s H8 says how to close it.
+
+Note that a face-on view is *almost* unpolarized rather than exactly so, and
+the residue is physical rather than numerical: the disk's own orbital motion
+aberrates the emission direction by ~19 degrees at these radii, so the matter
+does not see the light leaving along its normal even when the distant camera
+does.
+
+### Each crossing is resolved before it is added
+
+A ray pierces the disk more than once — that is the doubled image, and the
+ring's rungs beyond it — and the two images arrive with their planes turned
+differently. Where they overlap the light really is depolarized, and the ticks
+really do shorten there. Getting that requires resolving each crossing onto
+the sky basis *before* adding it, weighted by its own brightness.
+
+The shortcut worth naming, because it looks valid: the constant is linear in
+the polarization, so summing the constants and resolving once seems equivalent
+and is much cheaper. It is wrong. Stokes parameters are quadratic in the
+polarization, so a sum of constants describes the coherent sum of two waves,
+not the incoherent overlap of two images.
+
+### The overlay: what is stored, and where it is sampled
+
+The scene target grows a second attachment. The polarization falls out of the
+march the scene pass already ran, so it rides along rather than paying for a
+second pass over the geometry.
+
+What is stored there is the screen-basis `(Q, U)` pair and not an angle. The
+scene renders below native resolution by design, so that texture is filtered
+on the way into the composite, and an angle would wrap — averaging 179 and
+-179 degrees gives 0, which is perpendicular to both. Stokes parameters
+average correctly, which is what they are for.
+
+Each tick is sampled at its own cell centre, one fetch, so its direction is
+the polarization of the ray through that point. Reading the value per fragment
+instead would bend every mark into a slight arc.
+
+A tick fades with the light it describes, through the same exposure and tone
+curve the frame went through. Without that the disk's invisible outer fringe —
+where its opacity has faded to a millionth but not to zero — carried marks as
+bold as the inner ring's, because the polarized *fraction* says nothing about
+brightness, and the overlay claimed a disk out to the corners of the frame.
+The ink flips dark over the bright disk and light over dark sky: the disk runs
+from near-black at its rim to blown out at the inner ring, and no single tick
+colour can be read against both.
+
+### The physics now lives twice, so a tool checks the copy
+
+`src/polarization.ts` is the tested oracle and the scene shader carries a GLSL
+transcription of the same closed form. Unit tests reach the first and not the
+second, and a transcription error — one flipped Levi-Civita sign, one 1-form
+mistyped — still draws something that looks like a polarization map.
+
+`npm run pol` (`tools/visual/polarization.mjs`) closes that gap by measuring
+the marks the lab actually **drew**: it fits each tick's principal axis from
+the difference between a ticks-on and a ticks-off frame of a frozen scene, and
+recomputes every one on the CPU. 149 ticks, mean 0.24 degrees, worst 1.20.
+Reading the drawn ink rather than the buffer behind it also covers the
+projection and the tick pass, which is the point — what is compared is what
+the viewer sees.
+
+Two conventions it had to get right, both of which produce plausible-looking
+nonsense when wrong. The tick grid is anchored where GL's origin is, at the
+*bottom*; counting rows from the top instead puts every cell boundary half a
+mark out whenever the frame height is not a multiple of the pitch, and each
+measured cell then straddles two ticks and reports their average. And only
+single-crossing pixels are compared, since reproducing the shader's brightness
+weighting on the CPU would mean reproducing the disk's turbulence too — a
+second transcription to get wrong, for no extra coverage.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

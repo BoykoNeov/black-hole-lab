@@ -19,6 +19,8 @@ npm install
 npm run dev     # dev server
 npm test        # physics unit tests (geodesic integrator)
 npm run build   # typecheck + production build
+npm run shot    # visual harness smoke run (needs `npm run dev` up)
+npm run pol     # slice 10: the drawn polarization ticks vs the CPU oracle
 ```
 
 ## Architecture
@@ -223,6 +225,43 @@ colour not) rather than passed off as sky. A legend names the bands and quotes
 `e^(−γ)` per edge at the current spin. What is still open, and how to close it,
 is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+### Polarization (slice 10)
+
+Light from the disk arrives with a direction of vibration, and Kerr turns that
+direction on the way out. "Polarization ticks" draws it: a short mark per grid
+cell, pointing along the arriving electric vector, its length the polarized
+fraction.
+
+Where the polarization *starts* is the disk's surface. Light escaping the
+sheet scatters off free electrons, and scattering polarizes it parallel to the
+surface — nothing face-on, up to 11.7% at grazing incidence. Where it *ends*
+is the camera, and everything between is the black hole turning the plane.
+
+That turn costs nothing per march step, which is the only reason it is
+affordable. A polarization parallel-transported along a null Kerr geodesic
+carries a conserved complex number, the **Walker–Penrose constant**, so it can
+be evaluated where the light leaves the disk and read where it arrives, with
+no integration in between — after the axial momentum and Carter's constant,
+the third thing this spacetime hands over for free. `src/polarization.ts` is
+the tested oracle; the scene shader mirrors it.
+
+Two details the textbooks do not cover. The usual screen formulas assume an
+observer at infinity and the orbit camera goes to r = 3.2, so the camera's own
+two sky legs are used as a basis instead — exact at any radius. And the
+constant is written in Cartesian Kerr–Schild rather than Boyer–Lindquist,
+where the `1/Δ` that blows up on the horizon cancels identically and the piece
+that is singular on the spin axis expands to a polynomial: the same story
+Carter's constant told in slice 8.
+
+Each disk crossing is resolved and added separately, weighted by its own
+brightness, so where two images of the disk overlap with their planes turned
+differently the light genuinely depolarizes and the marks shorten. The
+polarized fraction's curve is the slice's one fitted number — endpoints exact,
+shape approximate, tick lengths only — and it is registered as
+[`docs/ROADMAP.md`](docs/ROADMAP.md)'s H8. The rest, and why the constant was
+worth the algebra, is in
+[`docs/DESIGN.md`](docs/DESIGN.md#slice-10--polarization-and-what-it-does-not-cost).
+
 ## File map
 
 ### `src/`
@@ -241,6 +280,15 @@ is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
   drift apart. `radialDirection` reads the sign of dr/dσ at launch, which
   `rayCaptured` needs to tell an outward ray that reflects back down from one
   that leaves (slice 9a)
+- `src/polarization.ts` — how the disk's light is polarized and what Kerr does
+  to it on the way out (slice 10): the Walker–Penrose constant in Cartesian
+  Kerr–Schild — conserved along a null geodesic, so the whole trip costs two
+  closed forms and nothing per march step — the camera's own sky basis, which
+  is what makes this exact at finite radius rather than only far away, Stokes
+  bookkeeping over a ray's disk crossings, and the electron-scattering emitter
+  (direction exact, polarized fraction fitted between two exact endpoints).
+  `pixelPolarization` runs the whole chain for one pixel and is the oracle
+  `npm run pol` checks the shader against (pure, tested)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -348,6 +396,20 @@ is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
   directions from r = 3.2 at a = 0.998, inside the retrograde photon orbit,
   where outward rays reflect back down or leave and only the launch direction
   tells which
+- `test/polarization.test.ts` — drags a polarization down real geodesics with
+  Christoffels central-differenced off the exported metric, deliberately NOT
+  the analytic derivatives the integrator is built from, so a shared sign
+  error cannot cancel itself: the Walker–Penrose constant holds to 2e-4 at
+  a = 0, 0.5, 0.9 and 0.998, and a = 0 shows no gravitational Faraday rotation
+  (a polarization normal to the orbital plane stays normal to it). The
+  end-to-end check takes a real disk crossing and gets its emitted
+  polarization to the camera two independent ways — along its conserved
+  constant, and by dragging it there — since every sign convention in the
+  slice sits between those two answers. Also: a view from below the disk
+  mirrors one from above, a distant face-on view is almost unpolarized (almost,
+  because the disk's own motion aberrates the emission direction), a grazing
+  one an order of magnitude more so, the sky basis never degenerates, and two
+  crossings 90 degrees apart depolarize exactly
 - `test/lens.test.ts` — checks against closed-form GR results (weak-field
   deflection 4M/b, critical impact parameter 3√3 M, photon-ring divergence)
 - `test/disk.test.ts` — checks orbit speed (ISCO at c/2), shift factor
@@ -417,6 +479,16 @@ and `tsconfig` covers `src` + `test`.
   (`LAB_URL` overrides). Writes PNGs outside the repo. `LAB_CHROMIUM` points it
   at a preinstalled browser where playwright's own pinned build is absent. See
   `docs/DESIGN.md` for why it measures instead of diffing against stored images.
+- `tools/visual/polarization.mjs` — `npm run pol`. Slice 10's physics lives
+  twice, in the tested TypeScript and in a GLSL copy of the same closed form,
+  and a transcription error in either still draws something that looks like a
+  polarization map. So this measures the marks the lab actually drew — fitting
+  each tick's principal axis from the difference between a ticks-on and a
+  ticks-off frame of a frozen scene — and recomputes every one on the CPU:
+  mean 0.24°, worst 1.20° over 149 ticks. Reading the drawn ink rather than
+  the buffer behind it also covers the projection and the tick pass. It
+  borrows vite's own module loader to reach the TypeScript oracle, rather than
+  adding a TS runner as a dependency
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame
@@ -424,10 +496,10 @@ and `tsconfig` covers `src` + `test`.
 
 ## Roadmap
 
-Nine slices have landed: the lensed sky, the disk, matter in motion, the Kerr
+Ten slices have landed: the lensed sky, the disk, matter in motion, the Kerr
 integrator, physical scales and TDEs, the educational overlays, compare mode,
-the analytic capture criterion, and the photon-ring ladder with the exact
-outline. The full list, the register of open scientific hurdles (what is
-approximate, by how much, and the path to closing each) and the queued slices
-are in [`docs/ROADMAP.md`](docs/ROADMAP.md). Next up there: polarization via the
-Walker–Penrose constant, and closing the budget-exhausted band's colour.
+the analytic capture criterion, the photon-ring ladder with the exact outline,
+and polarization. The full list, the register of open scientific hurdles (what
+is approximate, by how much, and the path to closing each) and the queued
+slices are in [`docs/ROADMAP.md`](docs/ROADMAP.md). Next up there: closing the
+budget-exhausted band's colour, and γ around the ring rather than per edge.

@@ -190,3 +190,27 @@ export function legendBox(
     })();
   return { x: right - LEGEND_W, y: INSET_MARGIN + topInset };
 }
+
+// ---------- the polarization legend (slice 10) ----------
+
+/** Height of the polarization legend. It shares the ladder's width and column. */
+export const POL_LEGEND_H = 116;
+/** Gap between stacked legend panels. */
+export const LEGEND_GAP = 8;
+
+/**
+ * Where the polarization legend sits: the same top-right column as the
+ * ladder's, and below it when both are up. Sharing the column rather than
+ * taking the opposite corner keeps the scene's middle clear, which is the
+ * only part of the frame either legend is about; sharing the WIDTH is what
+ * lets both reuse legendBox's right edge.
+ */
+export function polLegendBox(
+  view: InsetView,
+  side: InsetSide | null,
+  topInset: number,
+  ladderShown: boolean
+): { x: number; y: number } {
+  const b = legendBox(view, side, topInset);
+  return { x: b.x, y: b.y + (ladderShown ? LEGEND_H + LEGEND_GAP : 0) };
+}

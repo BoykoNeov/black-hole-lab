@@ -6,6 +6,7 @@ import {
   INSET_SCALE_MIN,
   LEGEND_H,
   LEGEND_W,
+  POL_LEGEND_H,
   POTENTIAL_W,
   POT_X,
   dragScale,
@@ -14,6 +15,7 @@ import {
   insetBox,
   insetSides,
   legendBox,
+  polLegendBox,
   sameGrip,
   splitCss,
   type InsetView,
@@ -239,5 +241,36 @@ describe("legendBox", () => {
     expect(bl.x + LEGEND_W).toBeLessThanOrEqual(left.x + left.w);
     expect(br.x).toBeGreaterThanOrEqual(right.x);
     expect(br.x + LEGEND_W).toBeLessThanOrEqual(right.x + right.w);
+  });
+});
+
+describe("the polarization legend (slice 10)", () => {
+  it("shares the ladder legend's column and right edge", () => {
+    for (const width of [900, 1280, 1920]) {
+      const v = view({ width });
+      expect(polLegendBox(v, null, 0, false)).toEqual(legendBox(v, null, 0));
+    }
+  });
+
+  it("drops below the ladder legend when both are shown, without overlapping", () => {
+    const v = view();
+    const lad = legendBox(v, null, 0);
+    const pol = polLegendBox(v, null, 0, true);
+    expect(pol.y).toBeGreaterThanOrEqual(lad.y + LEGEND_H);
+    expect(pol.x).toBe(lad.x);
+  });
+
+  it("clears the clock row the same way the ladder's does", () => {
+    const v = view();
+    expect(polLegendBox(v, null, 96, false).y - polLegendBox(v, null, 0, false).y).toBe(96);
+  });
+
+  it("stays inside its half while comparing, both legends up", () => {
+    const v = view({ compare: true });
+    const half = splitCss(v).right;
+    const b = polLegendBox(v, "right", 0, true);
+    expect(b.x).toBeGreaterThanOrEqual(half.x);
+    expect(b.x + LEGEND_W).toBeLessThanOrEqual(half.x + half.w);
+    expect(b.y + POL_LEGEND_H).toBeLessThanOrEqual(v.height);
   });
 });

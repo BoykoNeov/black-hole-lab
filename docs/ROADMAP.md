@@ -51,6 +51,35 @@ Units are geometrized (G = c = M = 1) throughout.
      colour not) rather than passed off as sky. A HUD legend names the bands
      and quotes e^(−γ) per edge at the current spin ✅
 
+10. **Polarization** — the disk's light carries a direction of vibration,
+    and Kerr turns it ✅
+    - 10a the Walker–Penrose constant, which a polarization dragged along a
+      null geodesic keeps. So the whole trip from the disk to the camera
+      costs two closed forms and nothing per march step — transporting the
+      vector instead would have roughly doubled the hot loop. Written in
+      Cartesian Kerr–Schild rather than Boyer–Lindquist: the `1/Delta` that
+      blows up on the horizon cancels identically, and the piece that is
+      singular on the spin axis expands to a polynomial. The camera is at
+      finite r, so the textbook screen formulas do not apply; its own two sky
+      legs are used as a basis instead, which is exact at any radius. Pinned
+      against a parallel transport built from central-differenced metric
+      derivatives — deliberately not the analytic ones the integrator uses,
+      so a shared sign error cannot cancel itself ✅
+    - 10b the emitter: electron scattering in the disk's surface, which
+      polarizes parallel to that surface. The direction is exact geometry (a
+      4-cross product, and a director, so no handedness is left to get
+      wrong); only the polarized fraction is fitted — see H8. Each disk
+      crossing is resolved and added as Stokes parameters weighted by its own
+      brightness, so two images overlapping with their planes turned
+      differently genuinely depolarize ✅
+    - 10c the ticks: a second attachment on the scene target carrying the
+      screen-basis Stokes pair (not an angle — the target is filtered, and
+      only a linear quantity survives that), and a composite pass drawing one
+      mark per grid cell, sampled at its own centre. Length is the polarized
+      fraction; marks fade with the disk's own light. `npm run pol` measures
+      the marks actually drawn and recomputes each on the CPU: mean 0.24°,
+      worst 1.20° ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -115,11 +144,31 @@ raymarcher without a radiative-transfer pass; not queued.
 
 ### H5 — no polarization
 
-**Status: not started.** The EHT's ring polarization pattern is the most
-physically loaded thing a Kerr renderer could add, and the parallel transport
-of a polarization vector along the marched geodesic is a conserved quantity
-(the Walker–Penrose constant) in Kerr, so it costs no extra integration — one
-complex constant per ray, read at the disk crossing. A natural slice 10.
+**Status: closed by slice 10.** The transport is exact and costs nothing per
+march step, as predicted. What the slice does NOT deliver is the EHT's own
+picture: that ring pattern is synchrotron from a magnetized flow, and this
+disk is a zero-torque Novikov–Thorne sheet with no magnetic field in it. A
+toroidal-field synchrotron emitter would be an artistic knob dressed as
+physics on this disk, so it was not built; if it ever is, it belongs beside
+the scattering model with a badge, not instead of it. What is left of this
+hurdle is H8.
+
+### H8 — the polarized fraction is a fit between two exact endpoints
+
+**Status: open, labelled, and it moves lengths only.** How strongly a
+scattering surface polarizes the light leaving it at angle mu to its normal is
+Chandrasekhar's 1960 Table XXIV. The endpoints the lab uses are the real ones
+— exactly 0 face-on, 11.7% grazing, the number the accretion-disk literature
+quotes from that table — but the table itself was not obtainable from any
+secondary source, so the curve between them is a `(1-mu)/(1+mu)` shape scaled
+to meet them. Its worst plausible error is a couple of percentage points in
+the middle of the range.
+
+This is confined to tick LENGTHS. Every tick DIRECTION comes from the
+4-cross product of the emitter's 4-velocity, the disk normal and the photon
+direction, which is exact and carries no fitted number. Path: source Table
+XXIV, drop it into `scatteringDegree` as data with an interpolation, keep the
+two endpoint tests. Nothing else in the slice changes.
 
 ### H6 — float32 in the shader near the critical curve
 
@@ -138,9 +187,9 @@ frame-count-based wait would make it portable.
 
 ## Queued
 
-- **Slice 10 — polarization** (H5). Walker–Penrose constant per ray, EVPA
-  ticks on the disk, a toggle beside the ladder view.
 - **Slice 11 — closing the band** (H1). Escape-direction table over the
   critical curve; the ladder view's magenta band is the acceptance test — it
   should shrink to nothing without the budget moving.
-- **γ around the ring** (H2). Small; could ride with either.
+- **γ around the ring** (H2). Small; could ride with slice 11.
+- **Chandrasekhar's table** (H8). Smaller still: source twenty numbers and
+  replace a fitted curve with them. Tick directions do not change.
