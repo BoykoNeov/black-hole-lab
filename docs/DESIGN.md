@@ -762,19 +762,29 @@ mistyped — still draws something that looks like a polarization map.
 `npm run pol` (`tools/visual/polarization.mjs`) closes that gap by measuring
 the marks the lab actually **drew**: it fits each tick's principal axis from
 the difference between a ticks-on and a ticks-off frame of a frozen scene, and
-recomputes every one on the CPU. 149 ticks, mean 0.24 degrees, worst 1.20.
-Reading the drawn ink rather than the buffer behind it also covers the
-projection and the tick pass, which is the point — what is compared is what
-the viewer sees.
+recomputes every one on the CPU. It sweeps the spin rather than checking one
+value, because the spin enters the closed form in four places and three of
+them vanish at a = 0, so a wrong sign in a term that stays small at a = 0.9
+would sail past a single run. Measured: mean 0.20, 0.24 and 0.23 degrees at
+a = 0, 0.9 and 0.998, worst 2.09. Reading the drawn ink rather than the buffer
+behind it also covers the projection and the tick pass, which is the point —
+what is compared is what the viewer sees.
 
-Two conventions it had to get right, both of which produce plausible-looking
+Three conventions it had to get right, all of which produce plausible-looking
 nonsense when wrong. The tick grid is anchored where GL's origin is, at the
 *bottom*; counting rows from the top instead puts every cell boundary half a
 mark out whenever the frame height is not a multiple of the pitch, and each
-measured cell then straddles two ticks and reports their average. And only
+measured cell then straddles two ticks and reports their average. Only
 single-crossing pixels are compared, since reproducing the shader's brightness
 weighting on the CPU would mean reproducing the disk's turbulence too — a
-second transcription to get wrong, for no extra coverage.
+second transcription to get wrong, for no extra coverage. And cells where the
+field turns faster than a couple of degrees *per pixel* are skipped: at the
+disk's inner edge one tick does not stand for a single direction, and the two
+sides then differ by how far apart their sampling points effectively are
+rather than about any physics. That is not a fudge to make a number pass —
+the excluded cells were measured, and they sit where the answer moves 22
+degrees across one pixel while the two sides differ by 5. Three cells over the
+whole sweep.
 
 ## The visual harness — measuring instead of remembering
 

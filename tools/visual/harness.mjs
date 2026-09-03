@@ -35,6 +35,13 @@ import { PORTS, TITLE, findServer } from "../find-server.mjs";
  */
 export const TICK_PITCH = 26;
 
+/**
+ * How far from a cell centre a tick's own ink can reach, as a fraction of the
+ * pitch: the shader's longest half-tick (TICK_MAX_LENGTH) plus a little for
+ * the antialiased end. Ink beyond it belongs to a neighbouring mark.
+ */
+export const TICK_REACH = 0.47;
+
 /** Set to skip discovery and use one server. Otherwise the ports are scanned. */
 export const LAB_URL = process.env.LAB_URL ?? null;
 
@@ -219,7 +226,7 @@ function installLab() {
    * frame height is not a multiple of the pitch, and each measured cell then
    * straddles two real marks and reports the average of their directions.
    */
-  lab.tickField = async (onUrl, offUrl, pitch, floor) => {
+  lab.tickField = async (onUrl, offUrl, pitch, floor, reach) => {
     const [ia, ib] = [await decode(onUrl), await decode(offUrl)];
     const px = (img) =>
       draw(img.width, img.height, (ctx) => ctx.drawImage(img, 0, 0))
@@ -245,6 +252,13 @@ function installLab() {
             if (w < floor) continue;
             const dx = x + 0.5 - ox;
             const dy = y + 0.5 - oy;
+            // A disc, not the whole square cell. The longest tick spans most
+            // of the pitch, so its antialiased ends spill past the boundary
+            // into the neighbour — and in a second-moment fit that foreign
+            // ink sits at the largest lever arm there is, which is where it
+            // does the most damage. The radius is the longest half-tick plus
+            // a pixel of feathering.
+            if (dx * dx + dy * dy > reach * reach) continue;
             sxx += w * dx * dx;
             syy += w * dy * dy;
             sxy += w * dx * dy;
@@ -456,7 +470,7 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
      * frames, so anything still moving between them would be read as ink.
      * Leaves the toggle on.
      */
-    async tickField({ pitch, floor = 10 } = {}) {
+    async tickField({ pitch, floor = 10, reach } = {}) {
       await lab.set({ "edu-polarization": true });
       const layout = await lab.capture();
       const on = await lab.dataUrl({ layer: "gl" });
@@ -465,9 +479,10 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
       const off = await lab.dataUrl({ layer: "gl" });
       await lab.set({ "edu-polarization": true });
       const p = pitch ?? TICK_PITCH * (layout.gl.w / layout.css.w);
+      const r = reach ?? p * TICK_REACH;
       return page.evaluate(
-        ([on, off, p, floor]) => window.__lab.tickField(on, off, p, floor),
-        [on, off, p, floor]
+        ([on, off, p, floor, r]) => window.__lab.tickField(on, off, p, floor, r),
+        [on, off, p, floor, r]
       );
     },
 

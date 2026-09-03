@@ -484,9 +484,13 @@ and `tsconfig` covers `src` + `test`.
   and a transcription error in either still draws something that looks like a
   polarization map. So this measures the marks the lab actually drew — fitting
   each tick's principal axis from the difference between a ticks-on and a
-  ticks-off frame of a frozen scene — and recomputes every one on the CPU:
-  mean 0.24°, worst 1.20° over 149 ticks. Reading the drawn ink rather than
-  the buffer behind it also covers the projection and the tick pass. It
+  ticks-off frame of a frozen scene — and recomputes every one on the CPU. It
+  sweeps the spin, since three of the four places the spin enters the closed
+  form vanish at a = 0: mean 0.20°, 0.24° and 0.23° at a = 0, 0.9 and 0.998,
+  worst 2.09° over ~500 ticks. Cells where the field turns faster than a
+  couple of degrees per pixel are skipped — one tick does not stand for a
+  single direction there. Reading the drawn ink rather than the buffer behind
+  it also covers the projection and the tick pass. It
   borrows vite's own module loader to reach the TypeScript oracle, rather than
   adding a TS runner as a dependency
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
