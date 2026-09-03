@@ -621,10 +621,13 @@ export function continueToEscape(
       const P = axisPassage(C, a, v);
       const half = P.dtau / 2;
       const h1 = radialAdvance(s.r, s.pr, C, a, half, stepScale, rHor, rEscape);
-      const h2 = h1.dead || h1.gone
-        ? h1
-        : radialAdvance(h1.r, h1.pr, C, a, half, stepScale, rHor, rEscape);
-      steps += h1.steps + h2.steps;
+      const done = h1.dead || h1.gone;
+      const h2 = done ? h1 : radialAdvance(h1.r, h1.pr, C, a, half, stepScale, rHor, rEscape);
+      // The trial is charged at what it actually cost, and the second half did
+      // not run when the first already settled it. Charging h1 twice there
+      // would put this out of step with the GLSL mirror, which counts the two
+      // halves separately — and the budget is what the ladder's tripwire means.
+      steps += h1.steps + (done ? 0 : h2.steps);
       if (h1.gone || h2.gone) {
         leaving = true;
         continue;
