@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "shot": "node tools/visual/smoke.mjs",
-    "pol": "node tools/visual/polarization.mjs"
+    "pol": "node tools/visual/polarization.mjs",
+    "band": "node tools/visual/band.mjs"
   },
   "devDependencies": {
     "playwright": "^1.61.1",
