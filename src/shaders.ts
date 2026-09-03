@@ -3,10 +3,11 @@
 import { MARCH_MAX_STEPS } from "./kerr";
 import { GAS_COUNT, STAR_COUNT } from "./matter";
 import {
-  MINO_AXIS_EPS,
+  MINO_AXIS_V,
   MINO_AZ_STEP,
   MINO_MAX_STEPS,
   MINO_STEP_SCALE,
+  MINO_V_FALL,
 } from "./mino";
 import { TDE_MAX } from "./tde";
 
@@ -39,23 +40,18 @@ export const LADDER_RUNGS: readonly LadderRung[] = [
  * reachable setting, and a band of it means MINO_MAX_STEPS has been clipped by
  * some camera the sweep behind that constant never sampled. A tripwire that
  * reads zero is a passing check, not dead UI.
+ *
+ * Slice 11b shipped a second off-ladder colour beside it, for the rays the
+ * separated chart could not follow over the spin axis. Slice 12 follows them in
+ * closed form, so that colour and its legend row are gone and this is once
+ * again the only thing the ladder cannot draw as a rung — which is what makes
+ * it readable as a tripwire. It did NOT read zero when slice 12 measured it:
+ * two pixels at a = 0.998 from the default camera were clipping a cap that was
+ * 29 steps too small. That is what MINO_MAX_STEPS moving to 1536 was for.
  */
 export const LADDER_UNRESOLVED: LadderRung = {
   label: "continuation capped — should never appear",
   rgb: [0.85, 0.3, 0.95],
-};
-/**
- * The ray passes too close to the spin axis for the separated chart to follow
- * it (hurdle H9; see MINO_AXIS_EPS in src/mino.ts).
- *
- * Its own colour rather than magenta's, because the two say different things:
- * this one is expected — 0.8% of band pixels, only within ~0.12 rad of
- * face-on — and magenta is not. Sharing one swatch would make the tripwire
- * camera-dependent and hide a budget regression behind a known chart problem.
- */
-export const LADDER_NEAR_AXIS: LadderRung = {
-  label: "over the spin axis — chart cannot follow (H9)",
-  rgb: [0.35, 0.95, 0.95],
 };
 const vec3 = (c: readonly number[]) => `vec3(${c.map((v) => v.toFixed(2)).join(", ")})`;
 
@@ -395,6 +391,85 @@ float axisApproach(vec4 C) {
   float B = uSpin * uSpin + C.y + lam2;
   float disc = sqrt(max(B * B - 4.0 * uSpin * uSpin * lam2, 0.0));
   return (2.0 * lam2) / max(B + disc, 1e-30);
+}
+
+// The polar turning point's whole passage, in closed form (slice 12): the round
+// trip from ve = 1 - u^2 down to the turning point and back, as
+// (dtau, dazSing, vmin). Mirrors axisPassage in src/mino.ts, which argues every
+// line of it — the substitution v = vmin + sqrt(D) w^2 cancels the turning
+// point, leaves no 1/a anywhere, and makes the path a straight line in the
+// tangent plane at the pole, so an arctangent is the whole answer.
+//
+// atan(we, wc), not a division: wc is zero on the exactly-polar ray, where the
+// swing is still a half-turn and the ODE cannot see it. That ray is the whole of
+// hurdle H9.
+vec3 axisPassage(vec4 C, float ve) {
+  float a2 = uSpin * uSpin;
+  float lam2 = C.x * C.x;
+  float B = a2 + C.y + lam2;
+  float sD = sqrt(max(B * B - 4.0 * a2 * lam2, 1e-30));
+  float vmin = (2.0 * lam2) / max(B + sD, 1e-30);
+  float wc = sqrt(vmin / sD);
+  float we = sqrt(max((ve - vmin) / sD, 0.0));
+  float A = atan(we, wc);
+  float sgn = C.x >= 0.0 ? 1.0 : -1.0;   // +pi and -pi are the same azimuth
+  float pref = sqrt((B + sD) / (2.0 * sD));
+  return vec3(2.0 * we + (a2 + sD) * we * we * we / 3.0 + vmin * we,
+              2.0 * sgn * pref * A + C.x * (we + (a2 / sD) * (we - wc * A)),
+              vmin);
+}
+
+// Position alone, for the swept angle: the same map minoCart builds, without
+// the derivative. Wanted separately because the passage's closest-approach
+// point has pu = 0 and, on a polar ray, 1 - u^2 = 0 with it — a velocity there
+// is 0/0 and is not needed.
+vec3 minoPos(float r, float u, float az) {
+  float Rr = sqrt(r * r + uSpin * uSpin);
+  float sn = sqrt(max(1.0 - u * u, 0.0));
+  return vec3(Rr * sn * cos(az), r * u, Rr * sn * sin(az));
+}
+
+// The radial pair alone, with the REGULAR part of the azimuth rate beside it:
+// everything in minoDeriv that does not mention u. That this subsystem exists
+// is what makes the pole passage a jump rather than an approximation.
+vec2 radialDeriv(vec2 s, vec4 C, out float daz) {
+  float a = uSpin, a2 = a * a;
+  float r2 = s.x * s.x;
+  float Delta = r2 - 2.0 * s.x + a2;
+  float twist = (2.0 * a * s.x) / (Delta * (r2 + a2));
+  daz = (a / Delta) * (r2 + a2 - a * C.x) - a - twist * s.y;
+  return vec2(s.y, 2.0 * s.x * r2 + C.w * s.x + C.z);
+}
+
+// RK4 the radial pair across a fixed Mino interval, accumulating the regular
+// azimuth. The flag is 1.0 for the horizon and 2.0 for LEAVING before the
+// interval is up; the second is load-bearing, because a ray can be inbound in
+// u — bound for the pole — and still cross the escape radius first, and jumping
+// it through a crossing that never happens is 14 deg wrong.
+vec2 radialAdvance(vec2 s, vec4 C, float dtau, float rStop,
+                   out float az, out float flag, out int used) {
+  az = 0.0;
+  flag = 0.0;
+  used = 0;
+  float t = 0.0;
+  for (int i = 0; i < 64; i++) {
+    if (t >= dtau) break;
+    used = i + 1;
+    float h = min(min(${MINO_STEP_SCALE.toFixed(3)} / max(sqrt(abs(6.0 * s.x * s.x + C.w)), 1e-9),
+                      0.08 * max(s.x, 1.0) / max(abs(s.y), 1e-9)),
+                  dtau - t);
+    float d1, d2, d3, d4;
+    vec2 k1 = radialDeriv(s, C, d1);
+    vec2 k2 = radialDeriv(s + 0.5 * h * k1, C, d2);
+    vec2 k3 = radialDeriv(s + 0.5 * h * k2, C, d3);
+    vec2 k4 = radialDeriv(s + h * k3, C, d4);
+    az += (h / 6.0) * (d1 + 2.0 * (d2 + d3) + d4);
+    s += (h / 6.0) * (k1 + 2.0 * (k2 + k3) + k4);
+    t += h;
+    if (isnan(s.x) || s.x < rStop) { flag = 1.0; return s; }
+    if (s.x > 64.0 && s.y > 0.0) { flag = 2.0; return s; }
+  }
+  return s;
 }
 
 // f = 2r^3/(r^4 + a^2 y^2) and the spatial null vector l (l_t = 1).
@@ -887,18 +962,17 @@ vec3 crossingPol(float rc, vec3 pc, float mt, vec3 mv, vec2 kH, vec2 kV, float d
 // keep an HDR disk from whiting the band out. Captured pixels stay black.
 // Since slice 11 the budget-exhausted band has a real winding of its own — the
 // march's plus the continuation's — so it colours as an ordinary rung. The two
-// off-ladder colours are what is LEFT: unresolved means the continuation spent
-// its own budget (a tripwire that should read zero everywhere), nearAxis means
-// the separated chart cannot follow this ray over the pole.
+// one off-ladder colour is what is LEFT: unresolved means the continuation
+// spent its own budget, a tripwire that should read zero everywhere. Slice 12
+// removed the other one by making the pole crossable.
 // A hairline at every integer is drawn constant-width from the derivative,
 // so the rungs stay countable where they crowd toward the critical curve.
-vec3 ladderColor(vec3 scene, float w, bool escaped, bool unresolved, bool nearAxis) {
+vec3 ladderColor(vec3 scene, float w, bool escaped, bool unresolved) {
   if (!escaped) return vec3(0.0);
   float l = max(scene.r, max(scene.g, scene.b));
   float bright = 0.35 + 0.65 * l / (1.0 + l);
   vec3 hue;
   if (unresolved) hue = ${vec3(LADDER_UNRESOLVED.rgb)};
-  else if (nearAxis) hue = ${vec3(LADDER_NEAR_AXIS.rgb)};
 ${LADDER_RUNGS.map((r, i) =>
     i < LADDER_RUNGS.length - 1
       ? `  else if (w < ${(i + 1).toFixed(1)}) hue = ${vec3(r.rgb)};`
@@ -935,7 +1009,6 @@ void main() {
   bool matterOn = uStarsOn > 0.5 || uJetsOn > 0.5 || uTdeN > 0;
   float swept = 0.0;      // ladder view: position angle swept, radians
   bool unresolved = false; // the continuation spent its own budget — see below
-  bool nearAxis = false;   // the separated chart cannot follow this ray (H9)
   // slice 10: Stokes of the disk light, accumulated in the camera's sky basis
   vec3 eH = vec3(0.0), eV = vec3(0.0);
   vec2 kH = vec2(0.0), kV = vec2(0.0);
@@ -1106,13 +1179,58 @@ void main() {
       // The closest approach is closed-form from the constants, so say so
       // rather than guess: measured, every ray above this lands within 0.009
       // deg and the ones below reach 126.
-      nearAxis = axisApproach(C) < ${MINO_AXIS_EPS.toExponential()};
-
       float rStopM = uHorizon + 0.01;
       float wuConst = qC + lambdaC * lambdaC - a2;
       vec3 prevP, velC;
       if (uLadder > 0.5) minoCart(s, C, az, prevP, velC);
-      for (int i = 0; i < ${MINO_MAX_STEPS}; i++) {
+      // Set once the escape trial below refuses a passage: pr > 0 outside the
+      // escape radius is monotone, so the ray cannot come back and there is no
+      // point paying for the trial twice.
+      bool leaving = false;
+      // Charged against the budget rather than counting iterations, because a
+      // passage costs several radial substeps and the magenta rung has to mean
+      // one thing: the continuation spent MINO_MAX_STEPS.
+      int spent = 0;
+      for (int i = 0; i <= ${MINO_MAX_STEPS}; i++) {
+        if (spent >= ${MINO_MAX_STEPS}) { unresolved = true; break; }
+        float v = 1.0 - s.z * s.z;
+
+        // Heading for a polar turning point near the axis: take the whole
+        // passage in closed form rather than step into a 0/0. See axisPassage,
+        // and src/mino.ts for why reflecting pu and jumping is exact.
+        if (v < ${MINO_AXIS_V.toExponential()} && s.z * s.w > 0.0 && !leaving) {
+          vec3 P = axisPassage(C, v);
+          float azA, azB, flagA, flagB;
+          int nA, nB;
+          vec2 rs1 = radialAdvance(s.xy, C, 0.5 * P.x, rStopM, azA, flagA, nA);
+          vec2 rs2 = rs1;
+          azB = 0.0;
+          flagB = 0.0;
+          nB = 0;
+          if (flagA == 0.0) rs2 = radialAdvance(rs1, C, 0.5 * P.x, rStopM, azB, flagB, nB);
+          spent += nA + nB;
+          if (flagA == 2.0 || flagB == 2.0) { leaving = true; continue; }
+          if (flagA == 1.0 || flagB == 1.0) break;
+          // The polar motion is symmetric about its turning point, so the ray
+          // leaves at the v it entered with pu reversed and u untouched.
+          float uApex = (s.z >= 0.0 ? 1.0 : -1.0) * sqrt(max(1.0 - P.z, 0.0));
+          float azApex = az + azA + 0.5 * P.y;
+          az = azApex + azB + 0.5 * P.y;
+          vec4 sOut = vec4(rs2.x, rs2.y, s.z, -s.w);
+          if (uLadder > 0.5) {
+            // through the closest-approach point, not straight across: near the
+            // pole the path is a straight line in the tangent plane, and one
+            // chord is 1.1 sqrt(vmin) short of two
+            vec3 apex = minoPos(rs1.x, uApex, azApex);
+            vec3 outP = minoPos(sOut.x, sOut.z, az);
+            swept += atan(length(cross(prevP, apex)), dot(prevP, apex));
+            swept += atan(length(cross(apex, outP)), dot(apex, outP));
+            prevP = outP;
+          }
+          s = sOut;
+          if (s.x > 64.0 && s.y > 0.0) break;
+          continue;
+        }
         // Step control follows the two oscillators' own local frequencies, not
         // a flat cap on h: off the equator Carter q reaches 20-25 and the polar
         // swing runs 2-3x faster, and the cap tuned to the near-equatorial band
@@ -1121,15 +1239,19 @@ void main() {
         // which matters at large r where pr grows like r^2. The last watches
         // the azimuth's only genuinely sharp feature, lambda/(1 - u^2): without
         // it the near-axis rays do not merely lose accuracy, they FAIL TO
-        // CONVERGE, getting worse as the step shrinks.
+        // CONVERGE, getting worse as the step shrinks. The fifth is slice 12's:
+        // v may not fall by more than MINO_V_FALL of itself, or a single step
+        // jumps clean over the trigger window above and the ray reflects
+        // without its half-turn — 155 deg, measured.
         float wu = sqrt(abs(6.0 * a2 * s.z * s.z + wuConst));
         float wr = sqrt(abs(6.0 * s.x * s.x + C.w));
-        float h = min(min(${MINO_STEP_SCALE.toFixed(3)} / max(max(wu, wr), 1e-9),
-                          0.08 * max(s.x, 1.0) / max(abs(s.y), 1e-9)),
-                      min(0.08 / max(abs(s.w), 1e-9),
-                          ${MINO_AZ_STEP.toFixed(4)}
-                            / max(abs(C.x) / (1.0 - s.z * s.z), 1e-9)));
+        float h = min(min(min(${MINO_STEP_SCALE.toFixed(3)} / max(max(wu, wr), 1e-9),
+                              0.08 * max(s.x, 1.0) / max(abs(s.y), 1e-9)),
+                          min(0.08 / max(abs(s.w), 1e-9),
+                              ${MINO_AZ_STEP.toFixed(4)} / max(abs(C.x) / v, 1e-9))),
+                      ${MINO_V_FALL.toFixed(3)} * v / max(2.0 * abs(s.z * s.w), 1e-9));
         s = minoStep(s, C, h, az);
+        spent++;
 
         if (uLadder > 0.5) {
           vec3 curP;
@@ -1144,7 +1266,6 @@ void main() {
         // integration rather than changing the verdict.
         if (isnan(s.x) || s.x < rStopM) break;
         if (s.x > 64.0 && s.y > 0.0) break;
-        if (i == ${MINO_MAX_STEPS - 1}) unresolved = true;
       }
       vec3 posC;
       minoCart(s, C, az, posC, velC);
@@ -1217,7 +1338,7 @@ void main() {
   outPol = vec4(polOut, polI, polI > 0.0 ? 1.0 : 0.0);
 
   vec3 col = accum + (haveSky ? thru * skyColor(normalize(sky)) : vec3(0.0));
-  if (uLadder > 0.5) col = ladderColor(col, swept / PI, haveSky, unresolved, nearAxis);
+  if (uLadder > 0.5) col = ladderColor(col, swept / PI, haveSky, unresolved);
   // float16 fence: one Inf/NaN/negative pixel would smear black blocks
   // through the bloom chain, so clamp and zero anything non-finite
   col = clamp(col, vec3(0.0), vec3(4096.0));

@@ -29,7 +29,6 @@ import {
   POTENTIAL_W,
 } from "./insets";
 import {
-  LADDER_NEAR_AXIS,
   LADDER_RUNGS,
   LADDER_UNRESOLVED,
   TICK_MAX_LENGTH,
@@ -1113,7 +1112,6 @@ export function drawLadderLegend(
     ry += LEGEND_ROW;
   };
   for (const r of LADDER_RUNGS) row(toCss(r.rgb), r.label);
-  row(toCss(LADDER_NEAR_AXIS.rgb), LADDER_NEAR_AXIS.label);
   row(toCss(LADDER_UNRESOLVED.rgb), LADDER_UNRESOLVED.label);
   row("#000", "captured — no light gets out");
 

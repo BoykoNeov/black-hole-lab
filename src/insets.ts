@@ -170,15 +170,17 @@ export function dragScale(id: InsetId, startScale: number, dx: number, dy: numbe
 /**
  * Size of the photon-ring ladder's legend panel, in CSS px.
  *
- * Nine rows since slice 11b: the six rungs, the two ways the continuation can
- * fail, and captured. The width did not have to move with them — nothing here
- * clips, so an over-wide caption spills onto the scene rather than truncating,
- * and the widest one (the near-axis row, and the widest there has ever been)
- * measures 198 px against the 210 px a row gets at this width. Measured in the
- * browser with the HUD's own font, not counted in characters.
+ * Eight rows: the six rungs, the one way the continuation can still fail, and
+ * captured. It was nine for the length of slice 11b, whose ninth was the rays
+ * the separated chart could not follow over the spin axis; slice 12 follows
+ * them, so the row and its height came back off. The width never moved for
+ * either — nothing here clips, so an over-wide caption spills onto the scene
+ * rather than truncating, and the widest caption there has ever been measures
+ * 198 px against the 210 px a row gets at this width. Measured in the browser
+ * with the HUD's own font, not counted in characters.
  */
 export const LEGEND_W = 250;
-export const LEGEND_H = 181;
+export const LEGEND_H = 168;
 
 /**
  * Where the ladder legend sits: the top-right corner of the strip whose
