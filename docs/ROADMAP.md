@@ -239,9 +239,10 @@ Units are geometrized (G = c = M = 1) throughout.
       which is zeroed twice a second for the fps readout). The clock was the
       wrong unit for a reason that is not about patience: a trail records at
       most one sample per frame and the simulation advances min(real dt, 0.1)
-      per frame, both capped PER FRAME, so four seconds bought 240 samples on a
-      GPU and 32 on a software rasterizer — the same request asking for two
-      different measurements
+      per frame, both capped PER FRAME, so four seconds bought 240 samples at
+      the 16.7 ms of a GPU frame and 25 at the 157.8 ms measured under
+      SwiftShader here — the same request asking for two different
+      measurements
     - **a frame count with a GPU-tuned timeout is the same bug one level up**,
       and calibrating the timeout does not fix it either. Both were tried and
       both were measured failing: with the units fixed and the timeouts left

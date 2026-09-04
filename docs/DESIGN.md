@@ -1639,10 +1639,10 @@ whole of it.
 The clock is the wrong unit here for a reason that is not about patience. A
 `Trail` records at most one sample per frame, and the simulation advances by
 min(real dt, 0.1)·timeSpeed per frame — both capped *per frame*, neither per
-second. So on a machine drawing 8 fps a four-second wait buys 32 trail samples
-where it bought 240 on a GPU, and the same request is asking for two different
-measurements. Waiting four seconds is not a slower way of waiting 240 frames;
-it is a different thing to wait for.
+second. So a four-second wait buys 240 trail samples at the 16.7 ms of a GPU
+frame and 25 at the 157.8 ms measured here under a software rasterizer, and the
+same request is asking for two different measurements. Waiting four seconds is
+not a slower way of waiting 240 frames; it is a different thing to wait for.
 
 So every wait that meant "let the renderer catch up" is now counted in frames
 drawn, off a monotonic counter `main.ts` publishes beside its existing
