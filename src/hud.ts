@@ -9,6 +9,7 @@ import {
   TRAIL_CAP_GAS,
   TRAIL_CAP_STAR,
   TRAIL_CAP_TDE,
+  embeddingRhoAt,
   embeddingZAt,
   photonOrbitLyapunov,
   photonOrbitRadius,
@@ -529,9 +530,16 @@ function drawPotentialBody(
 /**
  * Fixed viewing tilt, as a rigid rotation of the surface about the screen's
  * horizontal axis (sin/cos of ~20.5°, hence sin^2 + cos^2 = 1 exactly). The
- * funnel is therefore drawn at true 1:1 proportions — r and z are both in M
- * and share one scale, with no vertical exaggeration to explain away. Only
- * the overall fit-to-panel scale is a display choice.
+ * funnel is therefore drawn at true 1:1 proportions — the drawn radius rho
+ * and the height z are both proper lengths in M and share one scale, with no
+ * vertical exaggeration to explain away. Only the overall fit-to-panel scale
+ * is a display choice.
+ *
+ * rho, not the coordinate r: a ring's drawn radius is its own circumference
+ * over 2 pi (edu.ts's circumferentialRadius), so the picture's horizontal
+ * distances are measured as well as its vertical ones. Everything below is
+ * still INDEXED by Boyer–Lindquist r — the ISCO, the rim, where a star is —
+ * and only ever DRAWN at rho(r).
  */
 const EMB_SIN = 0.35;
 const EMB_COS = Math.sqrt(1 - EMB_SIN * EMB_SIN);
@@ -574,8 +582,9 @@ const DISK_LABEL = "rgba(255,179,92,0.85)";
 /**
  * The equatorial slice as a surface of revolution, drawn as a wireframe from
  * a fixed tilt with the camera's yaw. Geometry is entirely edu.ts's
- * embeddingProfile (exact Flamm at a = 0; see its comment for the a != 0
- * caveat). Drawn with its top-left at (x, y), uniformly scaled by `scale`
+ * embeddingProfile and circumferentialRadius — an exact isometric embedding
+ * at every spin, Flamm's paraboloid at a = 0. Drawn with its top-left at
+ * (x, y), uniformly scaled by `scale`
  * (see drawPotential on why the resize is a transform, not a reflow).
  *
  * The funnel already fits itself to the panel from its own extents, so the
@@ -613,12 +622,12 @@ function drawEmbeddingBody(
 
   // Fit the surface to the panel from its own extents, so the inset reframes
   // itself as spin deepens the throat and the disk-size slider moves rMax.
-  // Screen height of a ring runs z·cos ± r·sin (its back and front lips).
+  // Screen height of a ring runs z·cos ± rho·sin (its back and front lips).
   let vMin = 0;
   let vMax = 0;
   for (let i = 0; i < EMB_RINGS; i++) {
     const h = embeddingZAt(p, embRing[i]) * EMB_COS;
-    const t = embRing[i] * EMB_SIN;
+    const t = embeddingRhoAt(p, embRing[i]) * EMB_SIN;
     if (h + t > vMax) vMax = h + t;
     if (h - t < vMin) vMin = h - t;
   }
@@ -626,7 +635,8 @@ function drawEmbeddingBody(
   const boxY = y + 8;
   const boxW = EMBED_W - 16;
   const boxH = EMBED_H - 8 - 34; // caption sits below
-  const s = Math.min(boxW / (2 * rMax), boxH / Math.max(vMax - vMin, 1e-6));
+  const rhoMax = embeddingRhoAt(p, rMax);
+  const s = Math.min(boxW / (2 * rhoMax), boxH / Math.max(vMax - vMin, 1e-6));
   const cx = boxX + boxW / 2;
   const cy = boxY + boxH / 2 + (s * (vMax + vMin)) / 2;
 
@@ -634,9 +644,13 @@ function drawEmbeddingBody(
   // at azimuth az lands at screen-x ∝ r·cos(az + yaw) and approaches the
   // camera as sin(az + yaw) grows — yaw is a plain azimuth offset here, and
   // nearer matter correctly draws lower under the downward tilt.
-  const ex = (r: number, ang: number) => cx + s * r * Math.cos(ang);
+  // Both take a Boyer–Lindquist r and convert, rather than being handed rho:
+  // every caller below has a physical radius in hand (a ring, the ISCO, where
+  // a star is) and none of them has any use for the drawn one.
+  const ex = (r: number, ang: number) =>
+    cx + s * embeddingRhoAt(p, r) * Math.cos(ang);
   const ey = (r: number, ang: number, z: number) =>
-    cy - s * (z * EMB_COS - r * Math.sin(ang) * EMB_SIN);
+    cy - s * (z * EMB_COS - embeddingRhoAt(p, r) * Math.sin(ang) * EMB_SIN);
 
   ctx.save();
   ctx.fillStyle = HUD_STYLE.panelBg;

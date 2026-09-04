@@ -342,8 +342,12 @@ worth the algebra, is in
   photon-orbit radii and the impact parameters of those orbits (which bound
   the shadow's width, hence `shadowHorizonRatio` — how much wider than the
   hole the black disk is, the shadow-edge callout's number), the equatorial
-  embedding profile z(r) — Flamm's paraboloid at a = 0, integrated with the
-  rim's inverse-square-root singularity split off in closed form — `Trail`,
+  embedding profile z(r) — an exact isometric surface of revolution at every
+  spin (Flamm's paraboloid at a = 0), integrated with the rim's
+  inverse-square-root singularity split off in closed form — and
+  `circumferentialRadius`, the radius that surface is drawn at: an equatorial
+  circle's own circumference over 2π, which is 2 at the horizon at every spin
+  while r+ shrinks with it — `Trail`,
   the fixed-size ring buffer of (position, time) samples behind the orbit
   trails, `photonOrbitLyapunov` — how fast the photon orbit sheds light, which
   spaces the ring's ladder at `e^(−γ)` and *also* set where the shader's march

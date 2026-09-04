@@ -334,6 +334,8 @@ export function shadowHorizonRatio(a: number): number {
 
 /** Uniformly spaced samples of the equatorial embedding surface, z(r[0]) = 0. */
 export interface EmbeddingProfile {
+  /** The spin the surface was built for; `embeddingRhoAt` needs it. */
+  a: number;
   /** Boyer–Lindquist radius, r[0] = r+ and r[n-1] = rMax. */
   r: Float64Array;
   /** Height of the embedding surface above the rim, same units (M). */
@@ -341,33 +343,66 @@ export interface EmbeddingProfile {
 }
 
 /**
+ * The radius the funnel is drawn at: the equatorial circle labelled by
+ * Boyer–Lindquist r has proper circumference 2 pi rho, with
+ *
+ *     rho(r) = sqrt(r^2 + a^2 + 2a^2/r),
+ *
+ * which is sqrt(g_phiphi) on the equator. r itself is a coordinate label, not
+ * a measured length, and the two part company exactly where the diagram is
+ * read hardest: rho(r+) = 2 at EVERY spin. Delta(r+) = 0 forces
+ * r+^2 + a^2 = 2r+, so rho(r+)^2 = 2(r+^2 + a^2)/r+ = 4 identically — the
+ * horizon's equatorial circumference is 4 pi M whatever the hole is doing,
+ * while r+ itself falls from 2 to 1.06 across the spin slider. Plotting r
+ * therefore shrank the funnel's mouth by nearly half at high spin for a
+ * reason that is pure bookkeeping.
+ *
+ * Monotonic where it is used: d(rho^2)/dr = 2r - 2a^2/r^2 vanishes only at
+ * r = a^(2/3) < 1 <= r+, so rho rises with r everywhere outside the horizon
+ * and the surface never doubles back on itself.
+ */
+export function circumferentialRadius(r: number, a: number): number {
+  return Math.sqrt(r * r + a * a + (2 * a * a) / r);
+}
+
+/**
  * The funnel: the equatorial slice of Kerr lifted into flat 3-space as a
- * surface of revolution. The slice's radial metric is g_rr = r^2/Delta with
- * Delta = r^2 - 2r + a^2 = (r - r+)(r - r-), and a surface of revolution of
- * radius r whose arc length matches it obeys
+ * surface of revolution. A surface of revolution of cylindrical radius rho(r)
+ * and height z(r) has induced metric (rho'^2 + z'^2) dr^2, and the slice's own
+ * radial metric is g_rr = r^2/Delta with Delta = r^2 - 2r + a^2 =
+ * (r - r+)(r - r-), so matching arc length gives
  *
- *     dz/dr = sqrt(g_rr - 1) = sqrt((2r - a^2) / Delta).
+ *     dz/dr = sqrt(r^2/Delta - rho'(r)^2),   rho' = (r - a^2/r^2) / rho.
  *
- * At a = 0 that integrates in closed form to Flamm's paraboloid,
- * z = sqrt(8(r - 2)).
+ * At a = 0, rho = r and rho' = 1, and that integrates in closed form to
+ * Flamm's paraboloid, z = sqrt(8(r - 2)).
  *
- * APPROXIMATION at a != 0: this takes r itself as the circumferential radius,
- * while the true proper circumference of the Kerr equatorial circle is
- * 2 pi sqrt(r^2 + a^2 + 2a^2/r). Using that instead is the stricter embedding,
- * but it does not exist in Euclidean 3-space over parts of a fast-spinning
- * throat. This is the standard picture; it is exact at a = 0 and everywhere
- * shows the radial stretching honestly.
+ * This surface exists at every spin, which is not what the hurdle register
+ * predicted. rho'^2 < 1 reduces to a^2(1 + 4/r - a^2/r^4) > 0, true for every
+ * r >= 1, and r+ >= 1 always; r^2/Delta >= 1 outside the horizon; so the
+ * radicand is positive over the whole drawn range and there is no
+ * non-embeddable segment to mark. The often-quoted "a fast Kerr throat has no
+ * Euclidean embedding" is Smarr's result about a DIFFERENT surface — the
+ * horizon 2-sphere (r = r+, theta, phi), whose Gaussian curvature turns
+ * negative near the poles for a > sqrt(3)/2. The equatorial slice drawn here
+ * is not that surface and carries none of that limit.
  *
  * The integrand diverges like (r - r+)^(-1/2) at the rim — integrable, but
  * fatal for plain quadrature. Splitting the singular factor off exactly,
  *
- *     dz/dr = g(r) / sqrt(r - r+),   g(r) = sqrt((2r - a^2) / (r - r-)),
+ *     dz/dr = g(r) / sqrt(r - r+),   g(r) = sqrt(N(r) / (rho^2 (r - r-))),
+ *     N(r)  = 2r^3 + 4a^2 r - 4a^2 + a^4 (2/r - 1/r^2 + 2/r^3) - a^6/r^4,
  *
- * leaves g smooth across the whole range (the spin slider caps at 0.998, so
- * r+ - r- >= 0.126 and g never blows up). Each step then integrates the
- * singularity in closed form and samples the smooth part only at the
- * midpoint, which needs no special case for the first interval. At a = 0,
- * g = sqrt(2) is constant and the result is exact to machine precision.
+ * where N is r^2 rho^2 - Delta (r - a^2/r^2)^2 with the leading r^4 and a^2r^2
+ * cancelled by hand: taken as written those are two quantities agreeing in
+ * their first two terms, and near the outer edge that difference throws away
+ * about a factor r/2 of precision for nothing. g stays smooth across the whole
+ * range (the spin slider caps at 0.998, so r+ - r- >= 0.126 and g never blows
+ * up), and N(r+) = r+^2 rho(r+)^2 = 4r+^2 leaves it finite at the rim. Each
+ * step then integrates the singularity in closed form and samples the smooth
+ * part only at the midpoint, which needs no special case for the first
+ * interval. At a = 0, N = 2r^3 and rho^2 = r^2, so g = sqrt(2) exactly and the
+ * result is exact to machine precision.
  */
 export function embeddingProfile(
   a: number,
@@ -376,6 +411,9 @@ export function embeddingProfile(
 ): EmbeddingProfile {
   const rPlus = horizonRadius(a);
   const rMinus = 1 - Math.sqrt(Math.max(1 - a * a, 0));
+  const a2 = a * a;
+  const a4 = a2 * a2;
+  const a6 = a4 * a2;
   const r = new Float64Array(n);
   const z = new Float64Array(n);
   const h = (rMax - rPlus) / (n - 1);
@@ -384,14 +422,21 @@ export function embeddingProfile(
   let sPrev = 0; // sqrt(r[i-1] - r+), exactly 0 at the rim
   for (let i = 1; i < n; i++) {
     const ri = rPlus + i * h;
-    const mid = ri - h / 2;
-    const g = Math.sqrt((2 * mid - a * a) / (mid - rMinus));
+    const m = ri - h / 2;
+    const num =
+      2 * m * m * m +
+      4 * a2 * m -
+      4 * a2 +
+      a4 * (2 / m - 1 / (m * m) + 2 / (m * m * m)) -
+      a6 / (m * m * m * m);
+    const rho = circumferentialRadius(m, a);
+    const g = Math.sqrt(num / (rho * rho * (m - rMinus)));
     const s = Math.sqrt(ri - rPlus);
     r[i] = ri;
     z[i] = z[i - 1] + g * 2 * (s - sPrev); // ∫ dr/sqrt(r-r+) = 2 sqrt(r-r+)
     sPrev = s;
   }
-  return { r, z };
+  return { a, r, z };
 }
 
 /**
@@ -492,6 +537,18 @@ export function embeddingZAt(p: EmbeddingProfile, r: number): number {
   if (t >= n - 1) return p.z[n - 1];
   const i = Math.floor(t);
   return p.z[i] + (p.z[i + 1] - p.z[i]) * (t - i);
+}
+
+/**
+ * The drawn radius at an arbitrary r, clamped to the profile's own range so
+ * that it pairs with embeddingZAt: past either end both freeze, and the
+ * wireframe stops rather than running outward at a radius whose height no
+ * longer follows it. Closed form, not a table — there is nothing to
+ * integrate here.
+ */
+export function embeddingRhoAt(p: EmbeddingProfile, r: number): number {
+  const n = p.r.length;
+  return circumferentialRadius(Math.min(Math.max(r, p.r[0]), p.r[n - 1]), p.a);
 }
 
 // ---------- shadow & photon-ring outline (6f) ----------

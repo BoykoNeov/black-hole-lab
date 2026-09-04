@@ -1415,6 +1415,128 @@ This is worth writing down because the alternative reading — that the new
 table made the transport worse — is available, wrong, and would send the next
 person hunting a sign error that is not there.
 
+## Slice 16 — the funnel's radius is a measured length
+
+### The hurdle's own path was half wrong: there is nothing to mark
+
+H3 asked for two things: plot the true proper circumference where the
+embedding exists, and mark the segment of a fast-spinning throat that cannot be
+embedded in Euclidean 3-space at all. The first half is right and is what
+landed. The second half describes a surface this diagram does not draw.
+
+A surface of revolution with cylindrical radius ρ(r) and height z(r) has
+induced metric (ρ'² + z'²) dr², so it is an isometric picture of the equatorial
+slice exactly when ρ'² + z'² = g_rr = r²/Δ. That has a real solution wherever
+ρ'² ≤ r²/Δ. On the equator ρ² = g_φφ = r² + a² + 2a²/r, so
+
+    ρ' = (r − a²/r²)/ρ,   and   ρ'² < 1  ⟺  a²(1 + 4/r − a²/r⁴) > 0,
+
+which holds for every r ≥ 1 — while r₊ = 1 + √(1−a²) ≥ 1 at every spin, and
+r²/Δ ≥ 1 outside the horizon because Δ ≤ r² there. The radicand is therefore
+positive over the whole drawn range at every spin the slider can reach, and at
+every spin it cannot. There is no segment to mark. Scanned at 200,000 radii per
+spin out to r = 40 before any of this was written, and the closed-form argument
+came after: neither found a failure.
+
+What the register was remembering is Smarr's result, and it is about a
+*different* surface — the horizon 2-sphere (r = r₊, θ, φ), whose Gaussian
+curvature turns negative near the poles for a > √3/2 ≈ 0.866, so that surface
+has no isometric embedding in Euclidean 3-space. That is a genuinely famous
+fact about fast Kerr holes, and it is not a fact about the equatorial slice.
+Both `embeddingProfile`'s comment and the hurdle register now say which surface
+the sentence belongs to, because a caveat that quietly vanishes reads as an
+oversight rather than as a finding.
+
+### ρ(r₊) = 2, at every spin — which is the visible payoff
+
+The reason this was worth doing is one identity. Δ(r₊) = 0 forces
+r₊² + a² = 2r₊, so
+
+    ρ(r₊)² = r₊² + a² + 2a²/r₊ = 2(r₊² + a²)/r₊ = 4r₊/r₊ = 4
+
+identically. The horizon's equatorial circumference is 4πM whatever the hole is
+doing. Meanwhile r₊ itself falls from 2 to 1.06 across the spin slider, so the
+old diagram drew the mouth at 72% of its true size at a = 0.9 and 53% at
+a = 0.998, and told the viewer the throat narrows as the hole spins up. It does
+not. What actually happens is that the funnel gets *deeper* — total height over
+r₊ ≤ r ≤ 20 goes 12.51 → 12.91 at a = 0.9 and 14.29 → 14.84 at a = 0.998, a
+3–4% correction on top of the depth the old profile already had — while the
+mouth stays exactly where it is. The tapering mouth was an artifact of plotting
+a coordinate label as if it were a length, in the one overlay whose whole claim
+is "drawn 1:1".
+
+At a = 0 nothing moves at all, and that is asserted rather than assumed:
+ρ(r) = r there identically, `circumferentialRadius(r, 0) === r` exactly (not to
+within a tolerance), and the profile still reproduces Flamm's paraboloid
+z = √(8(r−2)) to 1.4e-14 over all 800 samples.
+
+### The exact singularity split survives, with one cancellation removed by hand
+
+dz/dr still diverges like (r − r₊)^(−1/2) at the rim, and the quadrature still
+splits that factor off in closed form and samples the smooth remainder at the
+midpoint. Only the smooth part changed:
+
+    dz/dr = g(r)/√(r − r₊),   g(r) = √( N(r) / (ρ² (r − r₋)) ),
+    N(r)  = r²ρ² − Δ (r − a²/r²)².
+
+Written like that, N is a difference of two quantities that agree in their
+first two terms (r⁴ and a²r²), so evaluating it directly throws away about a
+factor r/2 of precision near the outer edge for nothing, and it stops being
+identically 2r³ at a = 0. Expanded by hand,
+
+    N(r) = 2r³ + 4a²r − 4a² + a⁴(2/r − 1/r² + 2/r³) − a⁶/r⁴,
+
+which needs no cancellation at all, and at a = 0 collapses to 2r³ against
+ρ² = r², leaving g = √2 exactly — the same constant the old integrand had, so
+the a = 0 profile is not merely close to what it was but produced by the same
+arithmetic. The expanded form was checked against the direct one over
+2,000 radii at eight spins: 7.1e-15 worst relative difference, which is the
+cancellation it removes.
+
+g is also finite at the rim rather than merely integrable there:
+N(r₊) = r₊²ρ(r₊)² = 4r₊² since Δ(r₊) = 0, so g(r₊) = r₊/√(r₊ − r₋) — the same
+value the old integrand had, because the ρ' term is multiplied by Δ.
+
+### The check that cannot pass by agreeing with itself
+
+The obvious test — recompute the integrand and compare — proves only that the
+module can evaluate its own formula twice. The one that bites differentiates
+the drawn surface instead: central-difference the produced (ρ, z) and ask
+whether its own arc length reproduces the slice's radial metric,
+ρ'² + z'² = r²/Δ. Nothing in that touches the expression the profile was built
+from.
+
+Worst relative residual over 20,000 samples, away from the rim: 6.5e-7 at
+a = 0 rising to 1.1e-6 at a = 0.998 — which is the central difference's own
+truncation at that spacing, not the surface. The rim is excluded and the reason
+is not a fudge: z goes like √(r − r₊) there, so a central difference across a
+vertical tangent measures the differencing.
+
+The test carries its own control, in the same loop: pair the same heights with
+radius r — which is exactly what the diagram used to do — and the residual goes
+to 2.4e-2 at a = 0.5, 9.2e-2 at a = 0.9, 1.2e-1 at a = 0.998. Five orders of
+magnitude, at every spin but zero, where it is identically zero because there
+is nothing to correct. Without that control the isometry assertion would pass
+on a threshold loose enough to be meaningless and nobody would know.
+
+### Everything is still indexed by r; only the drawing moved
+
+`embeddingRhoAt` is a closed form, not a table — there is nothing to integrate
+— and it clamps to the profile's own range so that radius and height stop
+together at both ends rather than the wireframe running outward at a radius
+whose height no longer follows it. The `EmbeddingProfile` carries the spin it
+was built for so that the drawing side needs no second source for `a`.
+
+In `hud.ts` the two projection helpers take a Boyer–Lindquist r and convert,
+rather than being handed ρ. Every caller has a physical radius in hand — the
+ISCO, the rim, where a star is right now — and none of them has any use for the
+drawn one. That keeps the disk/plunge shading, the dot placement and the ring
+labels reading in r, and confines the change to the two lines that turn a
+radius into a pixel. Both of them: ρ appears in the horizontal projection *and*
+in the tilt term of the vertical one, since that term is the same cylindrical
+radius seen at an angle, and correcting only the first would have tilted the
+surface into a shape that is not a surface of revolution at all.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

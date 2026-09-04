@@ -20,8 +20,10 @@ import {
   alignmentAngle,
   approachingSign,
   circRate,
+  circumferentialRadius,
   criticalLyapunov,
   embeddingProfile,
+  embeddingRhoAt,
   embeddingZAt,
   equatorialPoint,
   findShadowEdge,
@@ -896,6 +898,36 @@ function nearest(p: { r: Float64Array; z: Float64Array }, target: number): numbe
   return p.z[best];
 }
 
+describe("circumferentialRadius", () => {
+  it("is the coordinate r itself at zero spin", () => {
+    // exact equality, not toBeCloseTo: the funnel at a = 0 is Flamm's
+    // paraboloid and nothing about this slice may move it by even an ulp
+    for (const r of [2, 2.5, 6, 13.7, 20]) expect(circumferentialRadius(r, 0)).toBe(r);
+  });
+
+  it("gives the horizon an equatorial circumference of 4 pi M at every spin", () => {
+    // Delta(r+) = 0 forces r+^2 + a^2 = 2r+, so rho(r+)^2 = 2(r+^2+a^2)/r+ = 4
+    // identically. This is the whole point of the slice: r+ falls from 2 to
+    // 1.06 across the slider while the measured rim does not move at all.
+    for (const a of [0, 0.3, 0.5, 0.7, 0.9, 0.95, 0.998]) {
+      expect(circumferentialRadius(horizonRadius(a), a)).toBeCloseTo(2, 12);
+    }
+  });
+
+  it("rises with r outside the horizon, so the surface never doubles back", () => {
+    // d(rho^2)/dr vanishes only at r = a^(2/3), which is below 1 <= r+
+    for (const a of [0, 0.5, 0.9, 0.998]) {
+      const rPlus = horizonRadius(a);
+      let prev = -Infinity;
+      for (let i = 0; i <= 200; i++) {
+        const rho = circumferentialRadius(rPlus + (i * (30 - rPlus)) / 200, a);
+        expect(rho).toBeGreaterThan(prev);
+        prev = rho;
+      }
+    }
+  });
+});
+
 describe("embeddingProfile", () => {
   it("reproduces Flamm's paraboloid at a = 0", () => {
     const p = embeddingProfile(0, 20, 800);
@@ -914,9 +946,13 @@ describe("embeddingProfile", () => {
   it("starts exactly at the rim", () => {
     for (const a of [0, 0.5, 0.9, 0.998]) {
       const p = embeddingProfile(a, 20, 400);
+      expect(p.a).toBe(a);
       expect(p.r[0]).toBeCloseTo(horizonRadius(a), 12);
       expect(p.z[0]).toBe(0);
       expect(p.r[p.r.length - 1]).toBeCloseTo(20, 12);
+      // and the mouth is the same size at every spin — see
+      // circumferentialRadius. The rim used to be drawn at r+, which is not.
+      expect(embeddingRhoAt(p, p.r[0])).toBeCloseTo(2, 12);
     }
   });
 
@@ -932,17 +968,76 @@ describe("embeddingProfile", () => {
   it("makes the throat locally gentler but deeper as spin rises", () => {
     // docs/archive/PLAN-slice-6.md's 6d prose has this backwards ("spin flattens the
     // throat: z at r = 6 for a = 0.9 < z at r = 6 for a = 0"). It conflates
-    // slope with height. Both halves below are the same formula the plan
-    // gives, and they disagree with its conclusion: the wall at r = 6 does
-    // get shallower with spin, but r+ falls from 2 to 1.436, adding range
+    // slope with height. Both halves below are the same formula the module
+    // uses, and they disagree with the plan's conclusion: the wall at r = 6
+    // does get shallower with spin, but r+ falls from 2 to 1.436, adding range
     // exactly where the integrand diverges — so the funnel reaches deeper.
-    const slope = (r: number, a: number) =>
-      Math.sqrt((2 * r - a * a) / (r * r - 2 * r + a * a));
+    const slope = (r: number, a: number) => {
+      const rhoPrime = (r - (a * a) / (r * r)) / circumferentialRadius(r, a);
+      return Math.sqrt((r * r) / (r * r - 2 * r + a * a) - rhoPrime * rhoPrime);
+    };
     expect(slope(6, 0.9)).toBeLessThan(slope(6, 0));
 
     const flat = embeddingProfile(0, 20, 800);
     const spun = embeddingProfile(0.9, 20, 800);
     expect(nearest(spun, 6)).toBeGreaterThan(nearest(flat, 6));
+  });
+
+  it("is an isometric embedding, not just a height that matches", () => {
+    // The check the module cannot pass by agreeing with itself: differentiate
+    // the drawn surface (rho, z) numerically and ask whether its own arc
+    // length reproduces the slice's radial metric, rho'^2 + z'^2 = r^2/Delta.
+    // Nothing here evaluates the integrand the profile was built from.
+    //
+    // Away from the rim only: z goes like sqrt(r - r+) there, and a central
+    // difference across a vertical tangent measures the differencing, not the
+    // surface.
+    for (const a of [0, 0.5, 0.9, 0.998]) {
+      const n = 20001;
+      const p = embeddingProfile(a, 20, n);
+      const rPlus = horizonRadius(a);
+      const dr = (20 - rPlus) / (n - 1);
+      let worst = 0;
+      let worstFlat = 0; // the control: the same z drawn at radius r
+      for (let i = 1; i < n - 1; i++) {
+        const r = p.r[i];
+        if (r < rPlus + 0.5) continue;
+        const zp = (p.z[i + 1] - p.z[i - 1]) / (2 * dr);
+        const rhoP =
+          (circumferentialRadius(p.r[i + 1], a) - circumferentialRadius(p.r[i - 1], a)) /
+          (2 * dr);
+        const gRR = (r * r) / (r * r - 2 * r + a * a);
+        worst = Math.max(worst, Math.abs(rhoP * rhoP + zp * zp - gRR) / gRR);
+        worstFlat = Math.max(worstFlat, Math.abs(1 + zp * zp - gRR) / gRR);
+      }
+      // 1e-5 is the central difference's own truncation at this spacing, not
+      // the surface: measured 6.5e-7 at a = 0 rising to 1.1e-6 at a = 0.998.
+      expect(worst).toBeLessThan(1e-5);
+      // and the check bites — drawing this same height at radius r instead
+      // breaks the isometry by five orders of magnitude at every spin but zero
+      // (9.2e-2 at a = 0.9), which is what the diagram used to do
+      if (a > 0) expect(worstFlat).toBeGreaterThan(1e-2);
+    }
+  });
+});
+
+describe("embeddingRhoAt", () => {
+  it("is the closed form inside the profile's range", () => {
+    const p = embeddingProfile(0.9, 20, 400);
+    for (const r of [p.r[0], 3.3, 9.87, 20]) {
+      expect(embeddingRhoAt(p, r)).toBe(circumferentialRadius(r, 0.9));
+    }
+  });
+
+  it("clamps outside it, so radius and height stop together", () => {
+    const p = embeddingProfile(0.9, 20, 400);
+    expect(embeddingRhoAt(p, 1)).toBe(circumferentialRadius(p.r[0], 0.9));
+    expect(embeddingRhoAt(p, 1e6)).toBe(circumferentialRadius(20, 0.9));
+  });
+
+  it("leaves the a = 0 funnel drawn exactly where it was", () => {
+    const p = embeddingProfile(0, 20, 800);
+    for (const i of [0, 1, 400, 799]) expect(embeddingRhoAt(p, p.r[i])).toBe(p.r[i]);
   });
 });
 

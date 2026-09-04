@@ -201,6 +201,37 @@ Units are geometrized (G = c = M = 1) throughout.
       Control: the removed fit put back in the shader alone reads +13.2, +22.9,
       +23.9% while the angle check passes throughout ✅
 
+16. **The funnel's radius is a measured length** — hurdle H3, closed ✅
+    - the embedding diagram plotted the Boyer–Lindquist r as each ring's
+      radius, which is a coordinate label. It is now drawn at
+      `circumferentialRadius` — the ring's own proper circumference over 2π,
+      √(r² + a² + 2a²/r) — and the height integral matches arc length against
+      THAT, dz/dr = √(r²/Δ − ρ'²), so the surface is an exact isometric
+      picture at every spin rather than only at a = 0
+    - the payoff is one identity: Δ(r₊) = 0 forces r₊² + a² = 2r₊, so
+      ρ(r₊)² = 2(r₊² + a²)/r₊ = 4 at EVERY spin. The horizon's equatorial
+      circumference is 4πM whatever the hole is doing, while r₊ itself falls
+      from 2 to 1.06 across the slider — so the old picture drew the mouth at
+      72% of its size at a = 0.9 and 53% at a = 0.998, and showed a throat
+      narrowing with spin that does not narrow. What does change is depth:
+      12.51 → 12.91 at a = 0.9, 14.29 → 14.84 at a = 0.998. At a = 0 nothing
+      moves, asserted rather than assumed — ρ(r) === r exactly, and Flamm's
+      paraboloid still to 1.4e-14 over all 800 samples
+    - **the entry's second half described a surface this diagram does not
+      draw, and the correction is worth keeping.** It said to mark the part of
+      a fast throat that cannot be embedded in Euclidean 3-space. There is no
+      such part: ρ'² < 1 reduces to a²(1 + 4/r − a²/r⁴) > 0, true for every
+      r ≥ 1, and r₊ ≥ 1 always, while r²/Δ ≥ 1 outside the horizon. The
+      famous non-embeddability is Smarr's, about the horizon 2-sphere
+      (r = r₊, θ, φ) for a > √3/2 — a different surface
+    - checked by a route that cannot pass by agreeing with itself:
+      central-difference the produced (ρ, z) and assert ρ'² + z'² = r²/Δ, which
+      evaluates none of the arithmetic the profile was built from. 6.5e-7 at
+      a = 0 to 1.1e-6 at a = 0.998, which is the differencing's own truncation.
+      Its control runs in the same loop — the same heights drawn at radius r,
+      which is what the diagram used to do, breaks the identity by 2.4e-2 to
+      1.2e-1 ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -279,14 +310,25 @@ incomplete legend with a uniformly wrong one. See `docs/DESIGN.md` for the
 derivation, for the measured camera-dependence of the range, and for why the
 labels displace the callouts rather than the other way round.
 
-### H3 — the Kerr embedding uses r as the circumferential radius
+### H3 — the Kerr embedding used r as the circumferential radius
 
-**Status: open, documented in the code.** `embeddingProfile` takes the
-Boyer–Lindquist r as the circle's radius; the true equatorial proper
-circumference is 2π√(r² + a² + 2a²/r). Exact at a = 0; the stricter embedding
-does not exist in Euclidean 3-space over parts of a fast-spinning throat.
-Path: plot with the true circumferential radius where the embedding exists and
-mark the segment where it does not, rather than silently switching to r.
+**Status: closed by slice 16.** `embeddingProfile` drew each ring at the
+Boyer–Lindquist r, which is a coordinate label; it is now drawn at the ring's
+own proper circumference over 2π, √(r² + a² + 2a²/r), with the height
+integral matching arc length against that. The mouth stops shrinking with spin
+— ρ(r₊) = 2 identically — and the throat deepens by 3–4% at high spin.
+
+**The entry's second half was wrong, and the correction is worth keeping.** It
+said the stricter embedding "does not exist in Euclidean 3-space over parts of
+a fast-spinning throat", and asked for the failing segment to be marked. The
+equatorial slice always embeds: ρ'² < 1 reduces to a²(1 + 4/r − a²/r⁴) > 0 for
+every r ≥ 1, and r₊ ≥ 1 at every spin, while r²/Δ ≥ 1 outside the horizon.
+The non-embeddability being remembered is Smarr's, and it belongs to the
+horizon 2-sphere (r = r₊, θ, φ), whose Gaussian curvature turns negative near
+the poles for a > √3/2. Building the marker would have meant drawing a
+boundary that is not there. See `docs/DESIGN.md` for the derivation, for why
+the integrand's leading terms are cancelled by hand, and for the control that
+makes the isometry check bite.
 
 ### H4 — the disk is a zero-thickness, zero-torque Novikov–Thorne sheet
 
@@ -353,11 +395,6 @@ frame-count-based wait would make it portable.
 Nothing argued is outstanding. What remains open in the register, in the order
 it would be worth doing:
 
-- **The embedding's circumferential radius** (H3). The one place the lab still
-  draws a coordinate as if it were a measured length. The honest fix is two
-  halves: plot the true proper circumference where the surface exists, and mark
-  the part of a fast-spinning throat that cannot be embedded in Euclidean
-  3-space at all rather than quietly straightening it.
 - **A frame-count wait in the visual harness** (H7). Tooling, not physics: the
   fixed waits are tuned for a GPU, so a software-GL machine times out on frames
   that would have arrived. Smaller than it sounds, and it makes all three
