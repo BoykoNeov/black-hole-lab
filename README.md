@@ -20,7 +20,8 @@ npm run dev     # dev server
 npm test        # physics unit tests (geodesic integrator)
 npm run build   # typecheck + production build
 npm run shot    # visual harness smoke run (needs `npm run dev` up)
-npm run pol     # slice 10: the drawn polarization ticks vs the CPU oracle
+npm run pol     # slices 10 and 15: the drawn polarization ticks vs the CPU
+                # oracle, in direction and in length
 npm run band    # slices 11-14: the drawn photon-ring ladder vs the CPU oracle,
                 # the disk light the continuation carries, and the exponents
                 # printed around the ring
@@ -249,7 +250,8 @@ fraction.
 
 Where the polarization *starts* is the disk's surface. Light escaping the
 sheet scatters off free electrons, and scattering polarizes it parallel to the
-surface — nothing face-on, up to 11.7% at grazing incidence. Where it *ends*
+surface — nothing face-on, up to 11.713% at grazing incidence, on
+Chandrasekhar's own tabulated curve. Where it *ends*
 is the camera, and everything between is the black hole turning the plane.
 
 That turn costs nothing per march step, which is the only reason it is
@@ -301,7 +303,9 @@ worth the algebra, is in
   closed forms and nothing per march step — the camera's own sky basis, which
   is what makes this exact at finite radius rather than only far away, Stokes
   bookkeeping over a ray's disk crossings, and the electron-scattering emitter
-  (direction exact, polarized fraction fitted between two exact endpoints).
+  (direction exact from a 4-cross product; polarized fraction exact too since
+  slice 15, read off Chandrasekhar and Breen's 1947 table with a linear
+  interpolation, and the shader's copy of it generated from this one).
   `pixelPolarization` runs the whole chain for one pixel and is the oracle
   `npm run pol` checks the shader against — including, since slice 13, the
   crossings a budget-exhausted ray makes in the separated continuation, because
@@ -523,11 +527,15 @@ and `tsconfig` covers `src` + `test`.
   each tick's principal axis from the difference between a ticks-on and a
   ticks-off frame of a frozen scene — and recomputes every one on the CPU. It
   sweeps the spin, since three of the four places the spin enters the closed
-  form vanish at a = 0: mean 0.20°, 0.24° and 0.23° at a = 0, 0.9 and 0.998,
-  worst 2.09° over ~500 ticks. Cells where the field turns faster than a
-  couple of degrees per pixel are skipped — one tick does not stand for a
+  form vanish at a = 0: mean 0.34°, 0.35° and 0.30° at a = 0, 0.9 and
+  0.998, worst 2.35° over ~450 ticks. Cells where the field turns faster than
+  a couple of degrees per pixel are skipped — one tick does not stand for a
   single direction there. Reading the drawn ink rather than the buffer behind
-  it also covers the projection and the tick pass. It
+  it also covers the projection and the tick pass. Since slice 15 it measures
+  tick LENGTHS as well, which the directions are blind to: the drawn ink's
+  spread should be a straight line in the CPU's polarized fraction, of a slope
+  the tick pass's own geometry predicts (6.31 px), and it comes out 2-3% off at
+  every spin where the fit slice 15 removed reads 13-24% off. It
   borrows vite's own module loader to reach the TypeScript oracle, rather than
   adding a TS runner as a dependency
 - `tools/visual/band.mjs` — `npm run band`. The same problem as `npm run pol`,

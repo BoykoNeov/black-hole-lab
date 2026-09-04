@@ -278,6 +278,12 @@ function installLab() {
           angle: 0.5 * Math.atan2(2 * sxy, sxx - syy),
           weight: wsum,
           elong: l1 > 0 ? (l1 - l2) / (l1 + l2) : 0,
+          // Ink spread along the tick's own axis. A straight segment of half
+          // length L has second moment L^2/3 about its centre, so sqrt(3)*rms
+          // is that half length — up to a fixed widening from the mark's own
+          // 1.6 px of feathered edge, which is why callers compare rms across
+          // cells rather than trusting it as an absolute pixel count.
+          rms: Math.sqrt(l1 / wsum),
         });
       }
     }

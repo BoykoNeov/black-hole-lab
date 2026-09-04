@@ -1299,6 +1299,120 @@ six of them against the slider half's spread. That is not redundancy, it is the
 control: the ring that stays uniform is what makes the other one's sweep mean
 something.
 
+## Slice 15 — Chandrasekhar's table, sourced
+
+### The hurdle was looking in the wrong place
+
+H8 said Table XXIV "was not obtainable from any secondary source", and left a
+`(1-mu)/(1+mu)` curve scaled to its two endpoints in `scatteringDegree`. The
+table exists in the open. Chandrasekhar's 1960 book is a lending copy that no
+API will serve, but the book reprints it: the numbers are Table 6 of
+Chandrasekhar and Breen 1947, *On the radiative equilibrium of a stellar
+atmosphere. XVI*, ApJ 105, 435, on p. 439, headed "the exact laws of darkening
+in the two states of polarization for an electron-scattering atmosphere; degree
+of polarization of the emergent radiation". ADS serves that paper's scan to
+anyone. The lesson generalizes past this slice: when a monograph collects a
+result, the journal paper it collects is often reachable when the monograph is
+not.
+
+### The table checks itself, which is why a scan is enough
+
+Reading twenty-one five-decimal numbers off a 1947 scan is exactly the kind of
+step that fails silently, and no amount of care makes a transcription
+self-evident. This table does not ask for care on faith. It prints three
+columns — I_l/F, I_r/F, and the degree — related by
+delta = (I_r - I_l)/(I_r + I_l). Transcribing all three and testing the identity
+turns a reading into a measurement: every one of the 21 rows closes to 2.4e-5,
+which is precisely the rounding the five-decimal intensity columns carry, and
+I_l + I_r reproduces the printed I/F to 1e-5 besides.
+
+`test/polarization.test.ts` carries the two intensity columns separately from
+the module's degree table and asserts that identity. That matters more than it
+looks: the endpoint test standing before compared `scatteringDegree(0)` to
+`SCATTERING_DEGREE_MAX`, which passes for whatever value the constant happens
+to hold. It pinned nothing. The intensity columns are the only numbers in the
+file that do not come from the module under test.
+
+### Two curves deliberately not used
+
+The 1946 paper immediately before this one (ApJ 103, 351) tabulates the same
+quantity in its *third approximation*, and it is the easier one to reach first.
+It reads 11.34% at grazing incidence against the exact 11.713%, and is 18% low
+in the middle of the range — close enough to look right, wrong enough to
+matter.
+
+The modern literature rarely quotes the table either. It quotes a fit to it:
+`0.1171 (1-mu)/(1+3.582mu)`, which Poutanen's review states as eq. 1.1 and
+which several accretion-disk papers repeat. It is a good fit — 4.6e-3 worst,
+a fifth of the error of the curve that was here — and it is still a fit. This
+hurdle existed to remove a fitted curve, so replacing it with a better fitted
+curve would have been the wrong shape of answer even though the numbers would
+have improved.
+
+### The fit that was here was worse than the entry said
+
+H8 estimated "a couple of percentage points in the middle of the range". In
+absolute terms that was right: worst 2.4e-2, at mu = 0.2. But this quantity is
+a length multiplier, so the absolute error is not what the viewer sees. At
+mu = 0.2 the fit read 0.078 where the truth is 0.054 — a tick half again too
+long. Near mu = 0.9 it read nearly double. The mistake in the estimate was
+quoting an absolute error for a quantity only ever used as a ratio.
+
+### Linear between the points, and why that is enough
+
+The table is on a uniform 0.05 grid, so the index is arithmetic rather than a
+search, which is also what lets the shader mirror the lookup in four lines. The
+interpolation error is bounded by the data itself: h^2/8 times the largest
+second difference is 1.5e-3, and only across the first interval, where the curve
+turns hardest; past mu = 0.1 it is under 5e-4. That is a sixteenth of the error
+being removed, in a quantity that sets tick lengths only, so a monotone spline
+would have bought a residual already far below the width of a drawn mark.
+
+The GLSL copy is generated from the TypeScript table by `shaders.ts`, the way
+the ladder's colours already are, rather than transcribed a second time. There
+is one set of digits in the repo. The second hard-coded `0.117` on the tick
+pass's own length line — the normalizer, which is a different appearance of
+the same endpoint — is now interpolated from the same constant; it had been
+sitting next to a `TICK_MAX_LENGTH` that already was.
+
+### The harness was measuring the one thing that did not change
+
+`npm run pol` compared tick DIRECTIONS. This slice changes only LENGTHS, and
+the two are independent: a mark drawn from the wrong polarized fraction still
+points exactly where the oracle says it should. So the tool that exists to stop
+a GLSL transcription error would have passed a shader with a mistyped table
+— and did, which the control below shows rather than argues.
+
+The tick pass draws a half-length of `pitch * TICK_MAX_LENGTH` times the
+clamped fraction, and a straight segment of half-length L has second moment
+L^2/3 about its centre. So the ink's rms spread along its own axis should be a
+straight line in the CPU's fraction, of slope
+`pitch * TICK_MAX_LENGTH / sqrt(3)` = 6.31 px, plus a small intercept for the
+mark's feathered ends that no oracle predicts. That slope is predicted by the
+tick pass's geometry and measured off the pixels, which makes it a comparison
+rather than a self-consistency check. Measured: +2.3%, +2.4%, +3.4% at the
+three spins, worst residual 0.7 px.
+
+The control is what makes those numbers mean anything. Putting the removed fit
+back into the shader ALONE, oracle still on the table, reads +13.2%, +22.9% and
++23.9% — while the angle check passes at all three spins. The tolerance is
+6%: clear of one, well under the other.
+
+### The angle residuals moved, and it is the readout, not the physics
+
+Slice 10's numbers were mean 0.24° and worst 1.20°. They now read up to
+0.35° and 2.35°, which looks like a regression and is not — the
+direction code is untouched by this slice. The exact table draws mid-range ticks
+shorter than the fit did, and a shorter mark has less ink to fit an axis
+through. Measured over 455 compared ticks: marks of 1-2 px rms average
+0.80° of angle error, 2-3 px average 0.37°, 3-4 px average 0.31°,
+past 4 px average 0.25°. Every run's worst tick comes from the shortest bin.
+The 4° tolerance is unchanged and still has margin.
+
+This is worth writing down because the alternative reading — that the new
+table made the transport worse — is available, wrong, and would send the next
+person hunting a sign error that is not there.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

@@ -9,6 +9,10 @@ import {
   MINO_STEP_SCALE,
   MINO_V_FALL,
 } from "./mino";
+import {
+  SCATTERING_DEGREE_MAX,
+  SCATTERING_DEGREE_TABLE,
+} from "./polarization";
 import { TDE_MAX } from "./tde";
 
 /**
@@ -946,11 +950,17 @@ vec2 wpConst(vec3 pos, vec4 P, vec4 F) {
 }
 
 // Polarized fraction of light leaving a scattering atmosphere at |cos| = mu to
-// its normal. Endpoints exact (0 face-on, 11.7% grazing); the curve between
-// them is a fit, and it scales tick LENGTHS only. See polarization.ts.
+// its normal: Chandrasekhar and Breen's exact table, on the 0.05 grid they
+// print it on, generated here from the one copy in polarization.ts so the two
+// sides cannot drift. Linear between points, as the CPU does. See
+// polarization.ts for the source and the interpolation's error.
+const float SCAT_DEG[${SCATTERING_DEGREE_TABLE.length}] = float[${SCATTERING_DEGREE_TABLE.length}](
+  ${SCATTERING_DEGREE_TABLE.map((d) => d.toFixed(6)).join(", ")}
+);
 float scatDegree(float mu) {
-  float m = min(1.0, abs(mu));
-  return 0.117 * (1.0 - m) / (1.0 + m);
+  float m = min(1.0, abs(mu)) * ${(SCATTERING_DEGREE_TABLE.length - 1).toFixed(1)};
+  int i = min(${SCATTERING_DEGREE_TABLE.length - 2}, int(m));
+  return mix(SCAT_DEG[i], SCAT_DEG[i + 1], m - float(i));
 }
 
 // A world direction as the unit spatial direction an emitter with 4-velocity u
@@ -1526,7 +1536,7 @@ vec3 ticks(vec3 c, vec2 pix) {
   float vis = smoothstep(0.03, 0.18, lit);
   if (vis <= 0.0) return c;
   // not "half": that is a reserved word in GLSL ES
-  float halfLen = uTickPitch * ${TICK_MAX_LENGTH.toFixed(2)} * clamp(length(pol.xy) / (pol.z * 0.117), 0.0, 1.0);
+  float halfLen = uTickPitch * ${TICK_MAX_LENGTH.toFixed(2)} * clamp(length(pol.xy) / (pol.z * ${SCATTERING_DEGREE_MAX.toFixed(5)}), 0.0, 1.0);
   // A tick belongs to the half its centre was traced in; one that would reach
   // across compare mode's divider is dropped rather than drawn over a
   // spacetime it does not describe.

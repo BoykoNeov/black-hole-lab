@@ -26,7 +26,8 @@ npm test        # physics unit tests (vitest)
 npm run build   # tsc --noEmit + vite build
 npm run shot    # visual harness smoke run (needs `npm run dev` already up;
                 # finds its port itself — vite climbs past other projects)
-npm run pol     # slice 10: the drawn polarization ticks vs the CPU oracle
+npm run pol     # slices 10 and 15: the drawn polarization ticks vs the CPU
+                # oracle, in direction and in length
 npm run band    # slices 11-14: the drawn ladder vs the CPU oracle, the
                 # tripwire colour that must read zero pixels, the disk light
                 # the continuation carries, and the exponents printed around

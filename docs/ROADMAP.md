@@ -170,6 +170,37 @@ Units are geometrized (G = c = M = 1) throughout.
       `npm run band` measures the ink at each label against control boxes at
       azimuths with no text on them: 234-272 px against 0 at five views ✅
 
+15. **Chandrasekhar's table, sourced** — hurdle H8, closed ✅
+    - the polarized fraction a scattering surface sends out at angle mu to its
+      normal was the last fitted number in slice 10. The entry said to source
+      Table XXIV and interpolate; the table is Chandrasekhar and Breen 1947
+      (ApJ 105, 435), Table 6 on p. 439, which the 1960 book reprints, and the
+      free ADS scan carries it. `scatteringDegree` is now those 21 numbers with
+      a linear interpolation, and `SCATTERING_DEGREE_MAX` is the table's own
+      0.11713 rather than the rounded 11.7% the literature quotes
+    - the digits can be trusted off a scan because the table checks itself: it
+      prints I_l/F and I_r/F beside the degree column, and all 21 rows reproduce
+      (I_r - I_l)/(I_r + I_l) to 2.4e-5, the rounding those five-decimal columns
+      carry. The test transcribes the intensity columns separately and asserts
+      the identity, so the only pin on these numbers does not come from the
+      module under test. Two things NOT used: the third approximation tabulated
+      in the 1946 paper that precedes it (11.34% grazing against the exact
+      11.713%, and 18% low mid-range), and the closed-form
+      0.1171(1-mu)/(1+3.582mu) that the modern literature fits to the same
+      table — a fit is what this hurdle existed to remove
+    - the curve that was there was worse than the entry claimed. Its absolute
+      error was indeed a couple of percentage points (worst 2.4e-2 at mu = 0.2),
+      but that is half again too long a tick there and nearly double one near
+      mu = 0.9. The interpolation left in its place is bounded by the table's own
+      second differences at 1.5e-3, and only across the first interval
+    - `npm run pol` could not have caught any of this: it measured tick
+      DIRECTIONS, which this slice does not touch, and a tick drawn from the
+      wrong fraction still points exactly where the oracle says. It now also
+      fits the drawn ink's spread against the CPU's fraction — slope 6.31 px
+      by the tick pass's own geometry, measured +2.3 to +3.4% at three spins.
+      Control: the removed fit put back in the shader alone reads +13.2, +22.9,
+      +23.9% while the angle check passes throughout ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -273,25 +304,34 @@ picture: that ring pattern is synchrotron from a magnetized flow, and this
 disk is a zero-torque Novikov–Thorne sheet with no magnetic field in it. A
 toroidal-field synchrotron emitter would be an artistic knob dressed as
 physics on this disk, so it was not built; if it ever is, it belongs beside
-the scattering model with a badge, not instead of it. What is left of this
-hurdle is H8.
+the scattering model with a badge, not instead of it. What was left of this
+hurdle was H8, and slice 15 closed that.
 
-### H8 — the polarized fraction is a fit between two exact endpoints
+### H8 — the polarized fraction was a fit between two exact endpoints
 
-**Status: open, labelled, and it moves lengths only.** How strongly a
-scattering surface polarizes the light leaving it at angle mu to its normal is
-Chandrasekhar's 1960 Table XXIV. The endpoints the lab uses are the real ones
-— exactly 0 face-on, 11.7% grazing, the number the accretion-disk literature
-quotes from that table — but the table itself was not obtainable from any
-secondary source, so the curve between them is a `(1-mu)/(1+mu)` shape scaled
-to meet them. Its worst plausible error is a couple of percentage points in
-the middle of the range.
+**Status: closed by slice 15.** The table was obtainable after all, just not
+where the entry looked. Chandrasekhar's 1960 Table XXIV is a reprint of Table 6
+in Chandrasekhar and Breen 1947 (ApJ 105, 435, p. 439), and ADS serves that
+paper's scan freely — the book is the lending copy nobody could open, the
+journal article is not. `scatteringDegree` now carries those 21 numbers with a
+linear interpolation between them.
 
-This is confined to tick LENGTHS. Every tick DIRECTION comes from the
-4-cross product of the emitter's 4-velocity, the disk normal and the photon
-direction, which is exact and carries no fitted number. Path: source Table
-XXIV, drop it into `scatteringDegree` as data with an interpolation, keep the
-two endpoint tests. Nothing else in the slice changes.
+**The entry under-stated its own error, and the correction is worth keeping.**
+"A couple of percentage points in the middle of the range" was right in
+absolute terms — worst 2.4e-2, at mu = 0.2 — but that is the whole point
+of the quantity: the fit read 0.078 where the truth is 0.054, so it drew ticks
+half again too long there, and near mu = 0.9 nearly double. What replaced it is
+bounded at 1.5e-3 by the table's own second differences, and only across the
+first tabulated interval.
+
+The rest of the entry held: this moved tick LENGTHS and nothing else. Every
+tick DIRECTION still comes from the 4-cross product of the emitter's
+4-velocity, the disk normal and the photon direction, exact and unchanged —
+which is also why `npm run pol` had to grow a second measurement before the
+slice could be called checked. See `docs/DESIGN.md` for the provenance, for why
+neither the 1946 third approximation nor the literature's closed-form fit to
+the same table was used, and for the control that shows the new measurement
+bites.
 
 ### H6 — float32 in the shader near the critical curve
 
@@ -310,5 +350,15 @@ frame-count-based wait would make it portable.
 
 ## Queued
 
-- **Chandrasekhar's table** (H8). Smaller still: source twenty numbers and
-  replace a fitted curve with them. Tick directions do not change.
+Nothing argued is outstanding. What remains open in the register, in the order
+it would be worth doing:
+
+- **The embedding's circumferential radius** (H3). The one place the lab still
+  draws a coordinate as if it were a measured length. The honest fix is two
+  halves: plot the true proper circumference where the surface exists, and mark
+  the part of a fast-spinning throat that cannot be embedded in Euclidean
+  3-space at all rather than quietly straightening it.
+- **A frame-count wait in the visual harness** (H7). Tooling, not physics: the
+  fixed waits are tuned for a GPU, so a software-GL machine times out on frames
+  that would have arrived. Smaller than it sounds, and it makes all three
+  harnesses portable.

@@ -320,6 +320,35 @@ export function emitterPolarization(
 // ---------- the emitter: an electron-scattering disk surface ----------
 
 /**
+ * The degree of polarization of the radiation emerging from a semi-infinite
+ * electron-scattering atmosphere, at |cos| = mu to its normal, on the 0.05
+ * grid the source prints — index i is mu = i/20.
+ *
+ * Chandrasekhar and Breen 1947 (ApJ 105, 435), Table 6 on p. 439: "the exact
+ * laws of darkening in the two states of polarization for an
+ * electron-scattering atmosphere; degree of polarization of the emergent
+ * radiation". That is the table reprinted as Table XXIV of Radiative Transfer
+ * (1960), which is the reference the accretion-disk literature cites and the
+ * one hurdle H8 could not obtain. These are the exact H-function values, NOT
+ * the third approximation of the preceding paper (1946, ApJ 103, 351, Table
+ * 2), which reaches only 11.34% at grazing incidence against the exact
+ * 11.713% and is 18% low in the middle of the range.
+ *
+ * The table checks itself, which is why digits read off a scan can be trusted
+ * here: it prints I_l/F and I_r/F beside delta, and every one of these 21 rows
+ * reproduces (I_r - I_l)/(I_r + I_l) to 2.4e-5 — the rounding of the
+ * five-decimal intensity columns, and no more.
+ */
+export const SCATTERING_DEGREE_TABLE: readonly number[] = [
+  0.11713, 0.08979, 0.07448, 0.06311, 0.0541, 0.04667, 0.04041, 0.03502,
+  0.03033, 0.02619, 0.02252, 0.01923, 0.01627, 0.01358, 0.011123, 0.00888,
+  0.006818, 0.004919, 0.003155, 0.001522, 0,
+];
+
+/** Grazing incidence, where a scattering atmosphere polarizes hardest. */
+export const SCATTERING_DEGREE_MAX = SCATTERING_DEGREE_TABLE[0];
+
+/**
  * Polarized fraction of light leaving a scattering atmosphere at angle
  * mu = |cos| to the surface normal, in the surface's own rest frame.
  *
@@ -327,26 +356,28 @@ export function emitterPolarization(
  * light escapes through an atmosphere dominated by electron scattering, and
  * scattering polarizes: light leaving straight up carries no preferred
  * direction and is unpolarized, light leaving nearly along the surface is
- * polarized parallel to it. Chandrasekhar solved this exactly in 1960; the
- * answer is his Table XXIV.
+ * polarized parallel to it. This is Chandrasekhar's own answer, read off the
+ * table above rather than fitted to its endpoints.
  *
- * PHYSICAL FORM, APPROXIMATE COEFFICIENTS — the same class of knob as the
- * jet's g <= 1.6 clamp, and labelled the same way. The two endpoints here are
- * the real ones: exactly 0 face-on, and 11.7% at grazing incidence, which is
- * the number the accretion-disk literature quotes from that table. The shape
- * between them is the (1-mu)/(1+mu) curve scaled to meet them, not
- * Chandrasekhar's own; it is monotonic, correctly slow to rise, and within a
- * fraction of a percent of the published endpoints, but it is a fit. Table
- * XXIV itself was not obtainable from any secondary source. Swapping the fit
- * for the tabulated curve changes tick LENGTHS only — every tick direction in
- * the render comes from the geometry below, which is exact. See
- * docs/ROADMAP.md, hurdle H8.
+ * Linear between the tabulated points, not a spline: the table's own second
+ * differences bound the interpolation error at h^2/8 ≈ 1.5e-3, and only
+ * across the first interval, where the curve turns hardest; past mu = 0.1 it
+ * is under 5e-4. The (1-mu)/(1+mu) fit this replaced was 2.4e-2 out at
+ * mu = 0.2 — it read 0.078 where the truth is 0.054, half again too long a
+ * tick, and nearly double one near mu = 0.9 — so the residual left here is a
+ * sixteenth of the error removed, in a quantity that sets tick LENGTHS only.
+ * Every tick direction comes from the geometry below, which is exact.
+ *
+ * The grid is uniform over [0, 1] by construction, so the index is arithmetic
+ * rather than a search — which is also what lets the shader mirror this in
+ * four lines. src/shaders.ts generates its copy from the table above.
  */
-export const SCATTERING_DEGREE_MAX = 0.117;
-
 export function scatteringDegree(mu: number): number {
-  const m = Math.min(1, Math.abs(mu));
-  return (SCATTERING_DEGREE_MAX * (1 - m)) / (1 + m);
+  const last = SCATTERING_DEGREE_TABLE.length - 1;
+  const m = Math.min(1, Math.abs(mu)) * last;
+  const i = Math.min(last - 1, Math.floor(m));
+  const t = m - i;
+  return SCATTERING_DEGREE_TABLE[i] * (1 - t) + SCATTERING_DEGREE_TABLE[i + 1] * t;
 }
 
 /** A world direction as the unit spatial direction an observer with 4-velocity u sees. */

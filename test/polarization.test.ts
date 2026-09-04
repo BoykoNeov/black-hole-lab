@@ -19,6 +19,7 @@ import {
   pixelPolarization,
   scatteringDegree,
   SCATTERING_DEGREE_MAX,
+  SCATTERING_DEGREE_TABLE,
   skyBasis,
   skyLeg,
   skyToScreen,
@@ -564,16 +565,46 @@ describe("the disk's own polarization (electron scattering)", () => {
     return { u, k, P: [0, 1, 2, 3].map((i) => u[i] + k[i]) as V4 };
   }
 
-  it("is unpolarized face-on and 11.7% at grazing incidence", () => {
+  // Chandrasekhar and Breen 1947 (ApJ 105, 435), Table 6 on p. 439: the two
+  // intensity columns printed beside the degree column, at mu = i/20. The
+  // table is its own check, since delta = (I_r - I_l)/(I_r + I_l) relates the
+  // three columns, so transcribing all of them and testing the identity
+  // catches a digit mistyped in any one. This is the only pin on these numbers
+  // that does not come from the module under test.
+  const TABLE_6_INTENSITIES: readonly (readonly [number, number])[] = [
+    [0.18294, 0.23147], [0.21613, 0.25877], [0.24247, 0.2815],
+    [0.26702, 0.30299], [0.29057, 0.32381], [0.3135, 0.3442],
+    [0.33599, 0.36429], [0.35817, 0.38417], [0.3801, 0.40388],
+    [0.40184, 0.42346], [0.42343, 0.44294], [0.44489, 0.46233],
+    [0.46624, 0.48165], [0.4875, 0.50092], [0.50869, 0.52013],
+    [0.52981, 0.5393], [0.55087, 0.55844], [0.57189, 0.57754],
+    [0.59286, 0.59661], [0.61379, 0.61566], [0.63469, 0.63469],
+  ];
+
+  it("carries the exact table, checked against its own intensity columns", () => {
+    expect(SCATTERING_DEGREE_TABLE).toHaveLength(TABLE_6_INTENSITIES.length);
+    TABLE_6_INTENSITIES.forEach(([il, ir], i) => {
+      // 4 places: the intensity columns are printed to five decimals, so the
+      // identity can only close to the rounding they carry (worst 2.4e-5).
+      expect(SCATTERING_DEGREE_TABLE[i]).toBeCloseTo((ir - il) / (ir + il), 4);
+      // and the interpolation reproduces every tabulated point exactly
+      expect(scatteringDegree(i / 20)).toBeCloseTo(SCATTERING_DEGREE_TABLE[i], 12);
+    });
+  });
+
+  it("is unpolarized face-on and 11.713% at grazing incidence", () => {
     expect(scatteringDegree(1)).toBeCloseTo(0, 12);
-    expect(scatteringDegree(0)).toBeCloseTo(SCATTERING_DEGREE_MAX, 12);
+    expect(scatteringDegree(0)).toBeCloseTo(0.11713, 12);
+    expect(SCATTERING_DEGREE_MAX).toBeCloseTo(0.11713, 12);
     expect(scatteringDegree(-1)).toBeCloseTo(0, 12); // the sheet's two faces agree
   });
 
   it("rises monotonically as the view grazes the surface", () => {
+    // off-grid, so the interpolation between tabulated points is exercised
+    // rather than only the points themselves
     let prev = -1;
-    for (let mu = 1; mu >= 0; mu -= 0.05) {
-      const d = scatteringDegree(mu);
+    for (let i = 100; i >= 0; i--) {
+      const d = scatteringDegree(i / 100);
       expect(d).toBeGreaterThan(prev);
       prev = d;
     }
@@ -615,7 +646,7 @@ describe("the disk's own polarization (electron scattering)", () => {
     expect(diskPolarization(pos, a, rc, P)).toBeNull();
   });
 
-  it("gives a nearly grazing ray nearly the full 11.7%", () => {
+  it("gives a ray at mu = 0.02 the exact table's 10.62%, not a fit's 11.24%", () => {
     const a = 0.3;
     const rc = 14;
     const R = Math.sqrt(rc * rc + a * a);
@@ -630,7 +661,12 @@ describe("the disk's own polarization (electron scattering)", () => {
     ) as V4;
     const P: V4 = [0, 1, 2, 3].map((i) => u[i] + k[i]) as V4;
     const got = diskPolarization(pos, a, rc, P)!;
-    expect(got.degree).toBeGreaterThan(0.11);
+    // Chandrasekhar's curve turns hard at grazing incidence in a way the
+    // (1-mu)/(1+mu) fit that used to stand here did not: it is already down 9%
+    // from its grazing value at mu = 0.02 and 23% by the end of the first
+    // tabulated interval, where the fit had shed 4% and 10%. So this pins the
+    // shape near mu = 0, not just the endpoint both curves share.
+    expect(got.degree).toBeCloseTo(0.106194, 5);
     expect(got.degree).toBeLessThan(SCATTERING_DEGREE_MAX);
   });
 });
