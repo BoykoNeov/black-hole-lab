@@ -1621,14 +1621,118 @@ that. Since slice 9 the outline is exact and immediate, so `settle()` is only
 about the things that still take time: trails filling in, and the frame after a
 control change. Shoot too early and you get the frame before the change, which
 looks exactly like a broken control and is the most convincing wrong answer in
-here.
+here. It counts those in frames rather than milliseconds now — see below for
+why that is a different thing to wait for and not merely a more patient one.
 
 It also cannot run where playwright's pinned chromium is not. Playwright
 refuses any build but the one its release wants, which a sandbox or a CI image
 may not carry; `LAB_CHROMIUM` points it at a preinstalled one instead. That
 build is still headless and still not anyone's profile, so the rule above
-holds. Under software GL a frame is tens of seconds rather than tens of
-milliseconds, and the smoke test's fixed waits are tuned for a GPU.
+holds.
+
+### The waits were counted in milliseconds, on a machine with a GPU
+
+H7 recorded this as "the smoke test's fixed waits are tuned for a GPU" and
+proposed a frame-count wait. That is the right direction and it is not the
+whole of it.
+
+The clock is the wrong unit here for a reason that is not about patience. A
+`Trail` records at most one sample per frame, and the simulation advances by
+min(real dt, 0.1)·timeSpeed per frame — both capped *per frame*, neither per
+second. So on a machine drawing 8 fps a four-second wait buys 32 trail samples
+where it bought 240 on a GPU, and the same request is asking for two different
+measurements. Waiting four seconds is not a slower way of waiting 240 frames;
+it is a different thing to wait for.
+
+So every wait that meant "let the renderer catch up" is now counted in frames
+drawn, off a monotonic counter `main.ts` publishes beside its existing
+screenshot hook. Deliberately not the `frames` counter that was already there:
+that one is zeroed twice a second to compute the fps readout, so a harness
+watching it would see it run backwards.
+
+One wait stays in milliseconds, and it is the one that proves the rule.
+`npm run band`'s frame-rate reading averages over that same 500 ms readout
+window, so waiting for frames there would measure whatever the window happened
+to contain. Four seconds of real time is what makes that readout worth reading,
+on any machine.
+
+### A frame count with a GPU-tuned timeout is the same bug one level up
+
+Counting frames is not enough on its own, because every wait also carries a
+timeout, and a timeout is a millisecond number. `capture()` had 15 s and the
+first-paint wait had 60 s — both fine at 17 ms a frame, both a certain failure
+at a hundred times that. Fixing the units and leaving those in place moves the
+bug rather than closing it, and the measured first attempt at this hit exactly
+that: the software run got past first paint and died in `capture()` at 15 s.
+
+The next attempt was to calibrate — time four frames at boot, then allow some
+multiple of n times that for an n-frame wait. It fails too, and it fails in a
+way worth recording. Measured under SwiftShader: a boot period of 132 ms, and
+then a 64-frame wait blowing an eight-times budget, because by then compare
+mode was on and every frame was drawing the scene twice. A boot calibration
+describes the scene at boot, and a harness's whole job is to change the scene.
+
+What replaced it asks for progress rather than predicting a total. `waitFrames`
+loops on "has the counter moved", and only that single step carries a timeout.
+n frames may then cost anything at all and the wait still returns, while a
+renderer that has genuinely stopped still fails inside one frame's ceiling.
+That ceiling — three minutes — is the one untuned number left, and it does not
+want tuning: it is not a budget, it is a floor under "nothing is happening".
+
+### A capture is one frame's progress, and an expensive one
+
+`capture()` looks like the exception, because it sets a flag and then waits for
+two data URLs to appear, which is not obviously a frame. It is one, exactly:
+`main.ts` increments the counter immediately above the shot hook and inside the
+same synchronous render call, and both of `render`'s early returns sit above
+the increment — so a frame that counts is a frame that reached the hook. A
+predicate polled from outside the page can only run *between* render calls.
+Seeing the counter move after the flag is set is therefore proof the encode
+already finished, and the capture waits on the same counter as everything else.
+
+What it does need is its own ceiling, because that frame is not an ordinary
+one. Measured in a single run on this GPU: 15.3 ms per frame against
+51 ms per capture. In a single run under SwiftShader on the same
+machine: 157.8 ms against 74,245 ms. The frame got ten
+times slower and the capture about a thousand times slower, so no factor connects
+them — a capture is a WebGL readback and a PNG encode of two 1280x800 canvases,
+CPU work that does not care how fast the shader ran. So the boot measurement
+*raises* the frame ceiling where the machine says a capture is expensive, and
+never lowers it. It is a ceiling, not a predicted budget for work of unknown
+length, which is the thing this whole section exists to stop doing.
+
+### Testing the no-GPU claim on a machine that has one
+
+H7 was closed once already as "worked around", on an argument rather than a
+run, and the fixed waits it left behind are what this entry is about. So the
+switch that makes the claim testable landed with the fix: `LAB_SOFTWARE_GL=1`
+swaps ANGLE's `--use-angle=gl` for `--use-angle=swiftshader` and puts the same
+frames through a software rasterizer on a machine with a 5090 in it. All three
+harnesses print the renderer string and both measured periods on their first
+line, so a run claiming to have tested the software path has to show it did —
+`ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero)), SwiftShader
+driver)` against `ANGLE (NVIDIA ... RTX 5090 ...)`.
+
+Measured, and the wall clock is half the claim: `npm run shot` and `npm run pol`
+both pass under SwiftShader, in 1510 s and 1421 s against 3 s and 4 s on the
+GPU, with every check reading what it reads with a GPU under it — `pol`'s worst
+tick angle is 2.29°, 2.37°, 0.86° at the three spins against 2.30°, 2.38°,
+0.86°. The physics measurement did not change; only the clock did, which is
+the whole point.
+
+`npm run band` was NOT run that way, and this says so rather than claiming all
+three. Every wait in it is a `settle()` or the deliberate millisecond one, both
+exercised by the two runs above, and it opens the lab with the ladder already
+on, so its own boot measurement sits on the expensive path from the start. What
+a software run of it would measure is runtime, not wait logic — two of the three
+are portable by measurement, and the third by argument.
+
+One thing the change buys that a merely longer wait would not: under SwiftShader
+`settle(TRAIL_FRAMES)` produced MORE trail than on the GPU, not less — 16785 and
+29189 lit HUD pixels per compare half against 8975 and 10610. Simulation time
+advances min(real dt, 0.1) per frame, so a slow frame banks the whole cap.
+Sixty-four frames is sixty-four trail samples on any machine; sixty-four frames'
+worth of simulated time is not, and the check wanted the samples.
 
 ### The launcher reuses rather than stacks
 

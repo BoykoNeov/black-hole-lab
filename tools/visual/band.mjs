@@ -512,7 +512,7 @@ async function checkView(lab, label) {
 
   // 3. the hairlines, against the CPU's own winding, on a dim frame
   await lab.set({ disk: false });
-  await lab.settle(1200);
+  await lab.settle();
   await lab.capture();
   const span = await shadowRows(lab);
   await lab.shot(
@@ -588,7 +588,7 @@ async function checkView(lab, label) {
   }
 
   await lab.set({ disk: true });
-  await lab.settle(1200);
+  await lab.settle();
   await lab.capture();
   return checkDiskLight(lab, rows, lit, dark);
 }
@@ -655,10 +655,15 @@ async function checkDiskLight(lab, rows, lit, dark) {
  * passage does not eat the frame's headroom at 1280x800 — an upper bound on
  * the cost, not the cost. A real number would need a GPU timer query, which is
  * a change to the renderer rather than to this tool.
+ *
+ * The one wait left in here counted in milliseconds, and it has to be: the
+ * readout averages over its own 500 ms window, so waiting for FRAMES would
+ * measure whatever that window happened to contain. Four seconds of real time
+ * is what makes the readout worth reading, on any machine.
  */
 async function frameTime(lab, label) {
   await lab.set({ fpslimit: 240 });
-  await lab.settle(4000);
+  await lab.page.waitForTimeout(4000);
   const text = await lab.page.evaluate(() => document.getElementById("fps-readout").textContent);
   console.log(`${label}: ${text.trim()}`);
 }
@@ -683,10 +688,12 @@ const tally = (r) => {
 
 const lab = await openLab({ controls: { spin: SPINS[0], timespeed: 0, "edu-ladder": true } });
 try {
-  console.log(`lab found at ${lab.url}\n`);
+  console.log(`lab found at ${lab.url}`);
+  console.log(`renderer: ${lab.renderer}`);
+  console.log(`frame: ${lab.framePeriod.toFixed(1)} ms, capture: ${lab.capturePeriod} ms\n`);
   for (const spin of SPINS) {
     await lab.set({ spin });
-    await lab.settle(1500);
+    await lab.settle();
     tally(await checkView(lab, "default camera"));
   }
   // and at the pitch clamp, which is where the pole crossings are. The camera
@@ -700,10 +707,10 @@ try {
   await lab.page.mouse.down();
   await lab.page.mouse.move(box.x, box.y - 900, { steps: 20 });
   await lab.page.mouse.up();
-  await lab.settle(1500);
+  await lab.settle();
   for (const spin of [0.9, 0.998]) {
     await lab.set({ spin });
-    await lab.settle(1500);
+    await lab.settle();
     tally(await checkView(lab, "pitch clamp"));
   }
   if (judged === 0) fail("no view had enough band px to judge slice 13's disk light");

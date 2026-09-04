@@ -27,6 +27,12 @@ npm run band    # slices 11-14: the drawn photon-ring ladder vs the CPU oracle,
                 # printed around the ring
 ```
 
+All three visual runs wait on frames drawn rather than on the clock, so they
+work where a frame costs seconds. `LAB_SOFTWARE_GL=1` forces ANGLE's software
+rasterizer to prove that on a machine with a GPU; each run prints the renderer
+it actually got, and the measured cost of a frame and of a capture, on its
+first line.
+
 ## Architecture
 
 ### Spacetime and the renderer
@@ -522,8 +528,14 @@ and `tsconfig` covers `src` + `test`.
   it finds it by scanning 5173–5188 for the port answering as this lab, since
   vite climbs past whatever else is running, so no port is reliably ours
   (`LAB_URL` overrides). Writes PNGs outside the repo. `LAB_CHROMIUM` points it
-  at a preinstalled browser where playwright's own pinned build is absent. See
-  `docs/DESIGN.md` for why it measures instead of diffing against stored images.
+  at a preinstalled browser where playwright's own pinned build is absent, and
+  `LAB_SOFTWARE_GL=1` forces ANGLE's software rasterizer so the no-GPU path can
+  be tested on a machine that has one. Every wait in it is counted in frames
+  drawn (`settle`, `drift`), off a counter `main.ts` publishes, and waits on
+  the counter MOVING rather than on a predicted total — so a machine where a
+  frame costs seconds is slow rather than broken. See `docs/DESIGN.md` for why
+  it measures instead of diffing against stored images, and for what a capture
+  costs when the shader is running on the CPU.
 - `tools/visual/polarization.mjs` — `npm run pol`. Slice 10's physics lives
   twice, in the tested TypeScript and in a GLSL copy of the same closed form,
   and a transcription error in either still draws something that looks like a
@@ -566,13 +578,15 @@ and `tsconfig` covers `src` + `test`.
 
 ## Roadmap
 
-Thirteen slices have landed: the lensed sky, the disk, matter in motion, the
+Seventeen slices have landed: the lensed sky, the disk, matter in motion, the
 Kerr integrator, physical scales and TDEs, the educational overlays, compare
 mode, the analytic capture criterion, the photon-ring ladder with the exact
-outline, polarization, and the separated continuation that finishes a ray the
-march cannot — over the spin axis, and carrying the disk light it collects. The
-full list, the register of open scientific hurdles (what is approximate, by how
-much, and the path to closing each) and the queued slices are in
-[`docs/ROADMAP.md`](docs/ROADMAP.md). Next up there: γ around the ring rather
-than per equatorial edge, and sourcing Chandrasekhar's table for the polarized
-fraction.
+outline, polarization, the separated continuation that finishes a ray the march
+cannot — over the spin axis, and carrying the disk light it collects — the
+ladder's spacing pointwise around the ring rather than per equatorial edge,
+Chandrasekhar's tabulated polarized fraction in place of a fit, the embedding
+funnel drawn at measured radii rather than at a coordinate, and a visual
+harness that runs where there is no GPU. The full list and the register of open
+scientific hurdles (what is approximate, by how much, and the path to closing
+each) are in [`docs/ROADMAP.md`](docs/ROADMAP.md); nothing argued is currently
+outstanding there.

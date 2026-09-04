@@ -232,6 +232,51 @@ Units are geometrized (G = c = M = 1) throughout.
       which is what the diagram used to do, breaks the identity by 2.4e-2 to
       1.2e-1 ✅
 
+17. **The harness runs where there is no GPU** — hurdle H7, closed ✅
+    - tooling, not physics. Every wait that meant "let the renderer catch up"
+      is counted in FRAMES DRAWN, off a monotonic counter `main.ts` publishes
+      beside its screenshot hook (deliberately not the `frames` it already had,
+      which is zeroed twice a second for the fps readout). The clock was the
+      wrong unit for a reason that is not about patience: a trail records at
+      most one sample per frame and the simulation advances min(real dt, 0.1)
+      per frame, both capped PER FRAME, so four seconds bought 240 samples on a
+      GPU and 32 on a software rasterizer — the same request asking for two
+      different measurements
+    - **a frame count with a GPU-tuned timeout is the same bug one level up**,
+      and calibrating the timeout does not fix it either. Both were tried and
+      both were measured failing: with the units fixed and the timeouts left
+      alone the software run died in `capture()` at 15 s, and with four frames
+      timed at boot and eight times that allowed per frame it died in a
+      64-frame wait — 132 ms at boot, but by then compare mode was on and every
+      frame drew the scene twice. The waits ask for PROGRESS now — has the
+      counter moved — with only the single next frame under a ceiling, so n
+      frames may cost anything and a stopped renderer still fails inside one
+      frame's worth of time
+    - a capture is one frame's progress too, exactly: the counter is
+      incremented immediately above the shot hook in the same synchronous
+      render call, and a predicate polled from outside can only run between
+      render calls. It is an EXPENSIVE frame, so it gets its own ceiling from a
+      boot measurement — and that measurement is the number worth keeping:
+      15.3 ms per frame against 51 ms per capture on this GPU, 157.8 ms against
+      74,245 ms under SwiftShader. Nothing connects them; a capture is a WebGL
+      readback and a PNG encode, CPU work that does not care how fast the
+      shader ran
+    - and the claim is tested rather than argued: `LAB_SOFTWARE_GL=1` swaps
+      ANGLE's `--use-angle=gl` for `--use-angle=swiftshader`, so the no-GPU
+      path runs on a machine that has one. All three harnesses print the
+      renderer string and both measured periods on their first line, so a run
+      claiming to have tested it has to show it did
+    - measured with the final code: `npm run shot` and `npm run pol` both pass
+      under SwiftShader, in 1510 s and 1421 s of wall clock against 3 s and 4 s
+      on the GPU, and every check reads what it reads with a GPU under it —
+      `pol`'s worst tick angles are 2.29/2.37/0.86 degrees against
+      2.30/2.38/0.86. The physics measurement did not move; only the clock did.
+      `npm run band` was NOT run that way, and this says so rather than claiming
+      all three: its waits are all `settle()` plus the deliberate millisecond
+      one, both exercised by the other two, and it boots with the ladder
+      already on, so a software run of it would measure runtime rather than
+      wait logic ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -382,20 +427,30 @@ radial potential's constant term and measured the remaining float32 slop at
 1e-4 px on the soft (prograde) edge. Nothing queued; this is a note so nobody
 re-suspects it.
 
-### H7 — the visual harness cannot run where playwright's pinned browser is not
+### H7 — the visual harness could not run without a GPU
 
-**Status: worked around.** Playwright refuses any chromium build but the one
-its release pins, which a sandbox or CI image may not have. `LAB_CHROMIUM`
-points the harness at a preinstalled binary. Under software GL a frame is
-tens of seconds, so the smoke test's fixed waits are tuned for a GPU; a
-frame-count-based wait would make it portable.
+**Status: closed by slice 17.** Playwright refuses any chromium build but the
+one its release pins, which a sandbox or CI image may not have; `LAB_CHROMIUM`
+points the harness at a preinstalled binary, and that half was only ever a
+workaround for a packaging problem. What was actually broken is that every wait
+was a millisecond count tuned on a GPU — both the delays, which bought a
+different number of frames on a different machine and so measured a different
+thing, and the timeouts guarding them. Waits are counted in frames drawn now,
+and they wait on the counter MOVING rather than on a predicted total.
+
+**The entry's own path would not have finished the job, and the correction is
+worth keeping.** "A frame-count-based wait would make it portable" leaves the
+timeouts alone — `capture()` had 15 s and first paint had 60 s, both certain to
+fire where a frame costs seconds, and the first software run died on exactly
+that. Calibrating them at boot was tried next and measured failing too, because
+a harness's job is to change the scene and a boot calibration describes the
+scene at boot. See `docs/DESIGN.md` for both measurements, for the one wait
+that must stay in milliseconds, and for why a capture's cost cannot be inferred
+from a frame's.
 
 ## Queued
 
-Nothing argued is outstanding. What remains open in the register, in the order
-it would be worth doing:
-
-- **A frame-count wait in the visual harness** (H7). Tooling, not physics: the
-  fixed waits are tuned for a GPU, so a software-GL machine times out on frames
-  that would have arrived. Smaller than it sounds, and it makes all three
-  harnesses portable.
+Nothing argued is outstanding, and for the first time nothing is queued either:
+every entry in the register above is closed, by design, or measured and found
+not to be a problem. The next slice is a new idea rather than a carried-over
+one — so ask before starting one, rather than inferring it from this file.

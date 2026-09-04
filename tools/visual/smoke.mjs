@@ -12,7 +12,7 @@
  * then measure that frame as many ways as you like.
  */
 
-import { openLab, OUT_DIR, TRAIL_TIMESPEED } from "./harness.mjs";
+import { openLab, OUT_DIR, TRAIL_FRAMES, TRAIL_TIMESPEED } from "./harness.mjs";
 
 const results = [];
 let failed = false;
@@ -29,7 +29,12 @@ const MIN_LIT = 5000;
 const lab = await openLab({ controls: { spin: 0.9 } });
 try {
   // Which server, not just which port: several vite projects share this range.
-  console.log(`lab found at ${lab.url}\n`);
+  console.log(`lab found at ${lab.url}`);
+  // And on what. Every wait below is counted in frames, so this is the number
+  // that says whether the run had a GPU under it — the point of doing it that
+  // way is that the checks do not care, and this line is how you can tell.
+  console.log(`renderer: ${lab.renderer}`);
+  console.log(`frame: ${lab.framePeriod.toFixed(1)} ms, capture: ${lab.capturePeriod} ms\n`);
   const layout = await lab.capture();
   check(
     "renderer publishes its layout",
@@ -49,7 +54,7 @@ try {
   // and are invisible in a GL-only capture. Turn 6f's outline on first and let
   // a frame land with it — the outline itself is immediate since slice 9.
   await lab.set({ "edu-shadow": true });
-  await lab.settle();
+  await lab.settle(); // one frame with the outline on is all this needs
 
   await lab.capture();
   const hud = await lab.snapshot("hud", { layer: "hud" });
@@ -76,7 +81,10 @@ try {
   // Exercises the strip primitive end to end: two halves, one camera, and the
   // per-side overlays slice 7 draws separately for each.
   await lab.set({ compare: true, "edu-trails": true, timespeed: TRAIL_TIMESPEED });
-  await lab.settle();
+  // Trails are the one thing here that wants more than the next frame, and it
+  // wants them as frames: one sample recorded per frame however long the frame
+  // took. See TRAIL_FRAMES.
+  await lab.settle(TRAIL_FRAMES);
   const cmp = await lab.capture();
   check(
     "compare mode reports a split",

@@ -1614,7 +1614,14 @@ function render() {
     __shot?: string;
     __shotHud?: string;
     __layout?: unknown;
+    __frames?: number;
   };
+  // dev hook: a monotonic count of frames actually DRAWN, so a headless
+  // harness can wait for the renderer instead of for the clock — under
+  // software GL a frame costs seconds, and any fixed millisecond wait is then
+  // either a stall on a GPU or a timeout without one. Deliberately not the
+  // `frames` counter above, which is zeroed twice a second for the fps readout.
+  w.__frames = (w.__frames ?? 0) + 1;
   if (w.__wantShot) {
     w.__wantShot = false;
     w.__shot = canvas.toDataURL("image/png");

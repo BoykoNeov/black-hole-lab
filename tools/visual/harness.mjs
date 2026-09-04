@@ -70,6 +70,17 @@ export const LAB_CHROMIUM = process.env.LAB_CHROMIUM ?? null;
 export const OUT_DIR = process.env.LAB_OUT ?? "M:/claud_projects/temp/blackhole-shots";
 
 /**
+ * Force ANGLE's software rasterizer even where a GPU is available.
+ *
+ * This is how the no-GPU claim gets tested on a machine that has one. The
+ * default `--use-angle=gl` reaches the real driver, so a run here says nothing
+ * about a CI image or a sandbox; `LAB_SOFTWARE_GL=1` puts the same frames
+ * through SwiftShader, where one costs seconds instead of milliseconds and
+ * every wait in here has to survive it. Slow on purpose — not for routine use.
+ */
+export const LAB_SOFTWARE_GL = process.env.LAB_SOFTWARE_GL === "1";
+
+/**
  * SwiftShader via ANGLE. Without these the geodesic shader gets no GL2 context
  * headlessly and every frame comes back blank.
  *
@@ -78,7 +89,93 @@ export const OUT_DIR = process.env.LAB_OUT ?? "M:/claud_projects/temp/blackhole-
  * chromium. Keep it that way — close() must never be able to touch a browser
  * a person is using.
  */
-const LAUNCH_ARGS = ["--use-gl=angle", "--use-angle=gl", "--enable-unsafe-swiftshader"];
+const LAUNCH_ARGS = [
+  "--use-gl=angle",
+  LAB_SOFTWARE_GL ? "--use-angle=swiftshader" : "--use-angle=gl",
+  "--enable-unsafe-swiftshader",
+];
+
+/**
+ * The single untuned number in here: how long ONE frame may take before the
+ * machine counts as dead rather than merely slow. A GPU frame measured 15-24 ms
+ * across runs and a 1280x800 SwiftShader frame 132-258 ms, so three minutes is
+ * not a budget, it is a floor under "nothing is happening at all".
+ */
+const FRAME_CAP_MS = 180_000;
+
+/** Frames timed at boot for the report. Enough to average out one hitch. */
+const PERIOD_FRAMES = 4;
+
+/**
+ * The ceiling for the ONE frame a capture rides on, which is not an ordinary
+ * frame: the renderer's hook runs toDataURL on both canvases inside it, and
+ * reading a WebGL drawing buffer back and PNG encoding it is CPU work with no
+ * relation to how fast the shader ran. One run here measured 15.3 ms per frame
+ * against 51 ms per capture on the GPU; one run under SwiftShader measured
+ * 157.8 ms against 74,245 ms. The frame got ten times slower and the capture
+ * roughly a thousand — one boot sample of each, so read that second ratio as an
+ * order of magnitude. No factor connects them, and the frame ceiling alone
+ * cannot cover both.
+ *
+ * So the boot measurement RAISES the ceiling where the machine says a capture
+ * is expensive; it never lowers it. It is not a predicted budget for work of
+ * unknown length — that is the thing this slice exists to stop doing.
+ */
+const captureCeiling = (capturePeriodMs) =>
+  Math.max(FRAME_CAP_MS, Math.ceil(8 * capturePeriodMs));
+
+/** How far the renderer has got. Monotonic; see main.ts on why not `frames`. */
+const frameCount = (page) => page.evaluate(() => window.__frames ?? 0);
+
+/**
+ * Wait until n more frames have been DRAWN, not until a clock says they should
+ * have.
+ *
+ * Waits on PROGRESS, not on a total: the loop asks only for the next frame,
+ * and only that one frame is on a timeout. So n frames may cost anything at
+ * all and the wait still returns, while a renderer that has genuinely stopped
+ * still fails within FRAME_CAP_MS. A budget for the whole run of n cannot do
+ * both, and it does not need to be far wrong to be useless — measured, a boot
+ * calibration under SwiftShader mispredicted a later 64-frame wait by more
+ * than 8x, because by then compare mode was on and every frame was drawing the
+ * scene twice.
+ */
+async function waitFrames(page, n, ceilingMs = FRAME_CAP_MS) {
+  const target = (await frameCount(page)) + n;
+  for (let seen = -1; seen < target; ) {
+    await page.waitForFunction(
+      (last) => (window.__frames ?? 0) > last,
+      seen,
+      { timeout: ceilingMs }
+    );
+    seen = await frameCount(page);
+  }
+}
+
+/**
+ * Freeze one frame and return the layout it was drawn with. Hoisted out of the
+ * lab so that boot can time one before the lab exists — see capturePeriod.
+ *
+ * This waits on the frame counter like everything else, rather than polling for
+ * the data URLs to appear, and that is exact rather than a convenience:
+ * main.ts increments the counter immediately ABOVE the shot hook and inside the
+ * same synchronous render call (both of render's early returns sit above the
+ * increment, so a frame that counts is a frame that reaches the hook). A
+ * predicate polled from outside can only run BETWEEN render calls, so seeing
+ * the counter move after the flag is set is proof the encode already finished.
+ * The capture is therefore one frame's progress — an expensive frame, hence
+ * its own ceiling, but not an unbounded wait needing a guessed budget.
+ */
+async function captureFrame(page, ceilingMs) {
+  await page.evaluate(() => {
+    window.__shot = undefined;
+    window.__shotHud = undefined;
+    window.__layout = undefined;
+    window.__wantShot = true;
+  });
+  await waitFrames(page, 1, ceilingMs);
+  return page.evaluate(() => window.__layout);
+}
 
 /** Wide enough that both compare halves clear the panel (see COMPARE_X0). */
 const VIEWPORT = { width: 1280, height: 800 };
@@ -88,6 +185,16 @@ const LIT = 16;
 
 /** Trails need this to span an orbit — at the default 30 rings come out as arcs. */
 export const TRAIL_TIMESPEED = 120;
+
+/**
+ * Frames to let a trail fill, which is the honest unit for it: a Trail records
+ * at most one sample per frame (TRAIL_MIN_DT gates on simulation time, and at
+ * TRAIL_TIMESPEED even a 16 ms frame clears it), so a buffer's fill is a frame
+ * count and never a duration. Half of TRAIL_CAP_STAR — enough that a star's
+ * trail is an arc rather than a dot, without paying for a full buffer on a
+ * machine where a frame costs seconds.
+ */
+export const TRAIL_FRAMES = 64;
 
 /**
  * In-page half of the harness. Defined here and injected once, so the pixel
@@ -381,11 +488,13 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
   }
 
   // The overlay hides until the shader has compiled and drawn once, so this is
-  // first paint rather than merely "loaded".
+  // first paint rather than merely "loaded". Given the single-frame cap and not
+  // a minute: this covers compiling the geodesic integrator AND drawing with
+  // it once, and under software GL either half alone can outlast a minute.
   await page.waitForFunction(
     () => getComputedStyle(document.getElementById("overlay")).display === "none",
     null,
-    { timeout: 60_000 }
+    { timeout: FRAME_CAP_MS }
   );
 
   // Pinned, not assumed: at quality "high" the scene target and the HUD are the
@@ -394,9 +503,44 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
   // default cannot quietly reintroduce the mismatch.
   await page.evaluate(setControlsIn, Object.entries({ quality: "high", ...controls }));
 
+  // What one frame costs HERE, and what one capture costs, which are not the
+  // same quantity. Measured after the controls are set, so they are the cost
+  // of the scene actually being measured rather than of whatever the defaults
+  // draw. Both are reported rather than relied on: every wait below watches
+  // the frame counter, and the capture number only raises that wait's ceiling
+  // on a machine where a capture is expensive.
+  const t0 = Date.now();
+  await waitFrames(page, PERIOD_FRAMES);
+  const framePeriod = (Date.now() - t0) / PERIOD_FRAMES;
+  const t1 = Date.now();
+  await captureFrame(page, FRAME_CAP_MS);
+  const capturePeriod = Date.now() - t1;
+
+  // Which rasterizer actually answered. Read from a throwaway context rather
+  // than the lab's own, and reported rather than asserted on: a run that
+  // claims to be testing the no-GPU path should have to show that it was.
+  const renderer = await page.evaluate(() => {
+    const gl = document.createElement("canvas").getContext("webgl2");
+    if (!gl) return "no webgl2";
+    const info = gl.getExtension("WEBGL_debug_renderer_info");
+    const name = gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER);
+    gl.getExtension("WEBGL_lose_context")?.loseContext();
+    return name;
+  });
+
   const lab = {
     page,
     url: base,
+    /**
+     * Measured ms per drawn frame at boot. Reported, not relied on: the waits
+     * below watch the frame counter instead, because this number is measured
+     * on one scene and the run goes on to draw harder ones.
+     */
+    framePeriod,
+    /** Measured ms per capture, which is readback and PNG, not shading. */
+    capturePeriod,
+    /** The GL renderer string, so "software GL" is a reading and not a claim. */
+    renderer,
 
     /**
      * Freeze one frame — scene, overlays and the geometry they were drawn
@@ -408,18 +552,7 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
      * drift) captures twice, deliberately.
      */
     async capture() {
-      await page.evaluate(() => {
-        window.__shot = undefined;
-        window.__shotHud = undefined;
-        window.__layout = undefined;
-        window.__wantShot = true;
-      });
-      await page.waitForFunction(
-        () => window.__shot && window.__shotHud && window.__layout,
-        null,
-        { timeout: 15_000 }
-      );
-      return page.evaluate(() => window.__layout);
+      return captureFrame(page, captureCeiling(capturePeriod));
     },
 
     /** Change controls after boot. Camera-moving knobs want a settle() after. */
@@ -428,16 +561,23 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
     },
 
     /**
-     * Let the frame catch up with the controls before shooting.
+     * Let the renderer catch up with the controls before shooting — counted
+     * in FRAMES DRAWN, not in milliseconds.
      *
      * The 6f outline used to be the reason for this (debounced, then ~540 ms
      * of tracing time-sliced across ~180 frames); since slice 9 it is exact
-     * and immediate. What still takes time is the frame AFTER a control
-     * change, and trails, which need simulation time to fill in. The default
-     * is generous for a GPU; under software GL a single frame can be longer.
+     * and immediate, and nothing in the app defers work off the render loop
+     * any more. So the default is simply "the frame after the change, and one
+     * more" — what a control change actually needs.
+     *
+     * Trails are the one thing that wants more, and they want frames too, not
+     * time: a trail records at most one sample per frame, and simulation time
+     * advances by min(real dt, 0.1)*timeSpeed per frame, so on a slow machine
+     * a wall-clock wait buys neither samples nor sim time. Those call sites
+     * ask for a count and say why.
      */
-    async settle(ms = 4000) {
-      await page.waitForTimeout(ms);
+    async settle(frames = 2) {
+      await waitFrames(page, frames);
     },
 
     /** Render the last capture's layer to a PNG dataURL. */
@@ -514,6 +654,14 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
      * moving onto new ones. Sample the same strip twice and measure how far the
      * lit set moved.
      *
+     * The gap between the samples is counted in frames because that is what
+     * the trail is drawn from: one sample per frame at any speed, and the
+     * simulation advancing min(real dt, 0.1) per frame. Fifteen seconds meant
+     * ~900 frames on a GPU and one or two on software GL — the same request
+     * asking for two completely different measurements. The default is that
+     * same ~900, so the residuals recorded below still refer to the gap they
+     * were measured across.
+     *
      * Read this comparatively, never against zero. The residual is never 0
      * even for a ring that closes: the trail is a rolling buffer and the outer
      * stars' periods exceed its span, so a closed ring still repaints. The
@@ -523,10 +671,10 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
      * thing you are comparing against in the same run rather than trusting a
      * number written down in a previous one.
      */
-    async drift({ layer = "hud", half = null, seconds = 15, threshold = LIT } = {}) {
+    async drift({ layer = "hud", half = null, frames = 900, threshold = LIT } = {}) {
       await lab.capture();
       await lab.snapshot("__t0", { layer, half, threshold });
-      await page.waitForTimeout(seconds * 1000);
+      await waitFrames(page, frames);
       await lab.capture(); // the one place two frames is the point, not a bug
       await lab.snapshot("__t1", { layer, half, threshold });
       return lab.jaccard("__t0", "__t1");

@@ -126,7 +126,7 @@ let failed = false;
 
 async function checkSpin(lab, spin) {
   await lab.set({ spin });
-  await lab.settle(1500);
+  await lab.settle();
   const cells = await lab.tickField();
   const layout = await lab.page.evaluate(() => window.__layout);
   await lab.shot(`polarization-a${String(spin).replace(".", "")}.png`, { layer: "gl" });
@@ -253,7 +253,9 @@ const lab = await openLab({
   controls: { spin: SPINS[0], timespeed: 0 },
 });
 try {
-  console.log(`lab found at ${lab.url}\n`);
+  console.log(`lab found at ${lab.url}`);
+  console.log(`renderer: ${lab.renderer}`);
+  console.log(`frame: ${lab.framePeriod.toFixed(1)} ms, capture: ${lab.capturePeriod} ms\n`);
   for (const spin of SPINS) await checkSpin(lab, spin);
 } finally {
   await lab.close();

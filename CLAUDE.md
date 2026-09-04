@@ -34,6 +34,11 @@ npm run band    # slices 11-14: the drawn ladder vs the CPU oracle, the
                 # the ring (also needs `npm run dev` up)
 ```
 
+All three visual runs wait on frames drawn, not on the clock, so they work
+where a frame costs seconds. `LAB_SOFTWARE_GL=1` forces ANGLE's software
+rasterizer to check that on a machine with a GPU — slow on purpose (a capture
+goes from tens of ms to tens of seconds), so not for routine use.
+
 ## Conventions
 
 - Pure physics/math → tested modules (`src/*.ts` mirrored by `test/*.test.ts`).
