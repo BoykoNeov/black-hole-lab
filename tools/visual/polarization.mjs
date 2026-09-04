@@ -80,6 +80,7 @@ const { buildStaticTetrad } = await vite.ssrLoadModule("/src/kerr.ts");
 const { pixelPolarization, SCATTERING_DEGREE_MAX } = await vite.ssrLoadModule(
   "/src/polarization.ts"
 );
+const { TICK_MAX_LENGTH } = await vite.ssrLoadModule("/src/shaders.ts");
 
 /** a = 0 collapses most of the spin's terms; a = 0.998 makes them largest. */
 const SPINS = [0, 0.9, 0.998];
@@ -120,8 +121,6 @@ const LENGTH_SLOPE_TOLERANCE = 0.06;
 const MAX_LENGTH_RESIDUAL = 1.2;
 /** Below this a tick is 1-2 px of ink and its second moment is mostly feather. */
 const MIN_LENGTH_INK = 900;
-/** Half-tick length in px at full polarization; mirrors the tick pass exactly. */
-const TICK_MAX_LENGTH = 0.42;
 
 let failed = false;
 

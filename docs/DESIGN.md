@@ -1390,7 +1390,9 @@ straight line in the CPU's fraction, of slope
 `pitch * TICK_MAX_LENGTH / sqrt(3)` = 6.31 px, plus a small intercept for the
 mark's feathered ends that no oracle predicts. That slope is predicted by the
 tick pass's geometry and measured off the pixels, which makes it a comparison
-rather than a self-consistency check. Measured: +2.3%, +2.4%, +3.4% at the
+rather than a self-consistency check — and it is predicted from the shader
+module's own exported constants, loaded through vite the way the oracle already
+is, so the prediction cannot go stale if the tick pass is retuned. Measured: +2.3%, +2.4%, +3.4% at the
 three spins, worst residual 0.7 px.
 
 The control is what makes those numbers mean anything. Putting the removed fit
