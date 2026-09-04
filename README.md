@@ -584,11 +584,15 @@ and `tsconfig` covers `src` + `test`.
   axis came in near it — so it is measured as a PROPORTION instead: light gained
   per unit of the jet emission the march alone predicts, between pixels whose
   continuation carries a share of it and pixels beside them whose does not.
-  1.35x at a = 0.998 and 1.76x at a = 0.9, against a predicted 1.98x and 2.06x,
-  and 1.14x at both with the new line disabled in the shader. It has to be read
-  off a deliberately dim frame: at the normal exposure the march's own jet light
-  clips these pixels to white and nothing can be seen in them at all. And the
-  frame rate, which
+  — so it is measured by CALIBRATION instead: the pixels whose continuation
+  carries almost no jet light map emission to screen luminance, tone map and
+  all, and every other pixel is asked what fraction of the extra light its
+  continuation predicts it actually received. 116-118% at a = 0.998 and 147-148%
+  at a = 0.9, where 100% is "drawn at the march's own weight", against 45% and
+  24% with the new line disabled in the shader. It has to be read off a
+  deliberately dim frame with the ladder's false colour off: at the normal
+  exposure the march's own jet light clips these pixels to white and nothing can
+  be seen in them at all. And the frame rate, which
   sits on the display's
   ceiling either way — an upper bound on the cost, and the tool says so rather
   than dressing it up as a measurement

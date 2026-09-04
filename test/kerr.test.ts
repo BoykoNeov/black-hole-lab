@@ -602,3 +602,56 @@ describe("analytic capture — the fate a march cannot afford", () => {
     expect(outwardEscapes).toBeGreaterThan(100);
   });
 });
+
+/**
+ * The march's own path (slice 18).
+ *
+ * `traceRayKerr` gained an opt-in list of the positions it stepped through,
+ * because the volumetric emitters — stars, jet, TDE debris — are integrated
+ * along each of those segments and nothing outside the shader could see them.
+ * tools/visual/band.mjs weighs the jet light the march collects against the jet
+ * light the continuation collects with it, so the whole slice-18 measurement
+ * rests on this being the march's ACTUAL steps and not a re-derivation.
+ */
+describe("the march's stepped path (slice 18)", () => {
+  const a = 0.9;
+  const cam: V3 = [0, 3, -20];
+  const m = lower(cam, a, [1, 0.02, -0.05, 1]);
+
+  it("collects nothing unless asked", () => {
+    expect(traceRayKerr(cam, m, a, { maxSteps: 200 }).path).toHaveLength(0);
+  });
+
+  it("is the march's own steps, first position to last", () => {
+    const r = traceRayKerr(cam, m, a, { maxSteps: 200, path: true });
+    // The launch, then where each step landed. steps is the loop counter at
+    // exit, so it is one short when the loop BROKE inside an iteration that
+    // still landed somewhere and exact when the budget simply ran out — hence a
+    // range rather than an equality. The endpoints below are the pin that
+    // matters.
+    expect(r.path.length).toBeGreaterThanOrEqual(r.steps + 1);
+    expect(r.path.length).toBeLessThanOrEqual(r.steps + 2);
+    expect(r.path[0]).toEqual(cam);
+    expect(r.path[r.path.length - 1]).toEqual(r.pos);
+    // and it is a path, not a list of the same point: consecutive entries move,
+    // and every one of them is a real position
+    for (let i = 1; i < r.path.length; i++) {
+      const d = Math.hypot(
+        r.path[i][0] - r.path[i - 1][0],
+        r.path[i][1] - r.path[i - 1][1],
+        r.path[i][2] - r.path[i - 1][2]
+      );
+      expect(d, `step ${i}`).toBeGreaterThan(0);
+      expect(Number.isFinite(ksRadius(r.path[i], a)), `step ${i}`).toBe(true);
+    }
+  });
+
+  it("does not move the ray it reads the path from", () => {
+    const off = traceRayKerr(cam, m, a, { maxSteps: 200 });
+    const on = traceRayKerr(cam, m, a, { maxSteps: 200, path: true });
+    expect(on.steps).toBe(off.steps);
+    expect(on.winding).toBe(off.winding);
+    expect(on.dir).toEqual(off.dir);
+    expect(on.crossings.length).toBe(off.crossings.length);
+  });
+});

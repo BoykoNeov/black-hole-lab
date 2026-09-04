@@ -934,6 +934,13 @@ export function continueToEscape(
       // The crossing point enters the path too, so the step becomes two
       // segments rather than one: the disk sheet absorbs, and matter on the
       // near side of it has to be composited before it dims the light.
+      //
+      // This side splits whenever crossings are being collected at all; the
+      // GLSL mirror splits only when the disk or the gas is actually switched
+      // on, since with both off nothing reduces the transmittance and one
+      // segment is exactly right. The two therefore subdivide the same curve
+      // differently, which changes no light and no geometry — worth saying
+      // because a reader comparing the two loops will notice.
       if (wantPath) path.push({ pos: x.pos, mv: x.mv });
       steps++;
     }

@@ -318,12 +318,20 @@ Units are geometrized (G = c = M = 1) throughout.
       a march that misses the jet — not one, over 3291 band pixels at two spins,
       at pitches from 0.15 to 1.2 and distances from 8 M to 25 M, because a ray
       that leaves up the axis came in near it. The stars are too compact to
-      substitute (four such pixels in total). So `npm run band` compares a
-      PROPORTION: light gained per unit of the jet emission the march alone
-      predicts, between pixels whose continuation carries a share of it and
-      pixels beside them whose does not. 1.35× at a = 0.998 and 1.76× at a = 0.9
-      against a predicted 1.98× and 2.06× — and 1.14× at both spins with the new
+      substitute (four such pixels in total). So `npm run band` uses the controls
+      to CALIBRATE instead: pixels whose continuation carries almost no jet light
+      map emission to screen luminance, tone map and all, and each remaining
+      pixel is asked what fraction of the extra light its continuation predicts
+      it actually received. 116–118% at a = 0.998 and 147–148% at a = 0.9, where
+      100% is "drawn at the march's own weight" — and 45% and 24% with the new
       line disabled in the shader, which is where the floor was set from ✅
+    - **two things this slice does NOT measure, said out loud.** The compositing
+      order either side of the disk sheet is asserted on the CPU and reasoned in
+      the shader, but no rendered frame checks it: the jet measurement runs with
+      the disk off, which is the one condition under which that branch does not
+      execute. And the per-step cost the continuation now pays wherever matter
+      is on is unmeasured — the frame-rate readout sits on the display's ceiling
+      either way, which that tool's own comment already calls an upper bound
 
 ## Open hurdles
 

@@ -1574,6 +1574,19 @@ with the pre-crossing transmittance, the far one after.
 The disk is the only absorber. Stars, jet and debris are emissive only, which is
 why `pathMatter` reads `thru` and never writes it — the same as the march.
 
+**This ordering is reasoned and asserted on the CPU, and it is NOT measured
+through the shader.** `test/mino.test.ts` pins that every crossing enters the path
+in the order the ray makes them, so the split happens; what no measurement here
+covers is that the GLSL mirror composites the two halves on the right side of
+`shadeCrossing`. The jet check below cannot supply it either, and structurally
+rather than by omission: it reads off a frame with the disk and the gas switched
+off, which is exactly the condition under which the split branch does not run.
+Slice 13's check does run the branch — disk on, matter on — but what it measures
+is disk light, which a wrong ordering of the MATTER either side of the sheet
+would not move. The error it would leave is a band pixel's stars or jet being
+dimmed by a disk sheet they are in front of, at the transmittance of one
+crossing.
+
 ### The axis passage's closest-approach point, and why its momentum is the exit's
 
 Slice 12 jumps the whole polar passage near the spin axis in closed form. For
@@ -1678,15 +1691,26 @@ legs pass the star shell at different places. They are too compact: over the
 same views, four band pixels in total have a continuation passing within one
 gaussian radius of a star while the march stays clear of all six.
 
-So the check became a proportion rather than a presence. Each band pixel carries
-the jet's own emission profile integrated along the march's path and along the
-continuation's; pixels whose continuation carries at least 0.7× what their march
-carries are compared against pixels nearby whose continuation carries at most
-0.05× of it, by light gained per unit of the emission their MARCH predicts. If
-the continuation's light is drawn, the first group gains about (march + cont) /
-march times as much — roughly twice. If it were not drawn, the ratio would be 1.
+So the controls are used to CALIBRATE rather than to compare against. Each band
+pixel carries the jet's own emission profile integrated along the march's path
+and along the continuation's. A pixel whose continuation carries at most 0.05×
+what its march carries is a CONTROL — its light is the march's alone — and the
+controls, read against their own march emission, ARE the curve from emission to
+screen luminance, tone map and all. A pixel whose continuation carries at least
+0.7× of it is a CASE, and it is asked one question: it received g; the curve says
+a ray with only its march emission would have received *base*, and one with
+march + continuation would have received *full*; where between the two does g
+fall?
 
-Three things had to be right for that to measure anything:
+That fraction is 1 if the continuation's light is drawn at the march's own weight
+and 0 if it never reached the screen, and it assumes nothing about the tone map
+because the tone map is what the curve measured. Which matters more than it
+sounds: the response here is compressed enough that a straight ratio of
+luminances reads 1.4× where the emission ratio is 2.0×, purely from the
+curvature. An earlier version of this check compared those raw ratios and spent
+its whole margin on that.
+
+Four things had to be right for any of it to measure anything:
 
 - **The frame has to be dim.** On the scene as it normally renders, both groups
   read 1.0000: the march's own jet light saturates these pixels outright, and no
@@ -1704,19 +1728,41 @@ Three things had to be right for that to measure anything:
 - **The controls have to be nearby.** Not for bloom's sake, which is off here,
   but because the jet is a structure on screen and a control from the far side
   of the ring is looking at a different part of it.
+- **The ladder has to be off.** `npm run band` boots with it on and every other
+  check in the file needs it, but it false-colours each band pixel by the rung
+  its ray is on — a multiplier on the luminance being read, and a case and its
+  control 80 px apart can sit on different rungs.
 
-Measured: 1.35× at a = 0.998 and 1.76× at a = 0.9, against a predicted 1.98×
-and 2.06×. The measurement comes in under the prediction and every reason it
-does pushes the same way — the tone map is concave and the cases are the
-brighter group, the cases carry somewhat more march light to begin with, and the
-profile omits the three factors that are pure noise here. So a ratio above the
-floor is a lower bound on the effect rather than an estimate of it.
+Measured: a band pixel receives 116–118% of the extra light its continuation's
+jet emission predicts at a = 0.998, and 147–148% at a = 0.9, over two runs. Both
+are near 100%, which is what "drawn at the march's own weight" means, and the
+overshoot is the noise the prediction cannot carry — the fbm knots, the pulse
+and the beaming, all left out because a CPU cannot know them.
 
-Where the floor sits was measured from both sides rather than chosen. With the
+Where the window sits was measured from both sides rather than chosen. With the
 one line that samples matter along the continuation disabled in the shader, the
-same two views read 1.14× and 1.14×. The residual is not zero because the two
-groups differ in more than the continuation, which is exactly why the floor is
-not at 1.00: it sits between a measured null and a measured signal.
+same two views read 45% and 24%. The null is not 0% because the cases are not
+the controls in anything but the continuation — their marches run nearer the
+spin axis, and the omitted factors are not distributed the same way there. The
+floor at 70% sits between a measured null and a measured signal, and a = 0.998
+is the tighter of the two views.
+
+### What this costs per frame, and what was not measured about it
+
+The continuation now computes a Cartesian position and a covariant momentum on
+every step it takes, up to `MINO_MAX_STEPS` of them, wherever any matter is
+switched on — which is the shipped default. Before this slice it did that only
+in the ladder view. The 50 M reach test that skips the emitters sits INSIDE
+`pathMatter`, after both, because the position is what the test is on.
+
+That cost is unmeasured. `npm run band`'s frame-rate readout sits on the display's
+60 Hz ceiling with the ladder on and off, which its own comment already says is
+an upper bound rather than a measurement, and a real number would need a GPU
+timer query — a change to the renderer rather than to the tool. It is bounded in
+one direction: only band pixels run a continuation at all, and those are 22 to
+47 pixels on the three rows `npm run band` scans at the default camera. The
+momentum is skipped outright when the Doppler toggle is off, since nothing reads
+it then.
 
 ### The jet's envelope moved out of the shader, and a test holds it there
 

@@ -185,18 +185,30 @@ const JET_ROW_STEP = 1;
 const JET_NEAR = [80, 10];
 const MIN_JET_PX = 6;
 /**
- * How much brighter the group carrying continuation jet light has to be, and
- * how much brighter it is allowed to be.
+ * How much of the extra light its continuation predicts a band pixel has to
+ * receive, and how much it is allowed to receive. 1 is "drawn at exactly the
+ * march's weight"; 0 is "never drawn".
  *
- * The prediction is the ratio of predicted emission, (march + continuation)
- * over march, which is about 1.9 on these pixels. The measurement comes in
- * UNDER that and has to: the tone map is not linear, and the brighter group is
- * further up it. So the floor is well below the prediction and the ceiling only
- * a little above it — a group that came out brighter than its own extra light
- * can explain would mean something other than the jet moved.
+ * The window is wide because the prediction leaves out everything a CPU cannot
+ * know — the fbm knots, the travelling pulse and the relativistic beaming — and
+ * those are multiplicative noise of order one on each pixel. It is a window and
+ * not a floor because a pixel receiving far MORE than its extra emission can
+ * explain would mean something other than the jet had moved.
+ *
+ * Both ends are measured rather than chosen. As the renderer stands this reads
+ * 118% at a = 0.998 and 148% at a = 0.9; with the one line that samples matter
+ * along the continuation disabled in the shader, the same two views read 45%
+ * and 24%. The null is not 0% because the cases are not the controls in
+ * anything but the continuation — their marches run nearer the spin axis, and
+ * the three factors jetProfile leaves out are not distributed the same way
+ * there. The floor sits between a measured null and a measured signal, and the
+ * a = 0.998 view is the tighter of the two.
  */
-const JET_MIN_RATIO = 1.25;
-const JET_MAX_OVER = 1.3;
+const JET_MIN_FRAC = 0.7;
+const JET_MAX_FRAC = 2;
+/** Controls averaged per point of the calibration curve, and the fewest usable. */
+const JET_CURVE_K = 15;
+const JET_CURVE_MIN = 30;
 /**
  * The scene the jet is read off: everything but the jet switched off, no bloom,
  * the exposure slider at its floor and the jet turned right down.
@@ -208,6 +220,11 @@ const JET_MAX_OVER = 1.3;
  * switched on, which is the tone map moving and not the jet.
  */
 const JET_DIM = {
+  // The ladder goes off with the rest of it. It false-colours every band pixel
+  // by the rung its ray is on, which multiplies the luminance this measurement
+  // reads — and a case and its control, within 80 px of each other, can sit on
+  // different rungs and so on different multipliers.
+  "edu-ladder": false,
   disk: false,
   "gas-on": false,
   "stars-on": false,
@@ -217,6 +234,7 @@ const JET_DIM = {
   jetpower: 0.05,
 };
 const JET_BRIGHT = {
+  "edu-ladder": true,
   disk: true,
   "gas-on": true,
   "stars-on": true,
@@ -803,48 +821,43 @@ async function checkDiskLight(lab, rows, lit, dark) {
  * 25 M. The reason is geometric and worth keeping: a ray that leaves up the
  * spin axis is a ray that came in near it, and the two legs of its path are
  * near mirror images. Near the axis it is worse — the camera is then inside the
- * jet's cone, so EVERY march starts in the jet.
+ * jet's cone, so EVERY march starts in the jet. The stars are no substitute:
+ * they are compact enough that over the same views only four band pixels have a
+ * continuation passing within one gaussian radius of one while the march stays
+ * clear of all six.
  *
- * So this compares two groups by how much light they get PER UNIT of the jet
- * emission their march alone predicts. Each band pixel carries the emitter's
- * own profile integrated along the march's path and along the continuation's.
- * A pixel is a CASE if its continuation carries at least JET_LIT of what its
- * march carries, and a CONTROL if its continuation carries at most JET_DARK of
- * it. If the continuation's light is drawn, the cases collect roughly
- * (march + continuation) / march times as much light per unit of march
- * emission as the controls do — about twice. If it were not drawn, the ratio
- * would be 1.
+ * So the controls are used to CALIBRATE rather than to compare against. Every
+ * band pixel carries the jet's own emission profile integrated along the
+ * march's path and along the continuation's. A pixel is a CONTROL if its
+ * continuation carries at most JET_DARK of what its march carries — its light
+ * is the march's alone — and a CASE if its continuation carries at least
+ * JET_LIT of it. The controls, read against their own march emission, ARE the
+ * curve from emission to screen luminance, tone map and all. Each case is then
+ * asked one question:
  *
- * The measurement comes in BELOW the prediction, and every reason it does
- * pushes the same way, which is what makes a floor safe to assert:
+ *     it received g. The curve says a ray with only its march emission would
+ *     have received base, and one with march + continuation would have received
+ *     full. Where between the two does g fall?
  *
- *  - the tone map is concave, and the cases are the brighter group;
- *  - the cases carry more march light than the controls as well, so they are
- *    further up that curve before their extra light is added;
- *  - the profile leaves out the fbm knots, the travelling pulse and the
- *    beaming, none of which a CPU can know, and all of which are noise here.
+ * That fraction is 1 if the continuation's light is drawn at the march's own
+ * weight and 0 if it never reached the screen, and it needs no assumption about
+ * the tone map because the tone map is what the curve measured. Which matters:
+ * the response here is strongly compressed, and a ratio of raw luminances reads
+ * 1.4x where the emission ratio is 2.0x purely from the curvature.
  *
- * A ratio above the floor is therefore a lower bound on the effect rather than
- * an estimate of it. The ceiling is the other half: a group brighter than its
- * own extra light can explain would mean something else moved.
+ * Three things this is built around, each measured going wrong first:
  *
- * Where the floor sits is measured from both sides rather than guessed. With
- * the renderer as it stands this reads 1.35x at a = 0.998 and 1.76x at a = 0.9;
- * with the one line that samples matter along the continuation disabled in the
- * shader, the same two views read 1.14x and 1.14x. That residual is real and is
- * why the floor is not at 1.00 — the two groups are not identical in anything
- * but the continuation, and the cases carry somewhat more march light. The
- * floor sits between a measured null and a measured signal.
- *
- * Two more things this is built around, each measured going wrong first:
- *
- *  - THE FRAME MUST BE DIM. On the scene as it normally renders both groups
- *    read 1.0000 — the march's own jet light saturates these pixels and no
- *    difference survives a clipped white. See JET_DIM.
+ *  - THE FRAME MUST BE DIM, or there is no curve to fit. On the scene as it
+ *    normally renders both groups read 1.0000 — the march's own jet light
+ *    saturates these pixels and no difference survives a clipped white.
+ *  - A PATH LENGTH IS THE WRONG INSTRUMENT. The jet's envelope is mostly dim
+ *    skirt; measured in lengths, the group carrying continuation jet light had
+ *    9.7 M inside the cone against the control's 13.1 M and came out DIMMER on
+ *    the strength of that difference alone. `jetProfile` is the shape the
+ *    shader emits with, and it lives in src/matter.ts so the two cannot drift.
  *  - THE CONTROLS MUST BE NEARBY. Not for bloom's sake, which is off here, but
  *    because the jet is a structure on screen and a control from the far side
- *    of the ring is looking at a different part of it. A case with no control
- *    within JET_NEAR is dropped rather than judged.
+ *    of the ring is looking at a different part of it.
  */
 async function checkJetLight(lab, label) {
   const layout = await lab.capture();
@@ -862,8 +875,8 @@ async function checkJetLight(lab, label) {
         const j = jetAt(cam, tet, W, H, x, y);
         if (!j) continue;
         band++;
-        // Pixels the march barely lights are excluded: every ratio below
-        // divides by this number.
+        // Pixels the march barely lights are excluded: the case/control split
+        // below is a ratio against this number.
         if (j.march < JET_I_MIN) continue;
         usable++;
         const share = j.cont / j.march;
@@ -892,12 +905,12 @@ async function checkJetLight(lab, label) {
       " band px, " + usable + " the march carries jet light to; " + all.lit.length +
       " of those have the continuation carrying " + JET_LIT + "x that or more (" + lit.length +
       " with a control nearby) and " + all.dark.length + " have " + JET_DARK + "x or less (" +
-      dark.length + " used), on " + rows.size + " rows"
+      dark.length + " used as the calibration), on " + rows.size + " rows"
   );
-  if (lit.length < MIN_JET_PX || dark.length < MIN_JET_PX) {
+  if (lit.length < MIN_JET_PX || dark.length < JET_CURVE_MIN) {
     // Said out loud rather than skipped, for slice 13's reason: a view that
     // stops finding these looks exactly like a view where the check passed.
-    console.log("          slice 18: fewer than " + MIN_JET_PX + " band px to judge — nothing to check");
+    console.log("          slice 18: too few band px to judge — nothing to check");
     return { judged: 0, controlled: 0 };
   }
 
@@ -916,26 +929,48 @@ async function checkJetLight(lab, label) {
   await lab.settle();
 
   const gain = (p) => on.get(p.y)[p.x] - off.get(p.y)[p.x];
-  const perMarch = (g) => med(g.map((p) => gain(p) / p.march));
-  const got = perMarch(lit) / perMarch(dark);
-  const want = med(lit.map((p) => (p.march + p.cont) / p.march));
+  // The curve, as the controls measured it: the median light received at a
+  // given march emission, over the JET_CURVE_K controls nearest to it in
+  // emission. A median rather than a fit — the knots, the pulse and the beaming
+  // are all left out of jetProfile because a CPU cannot know them, and they are
+  // multiplicative noise on every one of these points.
+  const curveOf = dark.map((p) => ({ I: p.march, g: gain(p) })).sort((u, v) => u.I - v.I);
+  const curve = (x) => {
+    const by = curveOf.map((c) => ({ d: Math.abs(c.I - x), g: c.g })).sort((u, v) => u.d - v.d);
+    return med(by.slice(0, JET_CURVE_K).map((c) => c.g));
+  };
+  const span = [curveOf[0].I, curveOf[curveOf.length - 1].I];
+  // A case is only judgeable where the controls actually reach: extrapolating
+  // the curve past the emission any control had would be inventing the tone
+  // map rather than measuring it.
+  const judged = lit.filter((p) => p.march + p.cont <= span[1] && p.march >= span[0]);
+  const fracs = judged.map((p) => {
+    const base = curve(p.march);
+    const full = curve(p.march + p.cont);
+    return (gain(p) - base) / (full - base);
+  }).filter((f) => Number.isFinite(f));
+  const got = med(fracs);
   console.log(
-    "          slice 18: per unit of the jet emission their MARCH predicts, band px whose " +
-      "continuation runs through the jet gain " + perMarch(lit).toFixed(4) + " and ones whose " +
-      "does not gain " + perMarch(dark).toFixed(4) + " — " + got.toFixed(2) + "x, where 1.00x " +
-      "would mean the continuation's jet light never reached the screen and " + want.toFixed(2) +
-      "x is what its extra emission predicts"
+    "          slice 18: of the extra light its continuation's jet emission predicts, a band " +
+      "px receives " + (100 * got).toFixed(0) + "% (median over " + fracs.length +
+      " of " + lit.length + " cases inside the controls' own range " + span[0].toFixed(2) +
+      "-" + span[1].toFixed(2) + "; 100% = drawn at the march's weight, 0% = never drawn)"
   );
-  if (!(got > JET_MIN_RATIO))
+  if (fracs.length < MIN_JET_PX) {
+    console.log("          slice 18: too few cases inside that range — nothing to check");
+    return { judged: 0, controlled: 0 };
+  }
+  if (!(got > JET_MIN_FRAC))
     fail(
-      "band px whose continuation runs through the jet gain only " + got.toFixed(2) +
-        "x what ones whose does not gain, against " + want.toFixed(2) +
-        "x predicted — the continuation's jet light is not reaching the screen"
+      "band px receive only " + (100 * got).toFixed(0) + "% of the extra light their " +
+        "continuation's jet emission predicts — it is not reaching the screen at the " +
+        "march's weight"
     );
-  if (!(got < JET_MAX_OVER * want))
+  if (!(got < JET_MAX_FRAC))
     fail(
-      "those band px gain " + got.toFixed(2) + "x, more than the " + want.toFixed(2) +
-        "x their extra jet light predicts — something other than the jet moved"
+      "band px receive " + (100 * got).toFixed(0) + "% of the extra light their " +
+        "continuation's jet emission predicts — more than that emission can explain, so " +
+        "something other than the jet moved"
     );
   return { judged: 1, controlled: 1 };
 }
