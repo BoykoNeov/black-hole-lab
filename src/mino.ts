@@ -25,15 +25,19 @@
  * l. A step costs a small fraction of an RK4 march step, which is where the
  * 291,419-to-a-few-hundred comes from.
  *
- * This is only valid where nothing but gravity acts on the ray, which is why it
- * runs from the EXHAUSTED state outward and never replaces the march: the march
- * is what samples the matter.
+ * It never replaces the march — it runs from the EXHAUSTED state outward — but
+ * it does now carry every emitter the march carries, in two shapes.
  *
- * Since slice 13 it does sample the DISK. A ray still winding when the budget
- * ends goes on crossing the equatorial plane, and those crossings are passes
- * through the disk that nothing was shading: 116 of 248 band pixels at a = 0.9
- * gain disk light, 98 of them from nothing at all. They are exactly where `u`
- * changes sign, which the loop computes anyway — see `MinoCrossing`.
+ * The DISK, since slice 13: a ray still winding when the budget ends goes on
+ * crossing the equatorial plane, and those crossings are passes through the
+ * disk that nothing was shading (116 of 248 band pixels at a = 0.9 gain disk
+ * light, 98 of them from nothing at all). They are exactly where `u` changes
+ * sign, which the loop computes anyway — see `MinoCrossing`.
+ *
+ * The VOLUMETRIC matter — stars, the jet, TDE debris — since slice 18. Those
+ * have no crossing to be located at: the march integrates them along each step
+ * it takes, so the continuation has to hand back the path it took rather than
+ * only the events on it. See `MinoSample`.
  */
 
 import {
@@ -466,6 +470,40 @@ export interface MinoCrossing {
   mv: V3;
 }
 
+/**
+ * One point on the continuation's path, with the momentum the segment LEAVING
+ * it is shaded with (slice 18).
+ *
+ * The march samples stars, jets and TDE debris per STEP — they are volumetric
+ * emitters with no crossing to be located at — so the continuation has to hand
+ * back the path itself, not just the events on it. The points are the step
+ * boundaries, plus the two the geometry demands: the equatorial crossing that
+ * splits a step (the disk sheet absorbs, so matter in FRONT of it may not be
+ * composited behind it) and the closest-approach point of an axis passage (one
+ * chord across it is short by 1.1 sqrt(vmin), and the jet is exactly there).
+ *
+ * `mv` is the momentum the segment STARTING here is shaded with, and at every
+ * ordinary sample that is the momentum at this point — the same convention the
+ * march uses for its own steps, so a ray's two halves are beamed the same way.
+ *
+ * The apex of an axis passage is the one place it cannot be, and `axis` marks
+ * it. A polar turning point has pu = 0 by definition, and on a ray that goes
+ * over the pole itself 1 - u^2 vanishes with it, so the azimuth rate
+ * lambda/(1 - u^2) is 0/0 there and the velocity — hence the momentum — is not
+ * defined by the chart. That sample carries the momentum at the passage's EXIT.
+ * It is not a fudge: the passage is a Mino interval of order 2e-5, and the only
+ * thing the momentum really does across it is flip the sign of pu, which the
+ * exit carries exactly. It does mean `pos` and `mv` are not a matched pair on
+ * that one sample, which is why it is flagged rather than left to be noticed.
+ */
+export interface MinoSample {
+  pos: V3;
+  /** Covariant spatial momentum, in the march's own normalization. */
+  mv: V3;
+  /** The closest-approach point of an axis passage: `mv` is the exit's. */
+  axis?: true;
+}
+
 export interface MinoResult {
   /** False only if the continuation reached the horizon. rayCaptured remains
    *  the authority on fate; this is a cross-check, never the source of truth. */
@@ -499,6 +537,15 @@ export interface MinoResult {
    * no shift factor at all.
    */
   crossings: MinoCrossing[];
+  /**
+   * The path the continuation took, in the order it was travelled (slice 18).
+   *
+   * Empty unless BOTH `opts.path` and `opts.mt` are given: the momentum on
+   * each sample only means anything in the march's energy normalization, which
+   * the separated system cannot recover on its own, and a path without it
+   * would beam every emitter by an unknown constant.
+   */
+  path: MinoSample[];
   steps: number;
   /** Final separated state, for diagnostics and for the tests' invariants. */
   state: MinoState;
@@ -749,6 +796,13 @@ export function continueToEscape(
      * factor would be off by an unknown constant.
      */
     mt?: number;
+    /**
+     * Collect the path itself (slice 18), for the volumetric emitters that have
+     * no crossing to be found at. Off by default because it costs a
+     * `covariantMomentum` per point, which the direction and the winding do
+     * not need.
+     */
+    path?: boolean;
   } = {}
 ): MinoResult {
   const stepScale = opts.stepScale ?? MINO_STEP_SCALE;
@@ -759,12 +813,25 @@ export function continueToEscape(
   const vFall = opts.vFall ?? MINO_V_FALL;
   const mt = opts.mt;
   const crossings: MinoCrossing[] = [];
+  const path: MinoSample[] = [];
+  const wantPath = (opts.path ?? false) && mt !== undefined;
+  const sample = (st: MinoState) => {
+    const { pos, mv } = covariantMomentum(st, C, a, mt as number);
+    path.push({ pos, mv });
+  };
   const rHor = horizonRadius(a) + 0.01;
   const a2 = a * a;
   const wuConst = C.q + C.lambda * C.lambda - a2;
 
   let s = s0;
   let prev = minoToCartesian(s, C, a).pos;
+  // The path starts where the march stopped, with no seam and nothing to
+  // bridge. minoStateAt re-projects the MOMENTA onto sqrt(R) and sqrt(U), but
+  // it reads r, u and az straight off the march's position and the map back is
+  // exact — measured 4.2e-15 over the fixtures. So the march's last segment
+  // ends exactly where the first segment here begins, and neither a gap nor an
+  // overlap has to be accounted for.
+  if (wantPath) sample(s);
   let swept = 0;
   let steps = 0;
   let passages = 0;
@@ -821,6 +888,24 @@ export function continueToEscape(
       };
       const out = positionAt(s.r, s.u, s.az, a);
       swept += sweptBetween(apex, out);
+      if (wantPath) {
+        // Both chords of the passage go into the path, for the reason the
+        // winding takes two rather than one: near the pole the path is a
+        // straight line in the tangent plane, and one chord across is
+        // 1.1 sqrt(vmin) short of two. The jet sits on this axis, so a passage
+        // that cut the corner would cut it through the brightest thing in the
+        // frame.
+        //
+        // The chord INTO the apex is shaded by the sample before it, which is
+        // the ordinary rule; the chord out of it is shaded from the exit — see
+        // MinoSample for why the apex has no momentum of its own. The passage
+        // cannot straddle
+        // the disk plane: it fires only at 1 - u^2 < MINO_AXIS_V and v falls
+        // further inside it, so |u| stays above 0.998 throughout, the same
+        // structural fact slice 13's crossings lean on.
+        const exit = covariantMomentum(s, C, a, mt as number);
+        path.push({ pos: apex, mv: exit.mv, axis: true }, exit);
+      }
       prev = out;
       passages++;
       if (s.r > rEscape && s.pr > 0) break;
@@ -844,12 +929,18 @@ export function continueToEscape(
     // magenta means "the continuation spent MINO_MAX_STEPS" and nothing else,
     // and the GLSL mirror counts it the same way.
     if (mt !== undefined && s.u * sNext.u < 0) {
-      crossings.push(crossingAt(s, C, a, h, sNext.u, mt));
+      const x = crossingAt(s, C, a, h, sNext.u, mt);
+      crossings.push(x);
+      // The crossing point enters the path too, so the step becomes two
+      // segments rather than one: the disk sheet absorbs, and matter on the
+      // near side of it has to be composited before it dims the light.
+      if (wantPath) path.push({ pos: x.pos, mv: x.mv });
       steps++;
     }
     s = sNext;
     steps++;
 
+    if (wantPath) sample(s);
     const cur = minoToCartesian(s, C, a).pos;
     swept += sweptBetween(prev, cur);
     prev = cur;
@@ -869,6 +960,7 @@ export function continueToEscape(
     dir: [vel[0] / n, vel[1] / n, vel[2] / n],
     swept: swept / Math.PI,
     crossings,
+    path,
     steps,
     state: s,
   };

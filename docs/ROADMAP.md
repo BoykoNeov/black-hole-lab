@@ -278,6 +278,53 @@ Units are geometrized (G = c = M = 1) throughout.
       already on, so a software run of it would measure runtime rather than
       wait logic ✅
 
+18. **The light the continuation was not carrying yet** — the last of H1 ✅
+    - the disk is a surface, so slice 13 could collect its crossings as events.
+      The stars, the jet and the TDE debris are volumes with no boundary a ray
+      crosses: the march integrates them along every STEP it takes. So there is
+      no event to collect, and what the renderer needs from the continuation is
+      the path itself. `MinoSample` is that path — the step boundaries, plus the
+      two points the geometry demands
+    - the disk sheet ABSORBS, so a step that crosses it is two segments and not
+      one: the crossing point enters the path, the near half composites before
+      the sheet dims the light and the far half after. Integrated whole, the
+      near half would be painted as though it sat behind a sheet it is in front
+      of. Stars, jet and debris only ever add light, so `pathMatter` reads the
+      transmittance and never writes it — the same as the march
+    - the axis passage goes through its closest-approach point rather than
+      straight across, which it already did for the winding count and which
+      matters more for light: the JET is on that axis, and a passage that cut
+      the corner would cut it through the brightest structure in the frame. The
+      apex is the one point where this chart is 0/0 — pu vanishes at a polar
+      turning point by definition and, on a polar ray, 1 − u² with it — so the
+      chord out of it is shaded from the passage's exit, and that sample is
+      flagged rather than left to be noticed
+    - **there is no seam at the handoff, and the test says so rather than
+      assuming it.** minoStateAt re-projects the MOMENTA but reads r, u and az
+      off the march's position, and the map back is exact: 4.2e-15 measured. So
+      the march's last segment ends where the first continuation segment begins,
+      with nothing to bridge and nothing double-counted
+    - pinned two ways that need no emitter: every sample returns this ray's own
+      λ and q when rayConstants is run backwards from (pos, mv), and every
+      momentum is null. The acceptance test is the one thing sensitive to WHERE
+      along the curve the samples sit — path length inside the jet against a
+      march 50× finer from the same state, worst 1.4e-3 of itself over the five
+      fixtures that reach the jet at all. Its control is the pre-slice-11
+      behaviour, a straight line from the handoff: the two rays over the pole
+      miss the jet entirely (0 against 5.9 and 5.2), one spends nine times too
+      long in it, one is 28% short ✅
+    - **the visual check had no clean control, and measuring that was most of
+      the work.** No band pixel whose continuation runs brightly up the jet has
+      a march that misses the jet — not one, over 3291 band pixels at two spins,
+      at pitches from 0.15 to 1.2 and distances from 8 M to 25 M, because a ray
+      that leaves up the axis came in near it. The stars are too compact to
+      substitute (four such pixels in total). So `npm run band` compares a
+      PROPORTION: light gained per unit of the jet emission the march alone
+      predicts, between pixels whose continuation carries a share of it and
+      pixels beside them whose does not. 1.35× at a = 0.998 and 1.76× at a = 0.9
+      against a predicted 1.98× and 2.06× — and 1.14× at both spins with the new
+      line disabled in the shader, which is where the floor was set from ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -309,11 +356,13 @@ Measured before the slice was written, at the default camera: at a = 0.9, 116 of
 325 of 510, roughly doubling what the march saw. At a = 0 nothing changes, which
 is why this looked cosmetic for so long — the default screenshot is a slow spin.
 
-Matter along the continuation path (stars, jets, TDE debris) is still not
-integrated; those are volumetric emitters sampled per march step rather than per
-crossing. See `docs/DESIGN.md` for the derivation, for why V^t comes from the
-null condition rather than the linear constraint, and for what a rendered frame
-can prove about any of it.
+Matter along the continuation path — stars, jet, TDE debris — was closed by
+slice 18. Those are volumetric emitters sampled per march STEP rather than per
+crossing, so the continuation had to hand back its path rather than another
+event list. See `docs/DESIGN.md` for the derivation, for why V^t comes from the
+null condition rather than the linear constraint, for the two points the path is
+subdivided at and why, and for the four visual-check designs that were measured
+failing before one worked.
 
 ### H9 — the continuation could not follow a ray over the spin axis
 
@@ -451,7 +500,19 @@ from a frame's.
 
 ## Queued
 
-Nothing argued is outstanding, and for the first time nothing is queued either:
-every entry in the register above is closed, by design, or measured and found
-not to be a problem. The next slice is a new idea rather than a carried-over
-one — so ask before starting one, rather than inferring it from this file.
+Nothing argued is outstanding and nothing is queued: every entry in the register
+above is closed, by design, or measured and found not to be a problem. The next
+slice is a new idea rather than a carried-over one — so ask before starting one,
+rather than inferring it from this file.
+
+Two things slice 18 measured and deliberately did not act on, in case they read
+as gaps later:
+
+- **`npm run band` has still not been run under software GL.** Slice 17 said so
+  and it is still true; slice 18 added a check to that harness rather than
+  changing how it waits.
+- **The jet's own emission model stays artistic.** Slice 18 moved its ENVELOPE
+  and its geometric profile into `src/matter.ts` so the harness and the shader
+  cannot drift apart, and moved nothing else: the fbm knots, the travelling
+  pulse, the beaming clamp and the colour ramp are display choices and are
+  badged as such.

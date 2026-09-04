@@ -1,7 +1,19 @@
 /** All GLSL (WebGL2 / ES 3.0) shader sources for the slice-4 pipeline. */
 
 import { MARCH_MAX_STEPS } from "./kerr";
-import { GAS_COUNT, STAR_COUNT } from "./matter";
+import {
+  GAS_COUNT,
+  JET_BASE,
+  JET_CORE,
+  JET_FADE_IN,
+  JET_FADE_OUT,
+  JET_FLARE,
+  JET_Q2_CUT,
+  JET_TAIL,
+  JET_TOP,
+  JET_WIDTH0,
+  STAR_COUNT,
+} from "./matter";
 import {
   MINO_AXIS_V,
   MINO_AZ_STEP,
@@ -728,10 +740,13 @@ float jetShift(vec3 p, float mt, vec3 mv, float bs) {
 // on, relativistic beaming brightens the jet aimed toward the camera.
 vec3 jetEmit(vec3 p, float mt, vec3 mv) {
   float ay = abs(p.y);
-  if (ay < 0.7 || ay > 46.0) return vec3(0.0);
-  float wj = 0.45 + 0.17 * ay;
+  // The envelope comes from matter.ts (slice 18): the harness has to predict
+  // which band pixels the continuation carries jet light to, and it cannot do
+  // that against a cone written down twice.
+  if (ay < ${JET_BASE.toFixed(2)} || ay > ${JET_TOP.toFixed(1)}) return vec3(0.0);
+  float wj = ${JET_WIDTH0.toFixed(2)} + ${JET_FLARE.toFixed(2)} * ay;
   float q2 = dot(p.xz, p.xz) / (wj * wj);
-  if (q2 > 5.0) return vec3(0.0);
+  if (q2 > ${JET_Q2_CUT.toFixed(1)}) return vec3(0.0);
   float side = p.y > 0.0 ? 0.0 : 19.7;
   // transverse noise coordinate: scaled position, NOT azimuth — atan(z,x) is
   // singular on the axis and paints pinwheel artifacts where rays cross it
@@ -742,9 +757,13 @@ vec3 jetEmit(vec3 p, float mt, vec3 mv) {
   float knots = smoothstep(0.30, 0.80, n);
   float pulse = 0.5 + 0.5 * sin(m * 0.5 + side);
   pulse *= pulse;
-  float core = exp(-q2 * 1.6);
-  float fade = smoothstep(0.7, 2.6, ay) * smoothstep(46.0, 30.0, ay)
-             / (1.0 + 0.004 * ay * ay);
+  // core and fade come from matter.ts too (slice 18): jetProfile is the CPU's
+  // copy of exactly these two factors, and the harness weighs one leg of a ray
+  // against the other with it.
+  float core = exp(-q2 * ${JET_CORE.toFixed(2)});
+  float fade = smoothstep(${JET_BASE.toFixed(2)}, ${JET_FADE_IN.toFixed(2)}, ay)
+             * smoothstep(${JET_TOP.toFixed(1)}, ${JET_FADE_OUT.toFixed(1)}, ay)
+             / (1.0 + ${JET_TAIL.toFixed(4)} * ay * ay);
   float I = core * fade * (0.10 + 0.85 * knots) * (0.35 + 0.90 * pulse) * uJetPower;
   if (uDoppler > 0.5) {
     float g = jetShift(p, mt, mv, 0.85 * sign(p.y));
@@ -863,6 +882,22 @@ vec3 matterSegment(vec3 a, vec3 b, float mt, vec3 mv) {
   if (uStarsOn > 0.5) e += starSegment(a, b, mt, mv);
   if (uTdeN > 0) e += tdeSegment(a, b, mt, mv);
   return e;
+}
+
+// One segment of the CONTINUATION's path, for the volumetric emitters (slice
+// 18). The march integrates stars, jet and debris along every step it takes;
+// a ray still winding when the budget ends goes on travelling through all
+// three, and until this slice nothing lit it.
+//
+// The 50 M reach test is the march's own, and so is reading thru without
+// writing it: these emitters add light and never take any away, so a segment
+// composites in front of whatever the ray has already passed and dims nothing
+// behind it. prevM is a cursor rather than a loop variable because the path
+// is subdivided by events — an equatorial crossing splits a step in two, and an
+// axis passage puts a point in the middle of a jump.
+void pathMatter(vec3 b, float mt, vec3 mv, inout vec3 prevM, inout vec3 accum, float thru) {
+  if (min(length(prevM), length(b)) < 50.0) accum += thru * matterSegment(prevM, b, mt, mv);
+  prevM = b;
 }
 
 // Composite one equatorial crossing: gas blobs (additive, they ride on the
@@ -1228,7 +1263,21 @@ void main() {
       float rStopM = uHorizon + 0.01;
       float wuConst = qC + lambdaC * lambdaC - a2;
       vec3 prevP, velC;
-      if (uLadder > 0.5) minoCart(s, C, az, prevP, velC);
+      // The ladder and the matter want the same point stream, so one minoCart a
+      // step serves both — but they keep SEPARATE cursors. Matter splits a step
+      // at the equatorial crossing it straddles and the winding must not: a
+      // finer subdivision of the same curve sums to a slightly larger swept
+      // angle, and slice 12's measured half-turns are pinned against the CPU's
+      // own subdivision.
+      bool wantPath = uLadder > 0.5 || matterOn;
+      if (wantPath) minoCart(s, C, az, prevP, velC);
+      // The path starts where the march stopped, with no seam: the handoff
+      // re-projects the MOMENTA, but reads r, u and az straight off the march's
+      // position, and the map back is exact (4.2e-15 measured on the CPU). So
+      // the march's last segment ends exactly where this one begins.
+      vec3 prevM = prevP;
+      vec3 mvM = (matterOn && uDoppler > 0.5)
+        ? minoMv(prevP, velC, s.x * s.x + a2 * s.z * s.z, mt) : vec3(0.0);
       // Set once the escape trial below refuses a passage: pr > 0 outside the
       // escape radius is monotone, so the ray cannot come back and there is no
       // point paying for the trial twice.
@@ -1263,12 +1312,37 @@ void main() {
           float azApex = az + azA + 0.5 * P.y;
           az = azApex + azB + 0.5 * P.y;
           vec4 sOut = vec4(rs2.x, rs2.y, s.z, -s.w);
+          // through the closest-approach point, not straight across: near the
+          // pole the path is a straight line in the tangent plane, and one
+          // chord is 1.1 sqrt(vmin) short of two
+          vec3 apex, outP;
+          if (wantPath) {
+            apex = minoPos(rs1.x, uApex, azApex);
+            outP = minoPos(sOut.x, sOut.z, az);
+          }
+          if (matterOn) {
+            // The jet sits on this axis, so a passage that cut the corner would
+            // cut it through the brightest thing in the frame — the two chords
+            // matter here for light, not only for the winding count.
+            //
+            // The chord INTO the apex takes the momentum it started with, which
+            // is the ordinary rule. The chord OUT of it takes the exit's: the
+            // apex is the one point where this chart is 0/0 — pu vanishes at a
+            // polar turning point by definition and, on a polar ray, 1 - u^2
+            // vanishes with it, which is why minoPos exists beside minoCart. The
+            // passage is a Mino interval of order 2e-5, so the only thing the
+            // momentum really does across it is flip the sign of pu, and sOut
+            // carries that exactly.
+            vec3 posO, velO;
+            minoCart(sOut, C, az, posO, velO);
+            vec3 mvO = uDoppler > 0.5
+              ? minoMv(outP, velO, sOut.x * sOut.x + a2 * sOut.z * sOut.z, mt)
+              : vec3(0.0);
+            pathMatter(apex, mt, mvM, prevM, accum, thru);
+            pathMatter(outP, mt, mvO, prevM, accum, thru);
+            mvM = mvO;
+          }
           if (uLadder > 0.5) {
-            // through the closest-approach point, not straight across: near the
-            // pole the path is a straight line in the tangent plane, and one
-            // chord is 1.1 sqrt(vmin) short of two
-            vec3 apex = minoPos(rs1.x, uApex, azApex);
-            vec3 outP = minoPos(sOut.x, sOut.z, az);
             swept += atan(length(cross(prevP, apex)), dot(prevP, apex));
             swept += atan(length(cross(apex, outP)), dot(apex, outP));
             prevP = outP;
@@ -1323,8 +1397,17 @@ void main() {
           sc.z = 0.0;
           vec3 pc, velX;
           minoCart(sc, C, azC, pc, velX);
+          vec3 mvc = minoMv(pc, velX, sc.x * sc.x, mt);
+          // The step is split at the crossing rather than integrated whole: the
+          // disk sheet ABSORBS, so matter on the near side of it has to be
+          // composited before it dims the light. Integrating the step in one
+          // piece afterwards would paint the near half as if it sat behind a
+          // sheet it is actually in front of.
+          if (matterOn) {
+            pathMatter(pc, mt, mvM, prevM, accum, thru);
+            mvM = uDoppler > 0.5 ? mvc : vec3(0.0);
+          }
           if (sc.x > uHorizon && sc.x < uDiskOuter) {
-            vec3 mvc = minoMv(pc, velX, sc.x * sc.x, mt);
             float wgt = shadeCrossing(sc.x, pc, mt, mvc, lam, accum, thru);
             // Resolved before it is added, for the reason the march's own
             // crossings are: Stokes parameters are quadratic in the
@@ -1338,11 +1421,18 @@ void main() {
           }
         }
 
-        if (uLadder > 0.5) {
+        if (wantPath) {
           vec3 curP;
           minoCart(s, C, az, curP, velC);
-          swept += atan(length(cross(prevP, curP)), dot(prevP, curP));
-          prevP = curP;
+          if (uLadder > 0.5) {
+            swept += atan(length(cross(prevP, curP)), dot(prevP, curP));
+            prevP = curP;
+          }
+          if (matterOn) {
+            pathMatter(curP, mt, mvM, prevM, accum, thru);
+            mvM = uDoppler > 0.5
+              ? minoMv(curP, velC, s.x * s.x + a2 * s.z * s.z, mt) : vec3(0.0);
+          }
         }
 
         // Through the horizon, or out past the shader's own escape radius and

@@ -19,6 +19,7 @@ import {
   type V3,
   type V4,
 } from "../src/kerr";
+import { JET_FLARE, JET_WIDTH0, jetOffset } from "../src/matter";
 import {
   MINO_AXIS_V,
   MINO_AZ_STEP,
@@ -35,6 +36,7 @@ import {
   minoToCartesian,
   polarPotential,
   rayPotentials,
+  type MinoSample,
   type MinoState,
   type RayPotentials,
 } from "../src/mino";
@@ -62,6 +64,59 @@ function view(a: number, pitch: number, dist = 25) {
 }
 
 /**
+ * How much of a path lies inside the jet — the functional slice 18's light
+ * actually depends on, and the one thing about the volumetric emitters that can
+ * be judged without the shader.
+ *
+ * Deliberately a tighter cone than the one that emits. The shader's envelope
+ * ends at q^2 = JET_Q2_CUT and at |y| = JET_BASE and JET_TOP, and the emission
+ * is already going to zero at all three: the gaussian core is exp(-8) at the
+ * cut, and the along-axis fade is exactly 0 at either end of the span.
+ * A functional evaluated on a boundary where the answer is zero measures the
+ * boundary, not the path. CONE_Q, CONE_LO and CONE_HI put the test where the
+ * jet is actually bright.
+ *
+ * Measured by MIDPOINT SAMPLING at 0.01 M rather than by testing the endpoints,
+ * because the two paths being compared are sampled utterly differently — the
+ * continuation takes chords up to 1.33 M, the refined march takes ~1e-3 M — and
+ * an endpoints-in test would charge the coarser one for every boundary it
+ * straddles. That artifact alone read 2-9% low before it was removed.
+ */
+const CONE_Q = 1.5;
+const CONE_LO = 4;
+const CONE_HI = 40;
+const inJet = (p: V3) =>
+  Math.abs(p[1]) > CONE_LO && Math.abs(p[1]) < CONE_HI && jetOffset(p) < CONE_Q;
+
+function coneChord(A: V3, B: V3): number {
+  const L = Math.hypot(B[0] - A[0], B[1] - A[1], B[2] - A[2]);
+  if (L === 0) return 0;
+  // Cheap reject first, or this is the slowest thing in the file: the refined
+  // marches take millions of steps between them and almost none of those are
+  // anywhere near the jet. Both bounds are padded by the chord's own length, so
+  // a segment that only clips the cone survives to be sampled properly.
+  const yHi = Math.max(Math.abs(A[1]), Math.abs(B[1]));
+  const yLo = Math.min(Math.abs(A[1]), Math.abs(B[1]));
+  if (yHi + L < CONE_LO || yLo - L > CONE_HI) return 0;
+  const wide = CONE_Q * (JET_WIDTH0 + JET_FLARE * Math.min(yHi, CONE_HI)) + L;
+  if (Math.hypot(A[0], A[2]) > wide && Math.hypot(B[0], B[2]) > wide) return 0;
+  const n = Math.max(1, Math.ceil(L / 0.01));
+  let inside = 0;
+  for (let i = 0; i < n; i++) {
+    const f = (i + 0.5) / n;
+    if (inJet([A[0] + f * (B[0] - A[0]), A[1] + f * (B[1] - A[1]), A[2] + f * (B[2] - A[2])]))
+      inside++;
+  }
+  return (inside / n) * L;
+}
+
+const conePath = (pts: V3[]) => {
+  let s = 0;
+  for (let i = 1; i < pts.length; i++) s += coneChord(pts[i - 1], pts[i]);
+  return s;
+};
+
+/**
  * The oracle: the same Cartesian Kerr-Schild rk4Step the renderer marches with,
  * but with its arc-length target scaled down 50x.
  *
@@ -86,6 +141,10 @@ function marchRefined(p0: V3, mCov: V4, a: number, fine = 0.02, maxSteps = 8_000
   // rather than borrowed from traceRayKerr for the reason the whole function
   // exists — at 50x the step count these land where the crossings really are.
   const crossings: { r: number; pos: V3; g: number }[] = [];
+  // Slice 18's oracle, accumulated rather than stored: the path this march
+  // spends inside the jet. Keeping the polyline instead would be hundreds of
+  // megabytes over the fixtures, and nothing needs the curve itself.
+  let coneLen = 0;
   let swept = 0;
   let steps = 0;
   for (; steps < maxSteps; steps++) {
@@ -102,11 +161,12 @@ function marchRefined(p0: V3, mCov: V4, a: number, fine = 0.02, maxSteps = 8_000
       const rc2 = pc[0] * pc[0] + pc[2] * pc[2] - a * a;
       if (rc2 > 0) crossings.push({ r: Math.sqrt(rc2), pos: pc, g: diskShift(Math.sqrt(rc2), a, mt, lam) });
     }
+    coneLen += coneChord(p, next.p);
     p = next.p;
     mv = next.mv;
     const rN = ksRadius(p, a);
     if (rN < rHor || !Number.isFinite(rN)) {
-      return { escaped: false, dir: [0, 0, 0] as V3, winding: swept / Math.PI, steps, H: 0, crossings };
+      return { escaped: false, dir: [0, 0, 0] as V3, winding: swept / Math.PI, steps, H: 0, crossings, coneLen };
     }
     if (rN > 64 && p[0] * mv[0] + p[1] * mv[1] + p[2] * mv[2] > 0) break;
   }
@@ -119,6 +179,7 @@ function marchRefined(p0: V3, mCov: V4, a: number, fine = 0.02, maxSteps = 8_000
     steps,
     H: hamiltonian(p, a, mt, mv),
     crossings,
+    coneLen,
   };
 }
 
@@ -227,6 +288,8 @@ interface Case {
   /** The march's own (m_t, mv) AT the handoff point — what slice 13 rebuilds. */
   marchMt: number;
   marchMv: V3;
+  /** Where the march stopped: slice 18's path has to start there and not near there. */
+  marchPos: V3;
   /** March from the camera: judges the march prefix and continuation together. */
   refEnd: ReturnType<typeof marchRefined>;
 }
@@ -277,6 +340,7 @@ beforeAll(() => {
       mtRe: mRe[0],
       marchMt: short.mt,
       marchMv: short.mv,
+      marchPos: short.pos,
     });
   }
 }, 300_000);
@@ -1061,6 +1125,277 @@ describe("equatorial crossings during the continuation (slice 13)", () => {
       expect(on.dir, `${c.tag}: direction`).toEqual(off.dir);
       expect(on.swept, `${c.tag}: winding`).toBe(off.swept);
       expect(on.passages, `${c.tag}: passages`).toBe(off.passages);
+    }
+  });
+});
+
+/**
+ * Volumetric matter along the continuation (slice 18).
+ *
+ * The disk is shaded at CROSSINGS, which are events; the stars, the jet and the
+ * TDE debris are shaded along SEGMENTS, because they are volumes with no
+ * surface for a ray to cross. So what the renderer needs from the continuation
+ * is not another event list but the path itself, and what these tests judge is
+ * that path — where it goes, whether it is really this ray's, and whether a
+ * straight chord between two of its samples is a fair stand-in for the curve
+ * between them.
+ *
+ * The emitters themselves stay untested here, deliberately: they are fbm noise,
+ * gaussian blobs and a beaming clamp, they exist only in GLSL, and
+ * `npm run band` is what proves their light reaches the screen.
+ */
+describe("volumetric matter along the continuation (slice 18)", () => {
+  const pathOf = (c: (typeof cases)[number]): MinoSample[] =>
+    continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe, path: true }).path;
+
+  /**
+   * Both gates, for slice 13's reason: a path costs a `covariantMomentum` per
+   * point, and the momentum on it only means anything in the march's energy
+   * normalization. Handing back positions with momenta of an unknown scale
+   * would beam every emitter by an unknown constant, which is worse than not
+   * beaming them at all.
+   */
+  it("collects nothing unasked, and nothing without the march's energy", () => {
+    for (const c of cases) {
+      expect(continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe }).path).toHaveLength(0);
+      expect(continueToEscape(c.handoff, c.C, c.a, { path: true }).path).toHaveLength(0);
+      expect(pathOf(c).length, `${c.tag}: asked and got nothing`).toBeGreaterThan(20);
+    }
+  });
+
+  /**
+   * There is no seam at the handoff, and this is what says so.
+   *
+   * `minoStateAt` re-projects the MOMENTA onto sqrt(R) and sqrt(U) with launch
+   * constants, but it reads r, u and az straight off the march's position, and
+   * `minoToCartesian` inverts that map exactly. So the march's last segment ends
+   * at the same point the first continuation segment begins at — measured
+   * 4.2e-15 at worst — and neither a gap to bridge nor an overlap to
+   * double-count exists. Asserted so that nobody later "fixes" a seam that is
+   * not there.
+   */
+  it("starts exactly where the march stopped", () => {
+    let worst = 0;
+    for (const c of cases) {
+      const p0 = pathOf(c)[0].pos;
+      worst = Math.max(
+        worst,
+        Math.hypot(p0[0] - c.marchPos[0], p0[1] - c.marchPos[1], p0[2] - c.marchPos[2])
+      );
+    }
+    expect(worst, `worst handoff gap ${worst}`).toBeLessThan(1e-12);
+  });
+
+  /**
+   * Every sample is a point of THIS geodesic, momentum included.
+   *
+   * Cheap and strict: lambda and q are recovered from (pos, mv) alone, by the
+   * same `rayConstants` the launch used, and they have to come back as the
+   * constants the continuation was handed. A misplaced sample, a momentum
+   * rebuilt on the wrong root of the null condition, or a scale lost in the
+   * lowering all move them, and nothing about the emitters has to be involved
+   * for it to bite.
+   *
+   * The axis-passage apexes are the one exclusion, and they are excluded
+   * because they are the documented exception rather than to make this pass:
+   * that sample deliberately carries the passage EXIT's momentum at the apex's
+   * position, so (pos, mv) is not a matched pair there and this check reads
+   * 0.115 on it. What they are instead is the closest approach to the spin
+   * axis, and the test below asserts exactly that.
+   */
+  it("puts every sample on this ray, with this ray's momentum", () => {
+    let worstC = 0;
+    let worstH = 0;
+    for (const c of cases) {
+      for (const s of pathOf(c)) {
+        if (s.axis) continue;
+        const m: V4 = [c.mtRe, s.mv[0], s.mv[1], s.mv[2]];
+        const rc = rayConstants(s.pos, m, c.a);
+        const rel = (x: number, y: number) => Math.abs(x - y) / Math.max(Math.abs(y), 1e-3);
+        worstC = Math.max(worstC, rel(rc.lambda, c.C.lambda), rel(rc.q, c.C.q));
+        // Relative to |m|^2, which is the scale of the quadratic form being
+        // evaluated: the momentum grows like r^2 on the way out, so an absolute
+        // threshold would be a different test at r = 3 and at r = 64.
+        worstH = Math.max(
+          worstH,
+          Math.abs(hamiltonian(s.pos, c.a, c.mtRe, s.mv)) /
+            (c.mtRe * c.mtRe + s.mv[0] * s.mv[0] + s.mv[1] * s.mv[1] + s.mv[2] * s.mv[2])
+        );
+      }
+    }
+    expect(worstC, `worst constant drift ${worstC}`).toBeLessThan(1e-4);
+    expect(worstH, `worst |H|/|m|^2 ${worstH}`).toBeLessThan(1e-12);
+  });
+
+  /**
+   * The apexes: one per passage, each the closest approach to the spin axis.
+   *
+   * This is what replaces the constants check on those samples, and it is the
+   * property that matters for light. Slice 12 jumps the whole polar passage in
+   * closed form; the path across it is a straight line in the tangent plane at
+   * the pole, so one chord from entry to exit is 1.1 sqrt(vmin) SHORT of the
+   * two through the nearest point. The jet lives on that axis, so a passage
+   * that cut the corner would cut it through the brightest structure in the
+   * frame — the straight-line control below reads 0 against 5.9 on exactly
+   * these rays.
+   *
+   * "Closest approach" is asserted against the neighbours the renderer actually
+   * draws to: the sample before and the sample after.
+   */
+  it("puts one closest-approach point in each axis passage", () => {
+    let seen = 0;
+    for (const c of cases) {
+      const res = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe, path: true });
+      const axis = (p: V3) => Math.hypot(p[0], p[2]);
+      const marks = res.path.filter((s) => s.axis).length;
+      expect(marks, `${c.tag}: apexes vs passages`).toBe(res.passages);
+      for (let i = 0; i < res.path.length; i++) {
+        if (!res.path[i].axis) continue;
+        expect(i, `${c.tag}: apex with no chord into it`).toBeGreaterThan(0);
+        expect(i + 1, `${c.tag}: apex with no chord out of it`).toBeLessThan(res.path.length);
+        expect(axis(res.path[i].pos)).toBeLessThan(axis(res.path[i - 1].pos));
+        expect(axis(res.path[i].pos)).toBeLessThan(axis(res.path[i + 1].pos));
+        seen++;
+      }
+    }
+    expect(seen, "no fixture took an axis passage").toBeGreaterThan(2);
+  });
+
+  /**
+   * A chord is a fair stand-in for the curve, by the renderer's own standard.
+   *
+   * `matterSegment` treats each step as a straight segment, and above 2.2 M it
+   * splits the jet into two samples rather than one because a single midpoint
+   * sample aliases. The march's own steps reach 12 M; the continuation's never
+   * reach 2.2, so every segment handed to the emitters is at least as well
+   * resolved as the ones the march hands them. Worst measured 1.33 M.
+   */
+  it("never hands the emitters a longer chord than the march does", () => {
+    let worst = 0;
+    for (const c of cases) {
+      const p = pathOf(c);
+      for (let i = 1; i < p.length; i++)
+        worst = Math.max(
+          worst,
+          Math.hypot(
+            p[i].pos[0] - p[i - 1].pos[0],
+            p[i].pos[1] - p[i - 1].pos[1],
+            p[i].pos[2] - p[i - 1].pos[2]
+          )
+        );
+    }
+    expect(worst, `worst chord ${worst}`).toBeLessThan(2.2);
+  });
+
+  /**
+   * Every equatorial crossing is IN the path, so the step it happened in is two
+   * segments rather than one.
+   *
+   * This is compositing order, not geometry: the disk sheet absorbs, so matter
+   * on the near side of it has to be added before it dims the light. Integrate
+   * the step whole and the near half is painted as though it sat behind a sheet
+   * it is in front of.
+   */
+  it("splits a step at the crossing it straddles", () => {
+    let seen = 0;
+    for (const c of cases) {
+      const res = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe, path: true });
+      let at = 0;
+      for (const x of res.crossings) {
+        // in the path, and in the order the ray makes them
+        const i = res.path.findIndex((s, j) => j >= at && s.pos === x.pos);
+        expect(i, `${c.tag}: crossing missing from the path`).toBeGreaterThan(0);
+        at = i + 1;
+        seen++;
+      }
+    }
+    expect(seen, "no fixture crossed the equator at all").toBeGreaterThan(20);
+  });
+
+  /**
+   * The acceptance test: the path spends the same length inside the jet as a
+   * march 50x finer does, run from the SAME re-projected state so there is no
+   * prefix to line up.
+   *
+   * This is the slice's whole claim reduced to a number. The emitters read the
+   * path and nothing else, so a path that goes where the ray goes lights what
+   * the ray lights — and length inside the cone is sensitive to the shape of
+   * the path AND to its phase along itself, which the direction and winding
+   * tests cannot see.
+   *
+   * Measured over the five fixtures whose continuation reaches the jet at all:
+   * 3.784 against 3.789, 5.884/5.884, 5.215/5.208, 1.685/1.683, 17.683/17.684 —
+   * worst 1.4e-3 of itself. The other ten never enter the cone from either
+   * side, which is its own agreement and is asserted as one.
+   */
+  it("spends the same length inside the jet as a refined march", () => {
+    let lit = 0;
+    let worst = 0;
+    for (const c of cases) {
+      const got = conePath(pathOf(c).map((s) => s.pos));
+      const want = c.refOwn.coneLen;
+      if (want === 0 && got === 0) continue;
+      expect(want, `${c.tag}: only one side reaches the jet`).toBeGreaterThan(0);
+      expect(got, `${c.tag}: only one side reaches the jet`).toBeGreaterThan(0);
+      lit++;
+      worst = Math.max(worst, Math.abs(got - want) / want);
+    }
+    expect(lit, "no fixture's continuation reaches the jet").toBeGreaterThanOrEqual(4);
+    expect(worst, `worst cone length ${worst}`).toBeLessThan(5e-3);
+  });
+
+  /**
+   * The control, and it is the behaviour this line of slices replaced: before
+   * slice 11 an exhausted ray simply went straight on in whatever direction it
+   * happened to be pointing. Run that line through the same functional and the
+   * agreement above stops looking automatic — the two rays that pass over the
+   * pole miss the jet ENTIRELY going straight (0 against 5.9 and 5.2), one
+   * spends nine times too long inside it (15.9 against 1.7), and one is 28%
+   * short.
+   *
+   * The fifth is not separated (17.5 against 17.7), and that is honest rather
+   * than awkward: that fixture leaves for good almost immediately, so its true
+   * path IS nearly straight. Hence a count of fixtures that separate rather
+   * than a claim about all of them.
+   */
+  it("separates from a straight line through the same cone", () => {
+    let separated = 0;
+    for (const c of cases) {
+      const want = c.refOwn.coneLen;
+      if (want === 0) continue;
+      const { pos, vel } = minoToCartesian(c.handoff, c.C, c.a);
+      const n = Math.hypot(vel[0], vel[1], vel[2]) || 1;
+      const line: V3[] = [];
+      for (let k = 0; Math.hypot(pos[0], pos[1], pos[2]) + 0.05 * k < 64; k++)
+        line.push([
+          pos[0] + (0.05 * k * vel[0]) / n,
+          pos[1] + (0.05 * k * vel[1]) / n,
+          pos[2] + (0.05 * k * vel[2]) / n,
+        ]);
+      if (Math.abs(conePath(line) - want) / want > 0.1) separated++;
+    }
+    expect(separated, "a straight line reads the same jet as the geodesic").toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * Reading the path does not move the ray it is read from — slice 13's
+   * requirement of its crossings, for the same reason: the direction and the
+   * winding are what the sky and the ladder are drawn from, and a diagnostic
+   * that perturbed them would be paid for in the picture.
+   *
+   * Exact equality, not a tolerance. `covariantMomentum` is a pure function of a
+   * state; if collecting one changed a stepped value at all, that would be a
+   * bug rather than a rounding.
+   */
+  it("does not move the ray it reads the path from", () => {
+    for (const c of cases) {
+      const off = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe });
+      const on = continueToEscape(c.handoff, c.C, c.a, { mt: c.mtRe, path: true });
+      expect(on.steps, `${c.tag}: steps`).toBe(off.steps);
+      expect(on.passages, `${c.tag}: passages`).toBe(off.passages);
+      expect(on.swept, `${c.tag}: swept`).toBe(off.swept);
+      expect(on.dir, `${c.tag}: dir`).toEqual(off.dir);
+      expect(on.crossings.length, `${c.tag}: crossings`).toBe(off.crossings.length);
     }
   });
 });

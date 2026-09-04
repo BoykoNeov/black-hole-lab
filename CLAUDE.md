@@ -28,10 +28,10 @@ npm run shot    # visual harness smoke run (needs `npm run dev` already up;
                 # finds its port itself — vite climbs past other projects)
 npm run pol     # slices 10 and 15: the drawn polarization ticks vs the CPU
                 # oracle, in direction and in length
-npm run band    # slices 11-14: the drawn ladder vs the CPU oracle, the
+npm run band    # slices 11-14 and 18: the drawn ladder vs the CPU oracle, the
                 # tripwire colour that must read zero pixels, the disk light
-                # the continuation carries, and the exponents printed around
-                # the ring (also needs `npm run dev` up)
+                # and the jet light the continuation carries, and the exponents
+                # printed around the ring (also needs `npm run dev` up)
 ```
 
 All three visual runs wait on frames drawn, not on the clock, so they work

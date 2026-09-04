@@ -1537,6 +1537,201 @@ in the tilt term of the vertical one, since that term is the same cylindrical
 radius seen at an angle, and correcting only the first would have tilted the
 surface into a shape that is not a surface of revolution at all.
 
+## Slice 18 — the light the continuation was not carrying yet
+
+### Two kinds of emitter, and only one of them had been rescued
+
+Slice 13 gave the continuation the DISK. It could, because the disk is a
+surface: a ray either crosses the equatorial plane or it does not, the crossing
+is a point, and `u` changing sign finds it for free in a loop that is tracking
+`u` anyway.
+
+The stars, the jet and the tidal-disruption debris are not surfaces. They are
+volumes with no boundary a ray crosses — the march integrates them along every
+STEP it takes, sampling `matterSegment` between one position and the next. So
+there is no event for the continuation to collect. What the renderer needs from
+it is the path itself.
+
+That is the whole slice, and the surprise is how little of it is arithmetic. The
+continuation already computed its Cartesian position every step, for the winding
+count; it already knew how to rebuild the covariant momentum, from slice 13. The
+work was in three decisions about where the path is subdivided and which
+momentum each piece is shaded with.
+
+### The disk sheet absorbs, so a step that crosses it is two segments
+
+The march composites front to back. Each step adds its matter with the
+transmittance the ray has left, and `shadeCrossing` reduces that transmittance
+when the disk sheet is passed.
+
+In the continuation the crossing happens in the MIDDLE of a step — that is what
+slice 13's refinement sub-step is for. Adding the whole step's matter after
+shading the crossing would paint the near half of it as though it sat behind a
+sheet it is actually in front of. So the crossing point goes into the path as a
+sample of its own, and the step becomes two segments: the near one composited
+with the pre-crossing transmittance, the far one after.
+
+The disk is the only absorber. Stars, jet and debris are emissive only, which is
+why `pathMatter` reads `thru` and never writes it — the same as the march.
+
+### The axis passage's closest-approach point, and why its momentum is the exit's
+
+Slice 12 jumps the whole polar passage near the spin axis in closed form. For
+the winding count it already went through the closest-approach point rather than
+straight across, because near the pole the path is a straight line in the
+tangent plane and one chord is 1.1·√vmin short of two.
+
+For light that matters more than it did for a number, because the jet lives on
+that axis. A passage that cut the corner would cut it through the brightest
+structure in the frame. So both chords go into the path.
+
+The apex cannot supply a momentum of its own, and this is the one place the
+chart genuinely fails: `pu` vanishes at a polar turning point by definition, and
+on a ray that goes over the pole itself 1 − u² vanishes with it, so the azimuth
+rate λ/(1 − u²) is 0/0 there. (`minoPos` exists beside `minoToCartesian` for
+exactly this reason — the winding needs the point and not the velocity.) The
+chord OUT of the apex is therefore shaded from the passage's exit. It is not a
+fudge: the passage is a Mino interval of order 2e-5, and the only thing the
+momentum really does across it is flip the sign of `pu`, which the exit carries
+exactly. The chord INTO the apex takes the momentum it started with, which is
+the ordinary rule. `MinoSample.axis` flags the one sample whose position and
+momentum are not a matched pair, so that nothing downstream has to notice.
+
+The passage cannot straddle the disk plane, and that is structural rather than
+lucky: it fires only at 1 − u² < `MINO_AXIS_V` and v falls further inside it, so
+|u| stays above 0.998 throughout — the same fact slice 13's crossings lean on.
+
+### There is no seam at the handoff, and the measurement says so
+
+`minoStateAt` re-projects the MOMENTA onto √R and √U with launch constants that
+never drifted. It reads r, u and az straight off the march's position, and
+`minoToCartesian` inverts that map exactly: measured 4.2e-15 over the fixtures.
+
+So the march's last segment ends at the same point the first continuation
+segment begins at. There is no gap to bridge and no overlap to avoid
+double-counting, and the test asserts it — not because anything depended on it,
+but because a future reader looking at two separately-derived positions would
+reasonably suspect a seam and "fix" one that is not there.
+
+### A chord is a fair stand-in, by the renderer's own standard
+
+`matterSegment` treats each step as a straight segment, and above 2.2 M it
+splits the jet into two samples rather than one, because a single midpoint
+sample aliases the knots. The march's own steps reach 12 M. The continuation's
+never reach 2.2 — worst measured 1.33 M — so every segment handed to the
+emitters is at least as well resolved as the ones the march hands them. That is
+asserted rather than assumed, against the march's own threshold.
+
+### What can be tested without the shader: the path, and the jet it flies through
+
+The emitters are fbm noise, gaussian blobs and a beaming clamp, they exist only
+in GLSL, and none of that is testable here. The PATH is, and it is what the
+slice actually changes.
+
+Two invariants come free and are strict: every sample must return this ray's own
+λ and q when `rayConstants` is run backwards from (pos, mv), and its momentum
+must be null. Neither involves an emitter, and both catch a misplaced sample or
+a momentum rebuilt on the wrong root of the null condition.
+
+The acceptance test needed something sensitive to WHERE along the curve the
+samples are, which those two are not. It is the length of path the continuation
+spends inside the jet, against a march 50× finer run from the same re-projected
+state: 3.784/3.789, 5.884/5.884, 5.215/5.208, 1.685/1.683, 17.683/17.684, worst
+1.4e-3 of itself over the five fixtures whose continuation reaches the jet at
+all. The other ten never enter the cone from either side, which is its own
+agreement and is asserted as one.
+
+Its control is the behaviour this line of slices replaced: before slice 11 an
+exhausted ray simply went straight on. Run that line through the same functional
+and the two rays that pass over the pole miss the jet entirely (0 against 5.9
+and 5.2), one spends nine times too long inside it (15.9 against 1.7), and one
+is 28% short. The fifth is not separated at all (17.5 against 17.7), and that is
+honest rather than awkward — that fixture leaves for good almost immediately, so
+its true path IS nearly straight. Hence a count of fixtures that separate rather
+than a claim about all of them.
+
+One measurement detail that mattered more than it looks: the length inside the
+cone is found by MIDPOINT SAMPLING at 0.01 M, not by testing whether a
+segment's endpoints are inside. The two paths are sampled utterly differently —
+the continuation takes chords up to 1.33 M, the refined march ~1e-3 M — and an
+endpoints test charges the coarser one for every boundary it straddles. That
+artifact alone read 2–9% low, which is an order more than the disagreement being
+measured.
+
+### The visual check had no clean control, and finding that out was most of it
+
+Slice 13's disk check has an easy shape: a band pixel whose march found no disk
+crossing had no disk light at all, so if the continuation finds it one, it must
+light up when the disk is switched on. The jet has no such shape, and four
+designs were measured failing before one worked.
+
+**There is no band pixel whose continuation runs brightly up the jet and whose
+march misses the jet entirely.** Not one, over 1763 band pixels at a = 0.998 and
+1528 at a = 0.9, at camera pitches from 0.15 to 1.2 and distances from 8 M to
+25 M. The reason is geometric and worth keeping: a ray that leaves up the spin
+axis is a ray that came in near it, and the two legs of its path are near mirror
+images. Near the axis it is worse still — the camera is then INSIDE the jet's
+cone, so every march starts in the jet and there is nothing left to compare.
+
+The stars were the other candidate, because they are compact and a ray's two
+legs pass the star shell at different places. They are too compact: over the
+same views, four band pixels in total have a continuation passing within one
+gaussian radius of a star while the march stays clear of all six.
+
+So the check became a proportion rather than a presence. Each band pixel carries
+the jet's own emission profile integrated along the march's path and along the
+continuation's; pixels whose continuation carries at least 0.7× what their march
+carries are compared against pixels nearby whose continuation carries at most
+0.05× of it, by light gained per unit of the emission their MARCH predicts. If
+the continuation's light is drawn, the first group gains about (march + cont) /
+march times as much — roughly twice. If it were not drawn, the ratio would be 1.
+
+Three things had to be right for that to measure anything:
+
+- **The frame has to be dim.** On the scene as it normally renders, both groups
+  read 1.0000: the march's own jet light saturates these pixels outright, and no
+  difference survives a clipped white. Both groups then "gained" exactly 0.1273
+  when the jet was switched on, which is the tone map moving and not the jet.
+  The disk, gas, stars and sky go off, bloom to zero, exposure and jet power to
+  the bottom of their sliders.
+- **A path LENGTH is the wrong instrument.** The envelope is mostly dim skirt,
+  and the first version of this check compared lengths: the group carrying
+  continuation jet light had 9.7 M of march inside the cone against the
+  control's 13.1 M, and the control came out BRIGHTER on the strength of that
+  difference alone. `jetProfile` — the gaussian core across the cone and the
+  fade along it, with the noise, the pulse and the beaming left out because a
+  CPU cannot know them — is the shape the shader actually emits with.
+- **The controls have to be nearby.** Not for bloom's sake, which is off here,
+  but because the jet is a structure on screen and a control from the far side
+  of the ring is looking at a different part of it.
+
+Measured: 1.35× at a = 0.998 and 1.76× at a = 0.9, against a predicted 1.98×
+and 2.06×. The measurement comes in under the prediction and every reason it
+does pushes the same way — the tone map is concave and the cases are the
+brighter group, the cases carry somewhat more march light to begin with, and the
+profile omits the three factors that are pure noise here. So a ratio above the
+floor is a lower bound on the effect rather than an estimate of it.
+
+Where the floor sits was measured from both sides rather than chosen. With the
+one line that samples matter along the continuation disabled in the shader, the
+same two views read 1.14× and 1.14×. The residual is not zero because the two
+groups differ in more than the continuation, which is exactly why the floor is
+not at 1.00: it sits between a measured null and a measured signal.
+
+### The jet's envelope moved out of the shader, and a test holds it there
+
+`jetProfile` and the constants under it now live in `src/matter.ts`, and
+`shaders.ts` interpolates them into the GLSL. That is not tidying: the harness
+weighs one leg of a ray against the other with this shape, and a shader carrying
+its own copy of the cone would let the two drift apart silently — every unit
+test would still pass while the comparison quietly stopped meaning anything. So
+`test/matter.test.ts` reads the generated shader source and asserts each
+constant is still the one `matter.ts` exports.
+
+What did NOT move is the emission model: the fbm knots, the travelling pulse,
+the beaming clamp, the colour ramp. Those are artistic (see the jet's badge in
+the HUD) and they stay where the artistic decisions are.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

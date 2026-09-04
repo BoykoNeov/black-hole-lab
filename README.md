@@ -22,9 +22,9 @@ npm run build   # typecheck + production build
 npm run shot    # visual harness smoke run (needs `npm run dev` up)
 npm run pol     # slices 10 and 15: the drawn polarization ticks vs the CPU
                 # oracle, in direction and in length
-npm run band    # slices 11-14: the drawn photon-ring ladder vs the CPU oracle,
-                # the disk light the continuation carries, and the exponents
-                # printed around the ring
+npm run band    # slices 11-14 and 18: the drawn photon-ring ladder vs the CPU
+                # oracle, the disk light and the jet light the continuation
+                # carries, and the exponents printed around the ring
 ```
 
 All three visual runs wait on frames drawn rather than on the clock, so they
@@ -316,7 +316,7 @@ worth the algebra, is in
   `npm run pol` checks the shader against — including, since slice 13, the
   crossings a budget-exhausted ray makes in the separated continuation, because
   the shader shades those too (pure, tested)
-- `src/mino.ts` — the separated continuation (slices 11–13): what happens to a
+- `src/mino.ts` — the separated continuation (slices 11–13, 18): what happens to a
   ray still winding at the photon shell when the march's step budget runs out.
   In Mino time the radial and polar motions are independent 1-D polynomial
   problems, so a ray needing ~291,000 marched steps finishes here in a few
@@ -325,7 +325,13 @@ worth the algebra, is in
   near the spin axis in closed form instead of stepping into a 0/0, and
   `continueToEscape` returns the escape direction, the winding still to sweep,
   and (slice 13, given the march's own m_t) the equatorial crossings the ray
-  makes on the way out — the disk light nothing used to shade.
+  makes on the way out — the disk light nothing used to shade. Slice 18 adds the
+  PATH itself, for the stars, jet and debris, which are volumes with no crossing
+  to be found at: the step boundaries, plus the crossing that splits a step in
+  two so matter in front of the absorbing disk sheet is composited in front of
+  it, plus the closest-approach point of an axis passage — the jet is on that
+  axis, and cutting the corner would cut it through the brightest thing in the
+  frame.
   `covariantMomentum` rebuilds the (m_t, mv) the shading wants out of five
   scalars and no metric, taking V^t from the null condition because the linear
   constraint divides by 1 − f and f = 1 is the ergosphere (pure, tested against
@@ -339,9 +345,14 @@ worth the algebra, is in
   (pure, tested)
 - `src/lens.ts` — Schwarzschild CPU integrator (pure, tested a = 0 reference)
 - `src/disk.ts` — disk physics helpers mirrored by the shader (pure, tested)
-- `src/matter.ts` — star orbits + gas inspiral/plunge state, and `gasRates`,
-  the (daz/dt, dR/dt) the shader sweeps backward to draw the sheared gas arcs
-  (pure, tested)
+- `src/matter.ts` — star orbits + gas inspiral/plunge state, `gasRates` (the
+  daz/dt, dR/dt the shader sweeps backward to draw the sheared gas arcs), and
+  since slice 18 the jet's ENVELOPE and geometric profile — `jetOffset`,
+  `jetProfile` and the constants under them, which `shaders.ts` interpolates
+  rather than restating so the visual harness can weigh one leg of a ray
+  against the other with the same shape the shader emits with. The jet's
+  emission MODEL (noise, pulse, beaming, colour) stays in the shader and stays
+  artistic (pure, tested)
 - `src/edu.ts` — educational-overlay math: unlensed world→screen projection
   matching the shader's ray construction, proper-time rates for the static
   camera and circular orbiters, equatorial Kerr effective potential, Bardeen
@@ -556,7 +567,7 @@ and `tsconfig` covers `src` + `test`.
   adding a TS runner as a dependency
 - `tools/visual/band.mjs` — `npm run band`. The same problem as `npm run pol`,
   for the photon-ring ladder: `src/mino.ts` is tested and its GLSL copy is not.
-  Five measurements at five views. The ladder's magenta means "the
+  Six measurements at seven views. The ladder's magenta means "the
   continuation spent its own budget" and must read zero pixels — it is a
   passing check, not dead UI, and it was reading two when slice 12 looked.
   Whole-turn crossings are matched against the CPU's own winding through the
@@ -567,7 +578,17 @@ and `tsconfig` covers `src` + `test`.
   across the disk toggle, because bloom makes an absolute brightness meaningless
   at these pixels: band pixels the march leaves with no disk crossing of their
   own, split by whether the continuation finds them one, gain 0.10 of full
-  luminance against 0.0000 for the ones it does not. And the frame rate, which
+  luminance against 0.0000 for the ones it does not. Slice 18's jet light gets
+  no such clean split — no band pixel whose continuation runs brightly up the
+  jet has a march that misses the jet, because a ray that leaves up the spin
+  axis came in near it — so it is measured as a PROPORTION instead: light gained
+  per unit of the jet emission the march alone predicts, between pixels whose
+  continuation carries a share of it and pixels beside them whose does not.
+  1.35x at a = 0.998 and 1.76x at a = 0.9, against a predicted 1.98x and 2.06x,
+  and 1.14x at both with the new line disabled in the shader. It has to be read
+  off a deliberately dim frame: at the normal exposure the march's own jet light
+  clips these pixels to white and nothing can be seen in them at all. And the
+  frame rate, which
   sits on the display's
   ceiling either way — an upper bound on the cost, and the tool says so rather
   than dressing it up as a measurement
@@ -578,15 +599,16 @@ and `tsconfig` covers `src` + `test`.
 
 ## Roadmap
 
-Seventeen slices have landed: the lensed sky, the disk, matter in motion, the
+Eighteen slices have landed: the lensed sky, the disk, matter in motion, the
 Kerr integrator, physical scales and TDEs, the educational overlays, compare
 mode, the analytic capture criterion, the photon-ring ladder with the exact
 outline, polarization, the separated continuation that finishes a ray the march
 cannot — over the spin axis, and carrying the disk light it collects — the
 ladder's spacing pointwise around the ring rather than per equatorial edge,
 Chandrasekhar's tabulated polarized fraction in place of a fit, the embedding
-funnel drawn at measured radii rather than at a coordinate, and a visual
-harness that runs where there is no GPU. The full list and the register of open
+funnel drawn at measured radii rather than at a coordinate, a visual harness
+that runs where there is no GPU, and the stars, jet and debris lit along the
+continuation's own path as well as the march's. The full list and the register of open
 scientific hurdles (what is approximate, by how much, and the path to closing
 each) are in [`docs/ROADMAP.md`](docs/ROADMAP.md); nothing argued is currently
 outstanding there.

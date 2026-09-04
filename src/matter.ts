@@ -126,6 +126,93 @@ export function starState(o: StarOrbit, t: number, aSpin = 0): StarState {
   return { pos, vel, u: normalizeVel(pos, aSpin, vel) };
 }
 
+// ---------- the jet's envelope ----------
+
+/**
+ * Where the bipolar jet is, as opposed to what it looks like.
+ *
+ * The jet's emission model lives in the shader and stays there — it is fbm
+ * noise for the knots, a travelling pulse, and a beaming clamp, all artistic
+ * (see docs/DESIGN.md). Its ENVELOPE is not artistic in the same sense: it is
+ * the geometry that decides whether a given point on a ray is inside the jet at
+ * all, and since slice 18 two things outside the shader need to agree with the
+ * shader about it — the visual harness, which has to predict which band pixels
+ * the continuation now carries jet light to, and the tests behind it.
+ *
+ * So the numbers live here and the shader interpolates them, rather than each
+ * side carrying its own copy of a cone.
+ */
+export const JET_BASE = 0.7;
+/** Height at which the jet is cut off, M. */
+export const JET_TOP = 46;
+/** Half-width at the base and its flare per unit height: w(y) = W0 + FLARE|y|. */
+export const JET_WIDTH0 = 0.45;
+export const JET_FLARE = 0.17;
+/**
+ * The gaussian core is exp(-1.6 q^2) in q = (transverse distance)/w, cut off at
+ * q^2 = JET_Q2_CUT. That cut is the envelope: outside it the shader returns
+ * exactly zero rather than something small.
+ */
+export const JET_Q2_CUT = 5;
+
+/**
+ * Transverse distance from the jet axis at `p`, in units of the local
+ * half-width — the shader's q, whose square it compares against JET_Q2_CUT.
+ *
+ * Infinite outside the vertical span, where the jet emits nothing at all. Note
+ * that being inside is necessary but not sufficient for light: the along-axis
+ * fade goes to zero at both ends of the span, and the gaussian core falls to
+ * exp(-8) at the cut. A caller that wants "brightly inside" has to ask for a
+ * smaller q and a height away from the ends — see tools/visual/band.mjs.
+ */
+export function jetOffset(p: V3): number {
+  const ay = Math.abs(p[1]);
+  if (ay < JET_BASE || ay > JET_TOP) return Infinity;
+  return Math.hypot(p[0], p[2]) / (JET_WIDTH0 + JET_FLARE * ay);
+}
+
+/** Gaussian core across the cone: exp(-JET_CORE q^2) in q = jetOffset. */
+export const JET_CORE = 1.6;
+/** The along-axis fade's two knees, and the inverse-square-ish tail with it. */
+export const JET_FADE_IN = 2.6;
+export const JET_FADE_OUT = 30;
+export const JET_TAIL = 0.004;
+
+const smoothstep = (e0: number, e1: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * The jet's emission profile at `p`, with everything unpredictable left out.
+ *
+ * What is in it is geometry: the gaussian core across the cone and the fade
+ * along it. What is NOT in it is every part of the shader's jetEmit that a CPU
+ * cannot know — the fbm knots, the travelling pulse, and the relativistic
+ * beaming, which needs the ray's momentum and not just its position.
+ *
+ * That makes this a shape rather than a brightness, and it is exactly the shape
+ * slice 18's harness needs. A ray's jet light is proportional to the integral of
+ * this along its path, up to those three factors; comparing the integral over
+ * the MARCH's path with the integral over the CONTINUATION's is what lets the
+ * harness say the two legs of one ray contribute in the same proportion. A path
+ * LENGTH inside the cone will not do that job — the envelope is mostly dim
+ * skirt, and two paths of equal length through it can differ several-fold in
+ * light.
+ */
+export function jetProfile(p: V3): number {
+  const ay = Math.abs(p[1]);
+  const q = jetOffset(p);
+  const q2 = q * q;
+  if (!(q2 <= JET_Q2_CUT)) return 0;
+  return (
+    (Math.exp(-JET_CORE * q2) *
+      smoothstep(JET_BASE, JET_FADE_IN, ay) *
+      smoothstep(JET_TOP, JET_FADE_OUT, ay)) /
+    (1 + JET_TAIL * ay * ay)
+  );
+}
+
 // ---------- infalling gas blobs ----------
 
 export const GAS_COUNT = 16;

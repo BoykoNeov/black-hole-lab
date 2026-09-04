@@ -2,6 +2,15 @@ import { describe, expect, it } from "vitest";
 import { gDot, iscoRadius, omegaCirc } from "../src/kerr";
 import {
   GAS_COUNT,
+  JET_BASE,
+  JET_CORE,
+  JET_FADE_IN,
+  JET_FADE_OUT,
+  JET_FLARE,
+  JET_Q2_CUT,
+  JET_TAIL,
+  JET_TOP,
+  JET_WIDTH0,
   STAR_COUNT,
   STAR_ORBITS,
   type GasBlob,
@@ -13,9 +22,12 @@ import {
   mulberry32,
   nodalRate,
   spawnGasBlob,
+  jetOffset,
+  jetProfile,
   starState,
   stepGasBlob,
 } from "../src/matter";
+import { FS_SCENE } from "../src/shaders";
 
 type V3 = [number, number, number];
 const len = (v: V3) => Math.hypot(v[0], v[1], v[2]);
@@ -253,5 +265,80 @@ describe("mulberry32", () => {
       expect(x).toBeLessThan(1);
     }
     expect(GAS_COUNT).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The jet's envelope and profile (slice 18).
+ *
+ * These numbers used to live only in the shader, where nothing outside GLSL
+ * could reach them. They moved here so that the visual harness could weigh the
+ * jet light one leg of a ray collects against the other's — and the whole point
+ * of the move is that there is now ONE copy, so the last test in this block
+ * reads the generated shader source and checks it still says so.
+ */
+describe("the jet's envelope and profile (slice 18)", () => {
+  it("is empty outside the vertical span and on the cone's own edge", () => {
+    expect(jetOffset([0, JET_BASE - 1e-9, 0])).toBe(Infinity);
+    expect(jetOffset([0, JET_TOP + 1e-9, 0])).toBe(Infinity);
+    expect(jetProfile([0, JET_BASE - 1e-9, 0])).toBe(0);
+    expect(jetProfile([0, JET_TOP + 1e-9, 0])).toBe(0);
+    // and the fade is exactly zero at both ends of the span, which is why the
+    // harness classifies on an interior rather than on the envelope
+    expect(jetProfile([0, JET_BASE, 0])).toBe(0);
+    expect(jetProfile([0, JET_TOP, 0])).toBe(0);
+  });
+
+  it("measures the offset in local half-widths", () => {
+    for (const y of [1, 5, 20, 40]) {
+      const w = JET_WIDTH0 + JET_FLARE * y;
+      expect(jetOffset([w, y, 0])).toBeCloseTo(1, 12);
+      expect(jetOffset([0, y, 2 * w])).toBeCloseTo(2, 12);
+      // and it does not care which side of the equator, or which azimuth
+      expect(jetOffset([0, -y, w])).toBeCloseTo(1, 12);
+    }
+  });
+
+  it("falls off across the cone and cuts off where the shader cuts off", () => {
+    const y = 12;
+    const w = JET_WIDTH0 + JET_FLARE * y;
+    const at = (q: number) => jetProfile([q * w, y, 0]);
+    let prev = at(0);
+    expect(prev).toBeGreaterThan(0);
+    for (let q = 0.1; q * q <= JET_Q2_CUT; q += 0.1) {
+      const v = at(q);
+      expect(v, `q = ${q}`).toBeLessThan(prev);
+      prev = v;
+    }
+    // The cut is a cliff, not a fade: exp(-JET_CORE * JET_Q2_CUT) of the peak
+    // is still there one step inside it and nothing is there one step outside.
+    expect(at(Math.sqrt(JET_Q2_CUT) - 1e-6)).toBeGreaterThan(1e-4 * at(0));
+    expect(at(Math.sqrt(JET_Q2_CUT) + 1e-6)).toBe(0);
+  });
+
+  /**
+   * The one copy, asserted.
+   *
+   * The shader interpolates these constants rather than restating them, and
+   * this reads the generated source to check that has not been undone. It is
+   * not a style point: tools/visual/band.mjs judges slice 18 by integrating
+   * `jetProfile` along a ray and comparing it with what the shader drew, and a
+   * shader that had quietly gone back to its own literals would still pass
+   * every other test in this file while making that comparison meaningless.
+   */
+  it("is the same envelope the shader draws", () => {
+    const glsl = FS_SCENE.replace(/\s+/g, " ");
+    for (const [name, text] of [
+      ["base", `ay < ${JET_BASE.toFixed(2)}`],
+      ["top", `ay > ${JET_TOP.toFixed(1)}`],
+      ["width", `wj = ${JET_WIDTH0.toFixed(2)} + ${JET_FLARE.toFixed(2)} * ay`],
+      ["cut", `q2 > ${JET_Q2_CUT.toFixed(1)}`],
+      ["core", `core = exp(-q2 * ${JET_CORE.toFixed(2)})`],
+      ["fade in", `smoothstep(${JET_BASE.toFixed(2)}, ${JET_FADE_IN.toFixed(2)}, ay)`],
+      ["fade out", `smoothstep(${JET_TOP.toFixed(1)}, ${JET_FADE_OUT.toFixed(1)}, ay)`],
+      ["tail", `1.0 + ${JET_TAIL.toFixed(4)} * ay * ay`],
+    ] as const) {
+      expect(glsl, `the shader's jet ${name} is not matter.ts's`).toContain(text);
+    }
   });
 });

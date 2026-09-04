@@ -487,6 +487,16 @@ export interface KerrTraceResult {
   /** Final position and covariant spatial momentum (for diagnostics). */
   pos: V3;
   mv: V3;
+  /**
+   * The positions the march stepped through, first to last (slice 18).
+   *
+   * Empty unless `opts.path`. The shader samples stars, jet and TDE debris
+   * along each of these segments — they are volumes, with no crossing to be
+   * located at — so this is where the march's own volumetric light comes from,
+   * and tools/visual/band.mjs needs it to say which band pixels had none of it
+   * before the continuation started carrying any.
+   */
+  path: V3[];
   /** Conserved quantities for diagnostics. */
   mt: number;
   lam: number;
@@ -503,7 +513,7 @@ export function traceRayKerr(
   camPos: V3,
   mCov: V4,
   a: number,
-  opts: { rEscape?: number; maxSteps?: number } = {}
+  opts: { rEscape?: number; maxSteps?: number; path?: boolean } = {}
 ): KerrTraceResult {
   const rEscape = opts.rEscape ?? 64;
   const maxSteps = opts.maxSteps ?? 4000;
@@ -513,6 +523,7 @@ export function traceRayKerr(
   let mv: V3 = [mCov[1], mCov[2], mCov[3]];
   const lam = p[2] * mv[0] - p[0] * mv[2]; // z m_x - x m_z, conserved
   const crossings: KerrCrossing[] = [];
+  const path: V3[] = opts.path ? [[...p]] : [];
 
   let escaped = false;
   let steps = 0;
@@ -559,6 +570,7 @@ export function traceRayKerr(
 
     p = next.p;
     mv = next.mv;
+    if (opts.path) path.push([...p]);
     const rNew = ksRadius(p, a);
     if (rNew < rHor) break; // fell through the horizon
     // A captured backward ray belongs to the outgoing family, which ingoing
@@ -592,6 +604,7 @@ export function traceRayKerr(
     steps,
     pos: p,
     mv,
+    path,
     mt,
     lam,
     H: hamiltonian(p, a, mt, mv),
