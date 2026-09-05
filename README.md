@@ -29,9 +29,10 @@ npm run band    # slices 11-14 and 18: the drawn photon-ring ladder vs the CPU
 
 All three visual runs wait on frames drawn rather than on the clock, so they
 work where a frame costs seconds. `LAB_SOFTWARE_GL=1` forces ANGLE's software
-rasterizer to prove that on a machine with a GPU; each run prints the renderer
-it actually got, and the measured cost of a frame and of a capture, on its
-first line.
+rasterizer to prove that on a machine with a GPU; `LAB_HEADED=1` opens a real
+window rather than a headless one, and `LAB_NO_TIMER=1` withholds the GPU timer
+extension from the page. Each run prints the renderer it actually got, and the
+measured cost of a frame and of a capture, on its first line.
 
 ## Architecture
 
@@ -377,13 +378,16 @@ controller judges a window's minimum and not its median.
   scalars and no metric, taking V^t from the null condition because the linear
   constraint divides by 1 − f and f = 1 is the ergosphere (pure, tested against
   a step-refined march in different coordinates)
-- `src/adaptive.ts` — slice 19's two pure pieces: `jitterOffset`, the
-  sub-pixel sequence a still picture is refined with (R2, sample 0 at the
-  centre so an unrefined frame is the plain one), and `autoStep`, the auto
-  preset's render-scale controller — the square-root cost model, the grid and
-  its hysteresis, the minimum-of-a-window judgement that survives the GPU's
-  frame-pacing stalls, the cap on one decision's move, and the probing
-  fallback for a browser with no GPU timer (pure, tested)
+- `src/adaptive.ts` — the pure pieces of "render only what the frame needs":
+  `jitterOffset`, the sub-pixel sequence a still picture is refined with (R2,
+  sample 0 at the centre so an unrefined frame is the plain one); `autoStep`,
+  the auto preset's render-scale controller — the square-root cost model, the
+  grid and its hysteresis, the minimum-of-a-window judgement that survives the
+  GPU's frame-pacing stalls, the cap on one decision's move, and the probing
+  fallback for a browser with no GPU timer; and `budgetFps` (slice 20), which
+  keeps the controller from budgeting for frames the display cannot show — a
+  limit above the refresh rate is one the renderer already ignores, and
+  budgeting for it shrank the picture to buy frames nobody saw (pure, tested)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -471,9 +475,12 @@ controller judges a window's minimum and not its median.
   renderer drew. Since slice 19 it also owns the still-picture bookkeeping —
   the scene key whose change resets the refinement, the 1/n blend into the
   target, and the skipped march once it has converged — and feeds the GPU
-  timer's readings to the auto preset's controller; the fps readout shows the
-  scene pass's GPU cost, its size and the sample count. Dev hooks `__sceneMs`
-  and `__sceneScale` publish the same for a harness
+  timer's readings to the auto preset's controller, along with the intervals
+  between drawn frames that `budgetFps` reads the display's own rate off; the
+  fps readout shows the scene pass's GPU cost, its size and the sample count.
+  Dev hooks `__sceneMs` and `__sceneScale` publish the same for a harness, and
+  `__sceneMsRaw` / `__sceneMsTag` / `__sceneMsN` the timer's readings
+  unsmoothed, since `__sceneMs` is the minimum of sixteen
 - `src/camera.ts` — orbit controls (plus the `claimed` hook that lets a HUD
   handle take a pointerdown before it becomes an orbit drag)
 - `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects,
@@ -602,7 +609,11 @@ and `tsconfig` covers `src` + `test`.
   (`LAB_URL` overrides). Writes PNGs outside the repo. `LAB_CHROMIUM` points it
   at a preinstalled browser where playwright's own pinned build is absent, and
   `LAB_SOFTWARE_GL=1` forces ANGLE's software rasterizer so the no-GPU path can
-  be tested on a machine that has one. Every wait in it is counted in frames
+  be tested on a machine that has one. `LAB_HEADED=1` opens a real window
+  instead of drawing headlessly, which is the only way to measure frame PACING
+  (headless rAF runs at 60 Hz whatever the machine), and `LAB_NO_TIMER=1` hides
+  the GPU timer extension from the page so the fallback Firefox and Safari get
+  can be driven on the same GPU in the same browser. Every wait in it is counted in frames
   drawn (`settle`, `drift`), off a counter `main.ts` publishes, and waits on
   the counter MOVING rather than on a predicted total — so a machine where a
   frame costs seconds is slow rather than broken. See `docs/DESIGN.md` for why

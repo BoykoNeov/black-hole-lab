@@ -9,7 +9,12 @@
  *    camera at rest) can be refined: shift every ray by a sub-pixel offset and
  *    average the frames. `jitterOffset` is the offset sequence.
  *
- * 2. Adaptive render scale. Cost is proportional to the number of pixels
+ * 2. What frame rate to budget for: the user's limit, or the display's own
+ *    refresh, whichever is lower. A limit above the refresh rate asks for
+ *    frames no display can show, and the controller answered by shrinking the
+ *    picture for them.
+ *
+ * 3. Adaptive render scale. Cost is proportional to the number of pixels
  *    marched, hence to the square of the render scale, so the scale that meets
  *    a frame budget is scale * sqrt(budget / cost). `autoStep` is that
  *    controller with the damping, quantization and hysteresis that keep it
@@ -134,9 +139,76 @@ export function scaleFor(scale: number, costMs: number, budgetMs: number): numbe
 }
 
 /** One frame at the limit, and the scene pass's share of it: the bloom chain,
- *  the composite, the HUD and the browser's own compositing take the rest. */
+ *  the composite, the HUD and the browser's own compositing take the rest.
+ *  The rate passed in should be `budgetFps`, not the slider's own value. */
 export const frameBudgetMs = (fpsLimit: number): number => 1000 / fpsLimit;
 export const sceneBudgetMs = (fpsLimit: number): number => 0.8 * frameBudgetMs(fpsLimit);
+
+/**
+ * Drawn-frame intervals kept for the display estimate below. Short on purpose:
+ * the estimate has to be armed before the controller's first decision, which
+ * arrives after AUTO.window frames, or the frames before it are judged against
+ * a rate the display cannot show and the scale is already falling by the time
+ * the clamp exists.
+ */
+export const FRAME_RING = 32;
+
+/** No display shows fewer frames than this; see displayHz. */
+export const DISPLAY_HZ_FLOOR = 60;
+
+/**
+ * How many frames a second the display can actually show, from the intervals
+ * between drawn frames.
+ *
+ * The SECOND smallest, not the smallest: one spurious short interval — a
+ * doubled callback, a resume after the tab was hidden — would otherwise read
+ * as a 1000 Hz display and quietly switch the clamp off, and the symptom of
+ * that is the old collapse coming back now and then rather than an error.
+ *
+ * Floored at 60 because the estimate is only trustworthy in one direction. An
+ * interval longer than the display's period can mean a slow GPU as easily as a
+ * slow panel, and believing a slow GPU's own frame rate is the display's is a
+ * deadlock: the frame is over budget only against a budget the frame itself
+ * set, so nothing is ever over budget and the scale never falls. Nothing sold
+ * this century refreshes below 60, so the floor costs nothing real.
+ *
+ * Infinity when there is not enough history yet, which leaves the caller's own
+ * limit standing.
+ */
+export function displayHz(intervalsMs: ArrayLike<number>): number {
+  let first = Infinity;
+  let second = Infinity;
+  for (let i = 0; i < intervalsMs.length; i++) {
+    const v = intervalsMs[i];
+    if (!(v > 0) || !Number.isFinite(v)) continue;
+    if (v < first) {
+      second = first;
+      first = v;
+    } else if (v < second) second = v;
+  }
+  if (!Number.isFinite(second)) return Infinity;
+  return Math.max(DISPLAY_HZ_FLOOR, 1000 / second);
+}
+
+/**
+ * The frame rate the controller should budget for: the user's limit, or what
+ * the display can show, whichever is lower.
+ *
+ * rAF is vsync-paced, so a limit above the refresh rate is already a no-op for
+ * the renderer — main.ts's own frame gate says so, and turns itself off at the
+ * top of the slider. The controller was not told, and judged frames against a
+ * period no display could deliver: every frame read as over budget however
+ * small the picture got, because shrinking the render cannot shorten a frame
+ * that is waiting for vsync. Without a GPU timer that walked the scale to the
+ * bottom of the range and held it there; with one it merely gave away a step
+ * or two. Neither bought a single frame.
+ *
+ * When the limit DOES bind, the drawn-frame interval is the limit's own period,
+ * so the estimate comes back equal to the limit and this returns it unchanged.
+ * The clamp only bites where the limit was never the thing pacing the frame.
+ */
+export const budgetFps = (fpsLimit: number, intervalsMs: ArrayLike<number>): number =>
+  Math.min(fpsLimit, displayHz(intervalsMs));
 
 /**
  * Feed one frame's cost. Returns true when `st.scale` changed.

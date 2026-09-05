@@ -2,7 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   ACCUM_MAX,
   AUTO,
+  DISPLAY_HZ_FLOOR,
   autoStep,
+  budgetFps,
+  displayHz,
   frameBudgetMs,
   jitterOffset,
   makeAutoState,
@@ -212,5 +215,83 @@ describe("the budget", () => {
     expect(frameBudgetMs(60)).toBeCloseTo(16.67, 1);
     expect(sceneBudgetMs(60)).toBeCloseTo(13.33, 1);
     expect(sceneBudgetMs(240)).toBeCloseTo(3.33, 1);
+  });
+});
+
+describe("the rate the budget is taken from", () => {
+  /** A ring of `n` intervals, all `ms` apart, as main.ts keeps them. */
+  const ring = (ms: number, n = 32) => new Float64Array(n).fill(ms);
+
+  it("says nothing until it has seen two frames", () => {
+    expect(displayHz([])).toBe(Infinity);
+    expect(displayHz([6.9])).toBe(Infinity);
+    expect(displayHz([6.9, 6.9])).toBeCloseTo(145, 0);
+  });
+
+  it("ignores the empty slots of a ring that has not filled", () => {
+    const r = new Float64Array(32).fill(NaN);
+    r[0] = 6.9;
+    r[1] = 6.9;
+    expect(displayHz(r)).toBeCloseTo(145, 0);
+  });
+
+  it("reads a 144 Hz panel and a 60 Hz one from their intervals", () => {
+    expect(displayHz(ring(1000 / 144))).toBeCloseTo(144, 0);
+    expect(displayHz(ring(1000 / 60))).toBeCloseTo(60, 0);
+  });
+
+  it("survives one spurious short interval, which the minimum would not", () => {
+    const r = ring(1000 / 144);
+    r[7] = 0.9; // a doubled callback, or a resume
+    expect(displayHz(r)).toBeCloseTo(144, 0);
+  });
+
+  it("never believes a slow machine's own frame rate is the display's", () => {
+    // 40 ms frames are a slow GPU, not a 25 Hz monitor; believing the latter
+    // would make every frame in budget and the scale would never fall.
+    expect(displayHz(ring(40))).toBe(DISPLAY_HZ_FLOOR);
+  });
+
+  it("is a no-op while the user's limit is the thing pacing the frame", () => {
+    // 60 fps asked for and 60 delivered on a 144 Hz panel: the drawn-frame
+    // interval IS the limit's period, so the estimate hands the limit back.
+    expect(budgetFps(60, ring(1000 / 60))).toBeCloseTo(60, 0);
+    expect(budgetFps(30, ring(1000 / 30))).toBeCloseTo(30, 0);
+    // and a limit under the floor is still the user's to set
+    expect(budgetFps(15, ring(1000 / 15))).toBeCloseTo(15, 0);
+  });
+
+  it("clamps a limit the display cannot show, at the top of the slider or below", () => {
+    const at144 = ring(1000 / 144);
+    expect(budgetFps(240, at144)).toBeCloseTo(144, 0);
+    expect(budgetFps(200, at144)).toBeCloseTo(144, 0);
+    expect(budgetFps(240, ring(1000 / 60))).toBeCloseTo(60, 0);
+  });
+
+  it("leaves the limit alone until the ring has something in it", () => {
+    expect(budgetFps(240, new Float64Array(32).fill(NaN))).toBe(240);
+  });
+
+  it("keeps a vsync-bound frame inside the fallback's budget, which is the bug", () => {
+    // Before the clamp: a 144 Hz frame judged against a 240 fps limit read as
+    // over budget every window however small the picture got, and the scale
+    // walked to the bottom of the range and stayed.
+    const period = 1000 / 144;
+    const before = makeAutoState(1);
+    for (let i = 0; i < 40 * AUTO.window; i++) autoStep(before, period, 240, false);
+    expect(before.scale).toBe(AUTO.min);
+
+    const after = makeAutoState(1);
+    const r = ring(period);
+    for (let i = 0; i < 40 * AUTO.window; i++)
+      autoStep(after, period, budgetFps(240, r), false);
+    expect(after.scale).toBe(1);
+  });
+
+  it("still steps down for a genuinely slow frame at the same limit", () => {
+    const st = makeAutoState(1);
+    const r = ring(50); // 50 ms frames: the GPU, not the panel
+    for (let i = 0; i < AUTO.window; i++) autoStep(st, 50, budgetFps(240, r), false);
+    expect(st.scale).toBeLessThan(1);
   });
 });

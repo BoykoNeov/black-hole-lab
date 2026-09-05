@@ -81,6 +81,45 @@ export const OUT_DIR = process.env.LAB_OUT ?? "M:/claud_projects/temp/blackhole-
 export const LAB_SOFTWARE_GL = process.env.LAB_SOFTWARE_GL === "1";
 
 /**
+ * Open a real window instead of drawing headlessly.
+ *
+ * Headless chromium paces frames on a timer of its own, not on a display's
+ * vsync, and slice 19's whole picture of what the GPU timer reads — the true
+ * cost most frames, the frame period on the rest — came from that pacing. The
+ * only way to know whether a monitor behaves the same is to put the same
+ * measurement in front of one. Nothing else changes: still playwright's own
+ * chromium, still its own throwaway profile, so close() still cannot reach a
+ * browser a person is using.
+ *
+ * The window is subject to the desktop it opens on. A viewport taller than the
+ * screen minus the window chrome is silently shrunk, and an occluded or
+ * unfocused window has its frame callbacks throttled — a measurement taken
+ * through one is fiction that looks like data. Anything measuring here should
+ * report the size and the frame period it actually saw.
+ */
+export const LAB_HEADED = process.env.LAB_HEADED === "1";
+
+/**
+ * Hide the GPU timer extension from the page, so the auto preset falls back to
+ * judging the frame period.
+ *
+ * That branch is what Firefox and Safari get, and it had only ever been unit
+ * tested — a browser without the extension is also a browser with a different
+ * driver, a different compositor and a different GPU, so a run there could not
+ * say which of those the fallback was answering. Withholding the extension in
+ * the same chromium on the same machine leaves exactly one variable changed.
+ */
+export const LAB_NO_TIMER = process.env.LAB_NO_TIMER === "1";
+
+/** The page-side half of LAB_NO_TIMER; must run before any GL context exists. */
+function hideTimerExtension() {
+  const real = WebGL2RenderingContext.prototype.getExtension;
+  WebGL2RenderingContext.prototype.getExtension = function (name) {
+    return name === "EXT_disjoint_timer_query_webgl2" ? null : real.call(this, name);
+  };
+}
+
+/**
  * SwiftShader via ANGLE. Without these the geodesic shader gets no GL2 context
  * headlessly and every frame comes back blank.
  *
@@ -457,13 +496,14 @@ export function savePng(dataUrl, name) {
 export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
   const base = LAB_URL ?? (await discover());
   const browser = await chromium.launch({
-    headless: true,
+    headless: !LAB_HEADED,
     args: LAUNCH_ARGS,
     ...(LAB_CHROMIUM ? { executablePath: LAB_CHROMIUM } : {}),
   });
   const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   const page = await context.newPage();
   await page.addInitScript(installLab);
+  if (LAB_NO_TIMER) await page.addInitScript(hideTimerExtension);
 
   try {
     await page.goto(base, { waitUntil: "domcontentloaded", timeout: 15_000 });

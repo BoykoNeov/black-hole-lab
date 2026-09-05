@@ -1978,16 +1978,19 @@ Landed: against a 3.3 ms budget the preset goes 1.0 → 0.85 → 0.8 in seven
 seconds and holds, reading 2.8 ms inside the band, with no dip over a minute
 of watching; before the cap the same run touched 0.75 and once fell to 0.55
 for a second. Every one of those
-numbers is from headless chromium, whose frame pacing is not a monitor's;
-`docs/PLAN-slice-20.md` has the measurement to repeat in a real window.
+numbers is from headless chromium, whose frame pacing is not a monitor's. The
+measurement was repeated in a real window in slice 20, below: the costs come
+back identical, the stalls do not come back at all, and the budget those numbers
+were judged against turned out to be wrong on a display faster than 60 Hz.
 
 Without the extension (Firefox and Safari withhold it) the frame period stands
 in, and the controller knows what that is worth: over budget it is trusted,
 since a frame longer than the display allows was held up by the GPU; under
 budget it says nothing, so the fallback probes — a step up after 128 healthy
 frames, taken back if the next window is over, and twice the wait before the
-next try. It has been unit-tested and not run in a real browser without the
-timer, and the plan says so.
+next try. It had been unit-tested and never run in a browser
+without the timer; slice 20 ran it, and it collapsed — see "A frame rate the
+display cannot show is not a budget".
 
 ### The canvas is the frame, and the upscale is the composite's
 
@@ -2281,3 +2284,159 @@ looks redundant and is not: `bindNumField` seeds `params` from the control's
 value at startup, so the markup wins and the TS initializer is a transient. The
 `quality` field above it carries the same "must match index.html" note for the
 same reason.
+
+## Slice 20 — the auto preset in front of a real monitor
+
+Everything slice 19 measured about the GPU timer came out of headless chromium,
+which paces frames on a timer of its own rather than on a display's vsync. That
+left two open questions the plan wrote down: whether the stalls that shaped the
+controller are a real display's behaviour too, and whether the no-timer fallback
+— the branch Firefox and Safari get — does anything sensible outside a unit
+test. The lab now opens a real window on demand (`LAB_HEADED=1`) and can be made
+to think it has no timer on hardware that does (`LAB_NO_TIMER=1`), and both
+questions have answers. One of them is a bug, and it was in the shipped code.
+
+### Measuring the raw readings meant admitting the old ones were unreproducible
+
+`window.__sceneMs` is the smallest of the last sixteen readings, not a reading.
+That is what the controller and the readout want, and it is exactly what hides
+what slice 19 described: a run of eight stalls inside a sixteen-slot minimum
+never surfaces at all. The raw sequences quoted in that section
+(`16.6 4.6 6.5 2.8 14.9 …`) cannot have come from any committed code path —
+`git log -S` puts the ring in the single commit that introduced the hook — so
+they came from a throwaway patch during the slice and could not be re-run.
+
+So `__sceneMsRaw` publishes the reading as the GPU gave it, `__sceneMsTag` the
+render target it measured, and `__sceneMsN` a count, because `poll` returns null
+on most frames and without a counter a per-frame sampler cannot tell a fresh
+reading from the previous one still standing. Every number below is off those.
+
+### The stalls do not reproduce, here, in either kind of window
+
+180 raw readings per condition, spin 0.9, RTX 5090:
+
+| condition | min | median | p95 | max | above 3× the floor |
+|---|---|---|---|---|---|
+| headless 1920×1080, high | 4.1 | 4.5 | 4.7 | 5.0 | none |
+| headless 1920×1080, low | 1.0 | 1.1 | 1.3 | 1.5 | none |
+| headed 1280×800, high | 2.4 | 2.6 | 2.8 | 3.8 | none |
+| headed 1280×800, low | 0.9 | 1.0 | 1.2 | 1.6 | none |
+| headed, across a preset change | 0.9 | 1.8 | 2.0 | 3.4 | one reading |
+
+The true costs are slice 19's to the tenth of a millisecond — 4.5 ms at
+1920×1080, 1.1 ms at low, 2.6 ms at 1280×800 — so this is the same measurement,
+not a different one. What is absent is the frame-period readings. The single
+5.8 ms spike each run is the frame the target was reallocated on, and it is one
+reading, not eight.
+
+Read that from the raw sequences rather than from the "above 3× the floor"
+column, which cannot resolve what it is being asked about: the display here
+refreshes at 144 Hz, so a frame period is 6.9 ms against a 4.5 ms true cost —
+1.5× — and a whole run of stalls would score as zero. The sequences settle it
+directly: no reading anywhere exceeds 5.0 ms.
+
+The honest conclusion is not that slice 19 was wrong. It measured what it
+measured, on a run that cannot be repeated, and a stall can still only add time,
+so the minimum-of-a-window judgement remains the right statistic whether or not
+anything stalls. It is now a precaution rather than a fix. `AUTO.window` = 16
+keeps its value: the plan's trigger for raising it was runs of stalls longer
+than the window, and the longest run seen anywhere here is one.
+
+### A frame rate the display cannot show is not a budget
+
+The fallback had never run in a browser, and the first time it did it collapsed.
+Quality auto, no timer, a 240 fps limit: the render scale walks from 1.00 to the
+bottom of its range in two seconds and stays at 0.35 — a quarter-resolution
+picture — while the display shows a flawless 144 fps.
+
+The cause is not the fallback. `main.ts` turns its own frame gate OFF at a limit
+of 240 and says why in a comment: rAF is vsync-capped, so a limit at or above
+the refresh rate is a no-op. The controller was never told. It took the slider's
+number as a deadline and asked for a 4.2 ms frame from a display that emits one
+every 6.9 ms, so every window read as over budget however small the picture got
+— shrinking the render cannot shorten a frame that is waiting for vsync — and
+there was no floor on the way down except `AUTO.min`.
+
+Sweeping the slider on this 144 Hz panel says it is not the top-of-slider
+sentinel but the refresh rate, which is what decides the shape of the fix:
+
+| fps limit | 60 | 120 | 144 | 200 | 239 | 240 |
+|---|---|---|---|---|---|---|
+| scale, no timer, before | 1.00 | 1.00 | 1.00 | **0.35** | **0.35** | **0.35** |
+| scale, timer live, before | 1.00 | 1.00 | 1.00 | 0.95 | 0.85 | 0.85 |
+| scale, either, after | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 | 1.00 |
+
+The timer row is the same defect an order of magnitude smaller: a real GPU
+reading judged against an unreal deadline gives away a step or two rather than
+the whole range. Neither row bought a single displayed frame.
+
+`budgetFps` is the fix, and the controller keeps no new state for it: the rate
+budgeted against is the user's limit or the display's own, whichever is lower.
+What makes that cheap is that the display's rate can be read off the intervals
+between drawn frames, which `main.ts` already has — **when the limit binds, the
+drawn-frame interval IS the limit's period, so the estimate hands the limit back
+and the clamp is a no-op; it only bites where the limit was never what paced the
+frame.** The estimate is deliberately crude in two ways, each guarding a failure
+that is worse than the imprecision:
+
+- The **second** smallest interval in the ring, not the smallest. One spurious
+  short interval — a doubled callback, a resume from a hidden tab — reads as a
+  1000 Hz display and switches the clamp off, and the symptom of that is the
+  collapse coming back intermittently rather than an error anyone could chase.
+- Floored at **60 Hz**. The estimate is only trustworthy in one direction: an
+  interval longer than the display's period can mean a slow GPU as easily as a
+  slow panel, and believing a slow GPU's own rate is the display's is a
+  deadlock — the frame is then over budget only against a budget the frame
+  itself set, so nothing is ever over budget and the scale never falls. That is
+  the whole reason the auto preset exists, so it is the one failure the design
+  may not have. Nothing sold this century refreshes below 60.
+
+The ring is 32 intervals, short on purpose: the first decision lands after 16
+frames, and an estimate that arms later than that is an estimate the collapse
+outruns. Measured cold — a page that opens already in auto at 240 — the scale
+dips to 0.90 for about a second and is back at 1.00 by 1.9 s, which is the
+controller correctly answering genuinely slow first frames while the shader
+compiles, and then correctly taking it back. Warm, there is no dip at all.
+
+Two things the fix deliberately does not do. It does not touch the case where
+the GPU really is the slower party: forced to 3840×2160, where the pass costs
+13 ms against a 13.3 ms budget, the preset still steps down to 0.95 and holds.
+And it does not make the fallback clairvoyant — without a timer it still cannot
+tell vsync pacing from GPU pacing above 60 Hz, so a slow machine at an unlimited
+setting settles toward 60 fps rather than pushing for the panel's rate, and
+improves only as frames get cheap enough for the true refresh to show through.
+That is a trade, not an oversight: the alternative is the deadlock above.
+
+### What a real window changed, and what it did not
+
+With the fix in, at 1920×1080 on the 144 Hz panel, quality auto holds 1.00 at
+every limit, reading 4.3 ms of scene inside a 6.9 ms frame, with no dip over
+twenty seconds of watching; a still picture goes to full resolution and refines,
+as it did headless. The headless numbers slice 19 quoted stand — the same costs
+come back to the tenth of a millisecond — so headless remains a fair place to
+measure cost. It is not a fair place to measure PACING: its rAF runs at 60 Hz
+whatever the machine, which is precisely why a defect that needs a display
+faster than the frame budget survived a whole slice of measurement.
+
+### Withholding the extension beats changing browser
+
+The plan suggested Firefox and Safari for the fallback, since they withhold
+`EXT_disjoint_timer_query_webgl2`. Safari does not exist on Windows, and Firefox
+would have changed the driver, the compositor and the frame scheduler at the
+same time as the timer, so a collapse there could have been any of them.
+`LAB_NO_TIMER=1` hides the extension from the page in the same chromium on the
+same GPU in front of the same monitor, leaving exactly one variable changed —
+which is how the collapse above is attributable to the controller rather than to
+a browser. Firefox stays unrun and is worth a pass one day for its own sake, not
+as a way of reaching this branch.
+
+### A headed window is a measurement you have to check
+
+A window is subject to the desktop it opens on in ways a headless one is not: a
+viewport taller than the screen less its chrome is silently shrunk, and an
+occluded or unfocused window has its frame callbacks throttled, which produces
+numbers that look like data. So every script here prints what it actually got —
+visibility, focus, the canvas size, the device pixel ratio and the median rAF
+interval — beside what it asked for, and the refresh rate is a first-class
+number in the tables rather than an assumption, because the whole question is
+what the frame period is.

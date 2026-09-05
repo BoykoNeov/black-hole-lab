@@ -23,7 +23,9 @@ import {
 import { GpuTimer, compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
 import {
   ACCUM_MAX,
+  FRAME_RING,
   autoStep,
+  budgetFps,
   jitterOffset,
   makeAutoState,
   quantizeScale,
@@ -252,6 +254,27 @@ let accumN = 0;
 const sceneMsRing = new Float64Array(16).fill(NaN);
 let sceneMsAt = 0;
 let sceneMs = NaN;
+/**
+ * The last reading as the GPU gave it, before the ring's minimum hides it, and
+ * a count of readings so far. The minimum is what the readout and the
+ * controller want; the raw sequence is what a study of the stalls needs, and it
+ * cannot be recovered from the minimum — a run of stalls shorter than the ring
+ * never shows there at all. The count exists because `poll` returns null on
+ * most frames: without it a per-frame sampler cannot tell a fresh reading from
+ * the previous one still standing.
+ */
+let rawMs = NaN;
+let rawTag = -1;
+let rawN = 0;
+/**
+ * Intervals between DRAWN frames, for the display-rate estimate the controller
+ * budgets against (see budgetFps). Skipped frames leave lastFrameT alone, so
+ * these are the cadence the renderer actually achieved, which is the limit's
+ * own period whenever the limit is what paces it and the display's period
+ * whenever it is not.
+ */
+const frameMsRing = new Float64Array(FRAME_RING).fill(NaN);
+let frameMsAt = 0;
 /**
  * Counts render-target reallocations. A timer reading is tagged with the
  * generation it was drawn in and lands frames later; only readings from the
@@ -866,6 +889,7 @@ function render() {
   const frameBefore = lastFrameT; // the fallback cost reading below wants the raw period
   const dtReal = Math.min((now0 - lastFrameT) * 0.001, 0.1);
   lastFrameT = now0;
+  frameMsRing[frameMsAt++ % frameMsRing.length] = now0 - frameBefore;
   // gates the trail pushes below, which happen in the loops that build the
   // uniforms — those run every frame, but a frozen clock has no path to record
   let stepped = false;
@@ -1104,17 +1128,24 @@ function render() {
   // in one direction only.
   const timed = gpuTimer.poll();
   if (timed !== null) {
+    rawMs = timed.ms;
+    rawTag = timed.tag;
+    rawN++;
     sceneMsRing[sceneMsAt++ % sceneMsRing.length] = timed.ms;
     sceneMs = Infinity;
     for (const v of sceneMsRing) if (v < sceneMs) sceneMs = v;
   }
   const adaptive = params.quality === "auto" && stillFrames < STILL_FRAMES;
   if (adaptive && !converged) {
+    // Not params.fpsLimit: a limit above the display's refresh rate is one the
+    // renderer already ignores, and budgeting for it shrinks the picture to buy
+    // frames that are never shown. See budgetFps.
+    const target = budgetFps(params.fpsLimit, frameMsRing);
     if (gpuTimer.available) {
       if (timed !== null && timed.tag === allocGen)
-        autoStep(autoState, timed.ms, params.fpsLimit, true);
+        autoStep(autoState, timed.ms, target, true);
     } else {
-      autoStep(autoState, now0 - frameBefore, params.fpsLimit, false);
+      autoStep(autoState, now0 - frameBefore, target, false);
     }
   }
 
@@ -1783,12 +1814,20 @@ function render() {
     __layout?: unknown;
     __frames?: number;
     __sceneMs?: number;
+    __sceneMsRaw?: number;
+    __sceneMsTag?: number;
+    __sceneMsN?: number;
     __sceneScale?: number;
   };
   // dev hook: the GPU's latest reading of the scene pass and the scale in
   // force, so a harness can watch the auto preset settle instead of reading
   // the readout's half-second samples of it
   w.__sceneMs = sceneMs;
+  // dev hook: the same readings unsmoothed, with the target generation they
+  // measured and a count to deduplicate on (see rawMs)
+  w.__sceneMsRaw = rawMs;
+  w.__sceneMsTag = rawTag;
+  w.__sceneMsN = rawN;
   w.__sceneScale = sceneFbo.w / Math.max(1, Math.floor(canvas.clientWidth * Math.min(window.devicePixelRatio || 1, MAX_DPR)));
   // dev hook: a monotonic count of frames actually DRAWN, so a headless
   // harness can wait for the renderer instead of for the clock — under

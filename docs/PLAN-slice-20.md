@@ -185,6 +185,17 @@ tick fit must not move.
 
 ## Item 3 — the auto preset on a real display
 
+**Done (2026-09-06), and it found a bug in the shipped controller.** The stalls
+this item was written to re-examine do not reproduce in either kind of window,
+so `AUTO.window` is unchanged and the minimum-of-a-window rule is a precaution
+rather than a fix. What a real window did expose is that the controller budgeted
+against the fps slider rather than against the display: on a 144 Hz panel a
+limit above the refresh rate read as permanently over budget, and without a GPU
+timer the render scale collapsed to 0.35 and stayed. `budgetFps` in
+`src/adaptive.ts` clamps the budgeted rate to the display's own. See
+`docs/ROADMAP.md` 20a-20d for the short form and `docs/DESIGN.md`'s slice 20
+section for the measurements. The plan as written follows, for the record.
+
 ### Why
 
 Everything slice 19 measured about the GPU timer came from headless chromium,

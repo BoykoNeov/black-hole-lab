@@ -378,6 +378,50 @@ Units are geometrized (G = c = M = 1) throughout.
       zero at five views, hairlines to 0.027 half-turns, disk light 0.10 against
       0.0000 ✅
 
+20. **The auto preset in front of a real monitor** — slice 19's rendering
+    follow-ups, taken in the order its plan argued for. Items 1 and 2 were
+    chased and closed with no code change (below); item 3 found a bug in the
+    shipped controller and fixed it ✅
+    - 20a the harness can open a real window (`LAB_HEADED=1`) and can withhold
+      the GPU timer extension from the page on hardware that has it
+      (`LAB_NO_TIMER=1`), which is how the Firefox/Safari branch was exercised
+      with only one variable changed. Dev hooks `__sceneMsRaw`, `__sceneMsTag`
+      and `__sceneMsN` publish the timer's readings unsmoothed — `__sceneMs` is
+      the minimum of sixteen, which is exactly what hides a run of stalls ✅
+    - 20b the frame-pacing stalls that shaped slice 19's controller do not
+      reproduce: 180 raw readings per condition, headless and headed, at
+      1920×1080 and 1280×800, and nothing above 5.0 ms anywhere against true
+      costs of 4.5 / 2.6 / 1.1 ms. The costs themselves reproduce to the tenth
+      of a millisecond. Slice 19's raw sequences came from a throwaway patch —
+      `git log -S` puts the smoothing ring in the same commit as the hook — so
+      they were never re-runnable. `AUTO.window` = 16 is unchanged: the trigger
+      for raising it was runs longer than the window, and the longest run seen
+      is one ✅
+    - 20c **the controller budgeted for frames the display cannot show.**
+      `main.ts` turns its own frame gate off at a limit of 240 because rAF is
+      vsync-capped, but handed the slider's number to the controller as a
+      deadline anyway. On a 144 Hz panel, every window then read as over budget
+      however small the picture got — shrinking the render cannot shorten a
+      frame waiting for vsync. Without a GPU timer that walked the render scale
+      to the bottom of its range (0.35, a quarter-resolution picture) in two
+      seconds and held it there at a perfect 144 fps; with one it gave away a
+      step or two (0.85). It is the refresh rate, not the top-of-slider
+      sentinel: limits of 200 and 239 collapsed too, 144 did not.
+      `budgetFps` budgets against the user's limit or the display's own,
+      whichever is lower, with no new controller state — the display's rate is
+      read off the intervals between drawn frames, which are the limit's own
+      period whenever the limit binds, so the clamp is a no-op exactly where it
+      should be. Second-smallest interval rather than smallest (one spurious
+      short frame would switch the clamp off), floored at 60 Hz (believing a
+      slow GPU's rate is the display's is a deadlock in which nothing is ever
+      over budget). After: 1.00 at every limit on both paths, and still 0.95 at
+      3840×2160 where the GPU genuinely is the slower party ✅
+    - 20d all three visual runs green, unit tests 323 green. The three harness
+      scripts live in `M:\claud_projects\temp\blackhole-perf\` —
+      `headed-timer.mjs` (raw readings), `headed-settle.mjs` (the preset
+      settling), `fallback-sweep.mjs` and `arming-race.mjs` (the bug and its
+      trajectory) ✅
+
 ## Open hurdles
 
 Each entry: what is approximate, how big the error is, and the concrete path
@@ -557,14 +601,12 @@ Every entry in the register above is closed, by design, or measured and found
 not to be a problem, so what is queued is rendering rather than physics. Slice
 19 left a plan for it — `docs/PLAN-slice-20.md`, written to be executed
 step by step, with the measurement each step has to pass — and this is the
-short form, in the order it argues for. Its first two items — the sky as a
-cubemap, and the seam right of the shadow — were chased and closed without a
-code change; both are below with the rest of what was tried and not kept.
+short form, in the order it argues for. Its first three items are done: the
+sky as a cubemap and the seam right of the shadow were chased and closed
+without a code change (both below, with the rest of what was tried and not
+kept), and the auto preset on a real display is slice 20c above — it found the
+controller budgeting for frames no display could show and fixed it.
 
-- **The auto preset on a real display.** Every number in 19b is from headless
-  chromium, whose frame pacing is not a monitor's. The plan has the
-  measurement to run in a real browser window and what to change if the
-  stalls look different there.
 - **Skipping the bloom, composite and HUD too** once a still picture has
   converged and nothing overlaid has changed — the march is already skipped,
   which is most of the cost, so this is a small idle-power item.
