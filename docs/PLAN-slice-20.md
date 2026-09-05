@@ -31,6 +31,19 @@ and about idle cost.
 
 ## Item 1 — the sky as a cubemap
 
+**Done, and rejected on its own measurement (2026-09-05).** It was built as
+written below — a bake pass over the six faces, the shared GLSL both shaders
+include, 4×4 sub-samples a texel, RGBA16F at 1024 a face, an explicit mip
+level from the pixel's angle — and then reverted, because the cost is not
+where this item assumed. With lensing off, so that nothing hides it, the WHOLE
+procedural sky costs 0.11 ms at 1920×1080 and the cubemap draws it in 0.07 ms:
+0.04 ms is the ceiling, against a 4.2 ms frame. The two other reasons inverted
+as well — the star floor moves rather than retires, and the mip chain caps the
+sky's sharpness below what the floor draws now. `docs/ROADMAP.md` carries the
+numbers and `docs/DESIGN.md` the floor argument; the implementation is kept as
+`M:\claud_projects\temp\blackhole-perf\
+slice20-item1-cubemap.patch`. Do not start it fresh.
+
 ### Why
 
 Every ray that escapes the hole evaluates `skyColor` once: three octaves of

@@ -1866,6 +1866,29 @@ half-resolution frame draws each star at the same screen size as the full one.
 The other half of the residual is the lensed star texture around the ring,
 which the floor cannot reach and the refinement does.
 
+### The floor a cubemap would not have retired
+
+Slice 20's plan expected this floor to go away: bake the sky into a cubemap and
+the mip chain averages over the pixel properly, by hand no longer. Building it
+showed the opposite. Mipmapping averages the cubemap's BASE level, and no
+average can recover flux that level never sampled — at the finest octave
+(`sc` = 370) a star is about a sixteenth of a texel across at 1024 texels a
+face, so an unfloored bake would have frozen the same lottery into the texture
+permanently instead of ending it. The floor moves rather than goes: it measures
+a screen pixel when the scene pass draws the sky, and a cube-face texel when a
+bake does.
+
+The other half of that plan's reasoning inverts too. A cubemap is
+resolution-independent in the sense that the sky stops changing with the
+camera, but bilinear reconstruction holds its detail to about one texel —
+2e-3 rad here, wider than the 0.7 px this floor draws at any resolution the lab
+runs at. The sky it gives back is honest in flux (0.6%) and twice as soft in
+the stars: 12.7 codes from the procedural sky over the sky region, where a
+plain single-sample frame is 4.5 codes from the converged truth. The cubemap
+was reverted for its cost rather than for this — see `docs/ROADMAP.md` — but
+this is the half that would have been a regression even if the cost had been
+worth having.
+
 ### The auto preset, and what the GPU timer turned out to measure
 
 Render scale is the lever the presets already pull; the auto preset measures

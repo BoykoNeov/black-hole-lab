@@ -557,13 +557,10 @@ Every entry in the register above is closed, by design, or measured and found
 not to be a problem, so what is queued is rendering rather than physics. Slice
 19 left a plan for it — `docs/PLAN-slice-20.md`, written to be executed
 step by step, with the measurement each step has to pass — and this is the
-short form, in the order it argues for:
+short form, in the order it argues for. Its first item, the sky as a cubemap,
+was built and then measured away; it is below with the rest of what was tried
+and not kept.
 
-- **The sky as a cubemap.** Every escaped ray still evaluates three octaves of
-  hashed stars and two fbm nebula fields per frame, for a sky that never
-  changes; a cubemap rendered once, sampled with mipmaps, would make the sky
-  resolution-independent (no star floor needed) and take that cost off every
-  frame. The plan says how to keep `npm run pol` and `npm run band` blind to it.
 - **A hard seam in the disk right of the shadow** at the default camera: a
   vertical discontinuity in the disk's texture, visible in a 3× crop, most
   likely a gas tail's end. Slice 19 saw it and did not chase it.
@@ -576,8 +573,49 @@ short form, in the order it argues for:
   which is most of the cost, so this is a small idle-power item.
 - **Touch: pinch to zoom.** The camera zooms on the wheel only.
 
-Two things earlier slices measured and deliberately did not act on, in case
-they read as gaps later:
+Three things measured and deliberately not acted on, in case they read as gaps
+later:
+
+- **The sky as a cubemap was built, measured and taken back out.** The plan's
+  first item — bake the starfield and the Milky Way into a cubemap once,
+  sample that per frame — was implemented in full and reverted, because the
+  cost it removes is not there. The sky is evaluated once per ESCAPED ray, at
+  the END of a march that costs up to 320 RK4 steps, so it is a rounding error
+  beside the march. At 1920×1080 on an RTX 5090 the scene pass reads 4.18 ms
+  with everything on and 4.09 ms with the cubemap; 2.26 ms with the disk, stars,
+  gas and jet off and 2.16 ms with it. The reading that settles it is the one
+  with LENSING off, where the march is skipped and nothing hides the sky: the
+  whole procedural sky costs 0.11 ms and the cubemap draws it in 0.07 ms. That
+  0.04 ms is the ceiling on this optimization at 1080p, about 1% of a frame,
+  and the plan's estimated 10-25% was measured against the wrong denominator.
+
+  **Two of the plan's other reasons did not survive either, and both
+  corrections are worth keeping.** The star-size floor does NOT retire:
+  mipmapping averages the cubemap's base level, and averaging cannot recover
+  flux that level never sampled — at the finest octave a star is about a
+  sixteenth of a texel across, so an unfloored bake freezes slice 19's
+  sub-sample lottery into the texture rather than ending it. The floor moves
+  instead of going, from a screen pixel to a cube-face texel. And
+  "resolution-independent" is a sharpness CAP rather than a gain: bilinear
+  reconstruction of the base level holds sky detail to about one texel, 2e-3
+  rad at 1024 texels a face, which is SOFTER than the 0.7 px the floor draws
+  today at every resolution this lab runs at. Measured at 1280×800, a
+  converged frame off the cubemap sits 12.7 codes from a converged procedural
+  one over the sky — against the 4.5 codes that separate a plain single-sample
+  frame from the converged truth (see `docs/DESIGN.md`) — with total sky
+  luminance matching to 0.6%. The flux is right; the stars are about twice as
+  wide.
+
+  Against 0.04 ms it also wanted 67 MB of video memory (1024 a face, RGBA16F,
+  with its mip chain), on the weakest machine the auto preset exists for.
+  `M:\claud_projects\temp\blackhole-perf\sky-cost.mjs` and `sky-bake.mjs` are
+  the two measurements, and `slice20-item1-cubemap.patch` beside them is the
+  working implementation, kept so this does not have to be built again to be
+  disbelieved.
+
+  **The general lesson, for the rest of that plan:** the march is ~95% of the
+  scene pass. A rendering item that does not touch the march cannot change the
+  cost much, whatever it does per pixel.
 
 - **`npm run band` has still not been run under software GL.** Slice 17 said so
   and it is still true; slices 18 and 19 added checks to that harness rather
