@@ -102,6 +102,8 @@ precision highp int;
 
 uniform vec2 uResolution;    // size of the viewport being drawn, NOT the frame
 uniform vec2 uViewOrigin;    // its lower-left corner; (0,0) unless comparing
+uniform vec2 uJitter;        // sub-pixel offset of this frame's rays (slice 19 refinement)
+uniform float uPixAng;       // angle one pixel of this viewport subtends at the frame's centre
 uniform vec3 uCamPos;
 uniform vec3 uCamRight;
 uniform vec3 uCamUp;
@@ -184,6 +186,16 @@ float fbm(vec3 p) {
 }
 
 // ---------- sky ----------
+// A star narrower than a pixel is drawn no narrower than one (slice 19). Its
+// gaussian is sampled once per pixel, so a star a fifth of a pixel wide is
+// either caught near its peak or missed, at random, by where the pixel's
+// centre happens to fall — and that lottery is re-drawn every time the camera
+// moves, which is the twinkle. Widening it to the pixel and dimming by the
+// same factor squared keeps its total light where it was, so the sky carries
+// the same flux with none of the shimmer, and reads the same at every render
+// scale: the floor is in pixels of THIS viewport, so a half-resolution frame
+// draws each star at the same screen size as the full one.
+const float STAR_MIN_PX = 0.7;
 vec3 starfield(vec3 d) {
   vec3 col = vec3(0.0);
   float sc = 70.0;
@@ -200,7 +212,8 @@ vec3 starfield(vec3 d) {
       float q = (m - cut) / max(1.0 - cut, 1e-3);
       float bright = pow(q, 5.0) * 60.0 + 0.4;
       float size = 0.045 + 0.05 * hash13(id + 9.0);
-      float g = exp(-dist * dist / (size * size));
+      float drawn = max(size, STAR_MIN_PX * uPixAng * sc);
+      float g = exp(-dist * dist / (drawn * drawn)) * (size * size) / (drawn * drawn);
       float ct = hash13(id + 3.0);
       vec3 tint = ct < 0.35 ? mix(vec3(1.0), vec3(0.62, 0.72, 1.0), (0.35 - ct) * 2.0)
                             : mix(vec3(1.0), vec3(1.0, 0.75, 0.55), (ct - 0.35) * 1.1);
@@ -1077,7 +1090,9 @@ void flatCrossing(vec3 p, vec3 v, inout vec3 accum, inout float thru) {
 void main() {
   // Relative to the viewport, not the window: compare mode draws this pass
   // twice into one target, and gl_FragCoord stays in window coordinates.
-  vec2 ndc = ((gl_FragCoord.xy - uViewOrigin) / uResolution) * 2.0 - 1.0;
+  // uJitter is zero on an ordinary frame; a still picture being refined shifts
+  // every ray by a sub-pixel offset per frame and averages the frames.
+  vec2 ndc = ((gl_FragCoord.xy + uJitter - uViewOrigin) / uResolution) * 2.0 - 1.0;
   float aspect = uResolution.x / uResolution.y;
   vec3 v = normalize(uCamFwd
                      + ndc.x * uTanHalfFov * aspect * uCamRight
@@ -1589,8 +1604,72 @@ uniform float uTicks;      // 1 = draw slice 10's polarization ticks
 uniform vec2 uFrame;       // frame size in device pixels
 uniform float uTickPitch;  // tick spacing, device pixels
 uniform float uSplitX;     // compare mode's divider in device pixels, else -1
+uniform vec2 uSceneSize;   // the scene target's size in texels (<= uFrame)
+uniform float uUpscale;    // 1 = the scene is smaller than the frame: resample it sharply
 in vec2 vUv;
 out vec4 outColor;
+
+/**
+ * The scene, resampled to the frame (slice 19). The march runs at the render
+ * scale and this pass at the frame's own size, so below scale 1 the scene has
+ * to be enlarged here — and a bilinear stretch, which is what the browser did
+ * to the whole canvas before, blurs the photon ring into a smear at the medium
+ * and low presets. Catmull-Rom keeps edges: nine bilinear fetches at offsets
+ * that fold the 4x4 kernel's weights into the hardware filter.
+ *
+ * Its lobes go negative, and on HDR values next to a ring a thousand times
+ * brighter than the sky that is a dark halo a texel wide. So the result is
+ * clamped to the range of the four texels around the sample point, which is
+ * the standard anti-ringing guard: no new extremum can appear that the
+ * neighbourhood did not contain.
+ *
+ * At scale 1 the weights reduce to (0, 1, 0, 0) and this is the identity, but
+ * that is not relied on — uUpscale routes the full-resolution frame through
+ * the single fetch it always had, so the harness measures the pixels the
+ * march drew and nothing derived from them.
+ */
+vec3 sceneAt(vec2 uv) {
+  if (uUpscale < 0.5) return texture(uScene, uv).rgb;
+  vec2 pos = uv * uSceneSize;
+  vec2 tc = floor(pos - 0.5) + 0.5;
+  vec2 f = pos - tc;
+  vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+  vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+  vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+  vec2 w3 = f * f * (-0.5 + 0.5 * f);
+  vec2 w12 = w1 + w2;
+  vec2 t0 = (tc - 1.0) / uSceneSize;
+  vec2 t3 = (tc + 2.0) / uSceneSize;
+  vec2 t12 = (tc + w2 / w12) / uSceneSize;
+  vec3 c = texture(uScene, vec2(t0.x, t0.y)).rgb * (w0.x * w0.y)
+         + texture(uScene, vec2(t12.x, t0.y)).rgb * (w12.x * w0.y)
+         + texture(uScene, vec2(t3.x, t0.y)).rgb * (w3.x * w0.y)
+         + texture(uScene, vec2(t0.x, t12.y)).rgb * (w0.x * w12.y)
+         + texture(uScene, vec2(t12.x, t12.y)).rgb * (w12.x * w12.y)
+         + texture(uScene, vec2(t3.x, t12.y)).rgb * (w3.x * w12.y)
+         + texture(uScene, vec2(t0.x, t3.y)).rgb * (w0.x * w3.y)
+         + texture(uScene, vec2(t12.x, t3.y)).rgb * (w12.x * w3.y)
+         + texture(uScene, vec2(t3.x, t3.y)).rgb * (w3.x * w3.y);
+  ivec2 i0 = ivec2(tc - 0.5);
+  ivec2 hi = ivec2(uSceneSize) - 1;
+  vec3 a = texelFetch(uScene, clamp(i0, ivec2(0), hi), 0).rgb;
+  vec3 b = texelFetch(uScene, clamp(i0 + ivec2(1, 0), ivec2(0), hi), 0).rgb;
+  vec3 cc = texelFetch(uScene, clamp(i0 + ivec2(0, 1), ivec2(0), hi), 0).rgb;
+  vec3 d = texelFetch(uScene, clamp(i0 + ivec2(1, 1), ivec2(0), hi), 0).rgb;
+  return clamp(c, min(min(a, b), min(cc, d)), max(max(a, b), max(cc, d)));
+}
+
+/**
+ * Half a code of noise before the 8-bit quantization (slice 19). The sky's
+ * nebula and the disk's fading rim are gradients a few codes deep across the
+ * whole frame, and without this they band into visible contour lines. Keyed
+ * to the pixel and nothing else, so a frozen frame is the same frame every
+ * time — the harness differences frames of one scene, and a dither that
+ * moved would read as ink.
+ */
+float ditherAt(vec2 pix) {
+  return fract(52.9829189 * fract(dot(pix, vec2(0.06711056, 0.00583715)))) - 0.5;
+}
 
 /**
  * Polarization ticks, drawn after the tone curve so the disk's brightness
@@ -1648,10 +1727,11 @@ vec3 ticks(vec3 c, vec2 pix) {
 }
 
 void main() {
-  vec3 c = texture(uScene, vUv).rgb + uBloom * texture(uBloomTex, vUv).rgb;
+  vec3 c = sceneAt(vUv) + uBloom * texture(uBloomTex, vUv).rgb;
   c *= uExposure;
   c = (c * (2.51 * c + 0.03)) / (c * (2.43 * c + 0.59) + 0.14); // ACES approx
   c = pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2));
   if (uTicks > 0.5) c = ticks(c, vUv * uFrame);
+  c += ditherAt(floor(vUv * uFrame)) / 255.0;
   outColor = vec4(c, 1.0);
 }`;

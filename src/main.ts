@@ -20,7 +20,14 @@ import {
   stepTde,
   type TdeState,
 } from "./tde";
-import { compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
+import { GpuTimer, compileProgram, createFbo, destroyFbo, type Fbo } from "./gl";
+import {
+  ACCUM_MAX,
+  autoStep,
+  jitterOffset,
+  makeAutoState,
+  quantizeScale,
+} from "./adaptive";
 import {
   COMPARE_GUTTER,
   COMPARE_SPIN_LEFT,
@@ -131,7 +138,13 @@ const MAX_DPR = 1.5;
 // which is worth it only when halving the resolution wasn't enough. The bloom
 // pyramid is left alone at every tier: it runs on quarter-res and down, so it
 // is not where the time goes.
-type Quality = "low" | "medium" | "high";
+//
+// "auto" (slice 19) has no fixed scale: it is whatever adaptive.ts's controller
+// has settled on to keep the scene pass inside its share of the frame-rate
+// limit, measured by GPU timer where the browser has one — and full
+// resolution whenever the picture is still, since a still picture is being
+// refined and nobody is waiting on it.
+type Quality = "low" | "medium" | "high" | "auto";
 // medium/high spend the shader's whole march budget; only low shortens it, and
 // MARCH_MAX_STEPS is the loop's own bound, so raising these past it does
 // nothing. They share the constant rather than repeating 320 for that reason.
@@ -139,7 +152,17 @@ const QUALITY: Record<Quality, { scale: number; maxSteps: number; stepScale: num
   low: { scale: 0.5, maxSteps: MARCH_MAX_STEPS / 2, stepScale: 1.6 },
   medium: { scale: 0.72, maxSteps: MARCH_MAX_STEPS, stepScale: 1.0 },
   high: { scale: 1.0, maxSteps: MARCH_MAX_STEPS, stepScale: 1.0 },
+  auto: { scale: NaN, maxSteps: MARCH_MAX_STEPS, stepScale: 1.0 },
 };
+
+/**
+ * Frames a picture has to stay unchanged before it counts as still. One would
+ * do for the refinement itself — every change resets it anyway — but the auto
+ * preset also lifts a still picture to full resolution, and that reallocates
+ * the render target, which should not happen between two frames of a slider
+ * drag.
+ */
+const STILL_FRAMES = 4;
 
 // rAF is already vsync-capped, so a limit at or above the refresh rate is a
 // no-op; the top of the slider means "don't limit" without a magic sentinel.
@@ -174,7 +197,20 @@ function drawQuad() {
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 }
 
-const U = (p: WebGLProgram, n: string) => gl.getUniformLocation(p, n);
+// Uniform locations are looked up by name once per program and kept: the
+// scene pass sets ~45 of them per draw, twice per frame while comparing, and
+// each lookup is a string search through the driver for an answer that never
+// changes.
+const uniformCache = new Map<WebGLProgram, Map<string, WebGLUniformLocation | null>>();
+const U = (p: WebGLProgram, n: string) => {
+  let m = uniformCache.get(p);
+  if (!m) uniformCache.set(p, (m = new Map()));
+  let loc = m.get(n);
+  if (loc === undefined) m.set(n, (loc = gl.getUniformLocation(p, n)));
+  return loc;
+};
+
+const gpuTimer = new GpuTimer(gl);
 
 // ---------- framebuffers ----------
 let sceneFbo: Fbo | null = null;
@@ -187,6 +223,8 @@ function allocateTargets(w: number, h: number) {
   // the polarization falls out of the march the scene pass already ran, so it
   // rides along rather than paying for a second one.
   sceneFbo = createFbo(gl, w, h, hdr, true);
+  accumN = 0; // a fresh target holds nothing worth averaging into
+  allocGen++;
   bloomFbos = [];
   for (let i = 0; i < BLOOM_LEVELS; i++) {
     const s = 2 << i; // 2, 4, 8, 16, 32
@@ -194,18 +232,60 @@ function allocateTargets(w: number, h: number) {
   }
 }
 
+// ---------- adaptive scale and still-picture refinement (slice 19) ----------
+const autoState = makeAutoState(1);
+/** Frames the scene has drawn the same picture; see STILL_FRAMES. */
+let stillFrames = 0;
+/** What the last frame's scene pass depended on; a change resets refinement. */
+let lastSceneKey = "";
+/**
+ * Samples averaged into the scene target so far: 1 after an ordinary frame.
+ * Above ACCUM_MAX the picture is converged and the march is skipped entirely,
+ * which is also what lets a paused lab idle at nearly no GPU cost.
+ */
+let accumN = 0;
+/**
+ * The GPU's recent readings of the scene pass, for the readout, which shows
+ * the smallest of them: the span stalls on frame pacing some frames and then
+ * reads the whole frame period, and a stall is not a cost. See AUTO.window.
+ */
+const sceneMsRing = new Float64Array(16).fill(NaN);
+let sceneMsAt = 0;
+let sceneMs = NaN;
+/**
+ * Counts render-target reallocations. A timer reading is tagged with the
+ * generation it was drawn in and lands frames later; only readings from the
+ * CURRENT target feed the controller, since the others measured a different
+ * scale, and after a step up they would read cheaper than the new one is.
+ */
+let allocGen = 0;
+const jitter: [number, number] = [0, 0];
+
+/** The render scale the current preset asks for this frame. */
+function sceneScale(): number {
+  if (params.quality !== "auto") return QUALITY[params.quality].scale;
+  // A still picture is being refined, not waited on: give it every pixel.
+  return stillFrames >= STILL_FRAMES ? 1 : autoState.scale;
+}
+
 function resize() {
   const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
-  // The render scale applies to the GL target only; CSS stretches it back to
-  // full size. The HUD is its own canvas and keeps the true DPR, so overlay
-  // text stays sharp even when the scene behind it is rendered at half res.
-  const glScale = dpr * QUALITY[params.quality].scale;
-  const w = Math.floor(canvas.clientWidth * glScale);
-  const h = Math.floor(canvas.clientHeight * glScale);
+  // The canvas is always the frame's own size: the composite pass runs at full
+  // resolution and resamples the scene target up itself (see FS_COMPOSITE's
+  // sceneAt), which is what keeps the medium and low presets sharp — before
+  // slice 19 the canvas was the scene's size and the browser stretched it. The
+  // render scale applies to the scene target alone. The HUD is its own canvas
+  // at the same DPR, so overlay text is sharp at every setting.
+  const w = Math.floor(canvas.clientWidth * dpr);
+  const h = Math.floor(canvas.clientHeight * dpr);
   if (w > 0 && h > 0 && (canvas.width !== w || canvas.height !== h)) {
     canvas.width = w;
     canvas.height = h;
-    allocateTargets(w, h);
+  }
+  const sw = Math.floor(canvas.clientWidth * dpr * sceneScale());
+  const sh = Math.floor(canvas.clientHeight * dpr * sceneScale());
+  if (sw > 0 && sh > 0 && (!sceneFbo || sceneFbo.w !== sw || sceneFbo.h !== sh)) {
+    allocateTargets(sw, sh);
   }
   resizeHud(hudCtx.canvas, canvas.clientWidth, canvas.clientHeight, dpr);
 }
@@ -240,6 +320,7 @@ const params = {
   coupleT: true, // disk temperature/brightness follow mass & mdot
   quality: "high" as Quality, // must match the selected <option> in index.html
   fpsLimit: 60, // redraw cap; must match index.html's #fpslimit value
+  refine: true, // average jittered frames while the picture is still (slice 19)
   // Split-screen a = 0 vs a = spin (slice 7)
   compare: false,
   // Learn overlays (slice 6) — bound in 6a, consumed by later sub-slices
@@ -683,10 +764,19 @@ bindCheckbox("edu-potential", (v) => (params.eduPotential = v));
 bindCheckbox("edu-embed", (v) => (params.eduEmbed = v));
 
 bindNumField("fpslimit", (v) => (params.fpsLimit = v));
+bindCheckbox("refine", (v) => (params.refine = v));
 // No reallocation needed here: resize() runs at the top of every frame and
 // picks the new render scale up on its own.
 const qualitySel = document.getElementById("quality") as HTMLSelectElement;
-const applyQuality = () => (params.quality = qualitySel.value as Quality);
+const applyQuality = () => {
+  const was = params.quality;
+  params.quality = qualitySel.value as Quality;
+  // Auto starts from where the fixed preset left it rather than from full
+  // resolution: a user switching from low is asking for the frame rate low
+  // gave them, and the controller only ever moves one step per window.
+  if (params.quality === "auto" && was !== "auto")
+    autoState.scale = quantizeScale(QUALITY[was].scale);
+};
 qualitySel.addEventListener("change", applyQuality);
 applyQuality();
 
@@ -707,6 +797,9 @@ const distReadout = document.getElementById("dist-readout")!;
 const physReadout = document.getElementById("phys-readout")!;
 const tdeReadout = document.getElementById("tde-readout")!;
 const fpsReadout = document.getElementById("fps-readout")!;
+const setText = (el: HTMLElement, text: string) => {
+  if (el.textContent !== text) el.textContent = text;
+};
 
 // ---------- render loop ----------
 let frames = 0;
@@ -770,6 +863,7 @@ function render() {
 
   // advance simulation time and the gas blobs
   const now0 = performance.now();
+  const frameBefore = lastFrameT; // the fallback cost reading below wants the raw period
   const dtReal = Math.min((now0 - lastFrameT) * 0.001, 0.1);
   lastFrameT = now0;
   // gates the trail pushes below, which happen in the loops that build the
@@ -974,6 +1068,56 @@ function render() {
     updateShadow(shadowSlider, params.spin, viewSlider);
   }
 
+  // ---- is the picture still? (slice 19) ----
+  // Everything the scene pass reads, as one string: a change in any of it is
+  // a new picture, and the frames of a new picture cannot be averaged with the
+  // old one's. Bloom, exposure and the HUD overlays are deliberately absent —
+  // they are applied downstream of the scene target, so they can move without
+  // throwing the samples away. Nor is the target's size in here: the auto
+  // preset changes it BECAUSE the picture went still, and a key that noticed
+  // would call that a change and undo it every other frame.
+  const sceneKey =
+    `${camera.yaw},${camera.pitch},${camera.dist},${camera.fovDeg},${simT},` +
+    `${params.lensing},${params.starDensity},${params.sky},${params.disk},` +
+    `${params.doppler},${effTempK},${effBright},${params.diskOuter},${params.stars},` +
+    `${params.gas},${params.jets},${params.jetPower},${params.spin},${params.compare},` +
+    `${params.eduLadder},${params.eduPolarization},${tdeN}`;
+  if (sceneKey === lastSceneKey) stillFrames++;
+  else {
+    stillFrames = 0;
+    lastSceneKey = sceneKey;
+  }
+  // The sample this frame contributes: 1 is a plain frame and overwrites the
+  // target; higher ones are jittered and blended in at 1/n, so the target is
+  // the running mean. Past ACCUM_MAX the mean is converged and the march is
+  // not run at all — the bloom and composite below read the target as it is.
+  if (!(params.refine && stillFrames > 0)) accumN = 0;
+  const converged = accumN >= ACCUM_MAX;
+  if (!converged) accumN++;
+  jitterOffset(accumN - 1, jitter);
+
+  // The GPU's reading of a scene pass from a few frames back. Only the auto
+  // preset's ADAPTIVE frames feed the controller: a still frame drawn at full
+  // resolution for refinement costs more by design, and judging the scale on
+  // it would pull the scale down for the frames that are not still. Without
+  // a timer, the frame period stands in, which the controller knows to trust
+  // in one direction only.
+  const timed = gpuTimer.poll();
+  if (timed !== null) {
+    sceneMsRing[sceneMsAt++ % sceneMsRing.length] = timed.ms;
+    sceneMs = Infinity;
+    for (const v of sceneMsRing) if (v < sceneMs) sceneMs = v;
+  }
+  const adaptive = params.quality === "auto" && stillFrames < STILL_FRAMES;
+  if (adaptive && !converged) {
+    if (gpuTimer.available) {
+      if (timed !== null && timed.tag === allocGen)
+        autoStep(autoState, timed.ms, params.fpsLimit, true);
+    } else {
+      autoStep(autoState, now0 - frameBefore, params.fpsLimit, false);
+    }
+  }
+
   // Scene -> HDR target
   gl.bindFramebuffer(gl.FRAMEBUFFER, sceneFbo.fb);
   gl.useProgram(progScene);
@@ -998,6 +1142,8 @@ function render() {
     gl.viewport(view.x, view.y, view.w, view.h);
     gl.uniform2f(U(progScene, "uResolution"), view.w, view.h);
     gl.uniform2f(U(progScene, "uViewOrigin"), view.x, view.y);
+    gl.uniform2f(U(progScene, "uJitter"), jitter[0], jitter[1]);
+    gl.uniform1f(U(progScene, "uPixAng"), (2 * tanHalfFov) / view.h);
     gl.uniform3fv(U(progScene, "uCamPos"), basis.pos);
     gl.uniform3fv(U(progScene, "uCamRight"), basis.right);
     gl.uniform3fv(U(progScene, "uCamUp"), basis.up);
@@ -1045,16 +1191,35 @@ function render() {
     drawQuad();
   };
 
-  if (params.compare) {
-    // Neither viewport covers the gutter, so without this it would keep
-    // whatever the last frame left there. Clears the whole target (clear is
-    // bounded by the scissor box, not the viewport) before the two draws
-    // overwrite everything either side of the gap.
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    drawSide(split.left, COMPARE_SPIN_LEFT, spinCtxSchw);
+  if (!converged) {
+    // Sample n > 1 is blended in at 1/n, which makes the target the running
+    // mean of every sample so far. Sample 1 overwrites: a plain replace, and
+    // not the blend at alpha 1, because the latter still multiplies whatever
+    // the target held by zero, and a fresh texture or a NaN in it would poison
+    // the mean rather than be discarded.
+    if (accumN > 1) {
+      gl.enable(gl.BLEND);
+      gl.blendColor(0, 0, 0, 1 / accumN);
+      gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_CONSTANT_ALPHA);
+    }
+    gpuTimer.begin(adaptive ? allocGen : -1);
+    if (params.compare) {
+      // Neither viewport covers the gutter, so without this it would keep
+      // whatever the last frame left there. Clears the whole target (clear is
+      // bounded by the scissor box, not the viewport) before the two draws
+      // overwrite everything either side of the gap. Only on a plain frame:
+      // clearing would throw a refinement's running mean away, and the gutter
+      // is already black from the plain frame the refinement started on.
+      if (accumN === 1) {
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+      }
+      drawSide(split.left, COMPARE_SPIN_LEFT, spinCtxSchw);
+    }
+    drawSide(viewSlider, params.spin, spinCtx);
+    gpuTimer.end();
+    gl.disable(gl.BLEND);
   }
-  drawSide(viewSlider, params.spin, spinCtx);
 
   // dev diagnostics (?dbg): scan render targets for NaN/Inf/negatives —
   // a single bad scene pixel smears black blocks through the bloom pyramid
@@ -1129,6 +1294,8 @@ function render() {
   gl.uniform1f(U(progComposite, "uExposure"), params.exposure);
   gl.uniform1f(U(progComposite, "uTicks"), params.eduPolarization ? 1 : 0);
   gl.uniform2f(U(progComposite, "uFrame"), canvas.width, canvas.height);
+  gl.uniform2f(U(progComposite, "uSceneSize"), sceneFbo.w, sceneFbo.h);
+  gl.uniform1f(U(progComposite, "uUpscale"), sceneFbo.w < canvas.width ? 1 : 0);
   gl.uniform1f(U(progComposite, "uTickPitch"), TICK_PITCH * (canvas.width / Math.max(canvas.clientWidth, 1)));
   // The ticks are drawn in device pixels over the whole frame, so compare
   // mode has to say where its divider is: a mark whose centre was traced on
@@ -1615,7 +1782,14 @@ function render() {
     __shotHud?: string;
     __layout?: unknown;
     __frames?: number;
+    __sceneMs?: number;
+    __sceneScale?: number;
   };
+  // dev hook: the GPU's latest reading of the scene pass and the scale in
+  // force, so a harness can watch the auto preset settle instead of reading
+  // the readout's half-second samples of it
+  w.__sceneMs = sceneMs;
+  w.__sceneScale = sceneFbo.w / Math.max(1, Math.floor(canvas.clientWidth * Math.min(window.devicePixelRatio || 1, MAX_DPR)));
   // dev hook: a monotonic count of frames actually DRAWN, so a headless
   // harness can wait for the renderer instead of for the clock — under
   // software GL a frame costs seconds, and any fixed millisecond wait is then
@@ -1639,6 +1813,11 @@ function render() {
       gl: { w: canvas.width, h: canvas.height },
       hud: { w: hudCtx.canvas.width, h: hudCtx.canvas.height },
       css: { w: canvas.clientWidth, h: canvas.clientHeight },
+      // The target the march ran on, which since slice 19 is the canvas's size
+      // only at scale 1; the split below is in ITS pixels.
+      scene: { w: sceneFbo.w, h: sceneFbo.h },
+      // How many jittered frames this one averages: 1 is a plain frame.
+      samples: accumN,
       split, // scene-target px, x/w only — y is gl.viewport's, which the HUD flips
       // What a ray needs to be re-launched outside the page: the camera the
       // frame was drawn with and the spin it was drawn at. Published rather
@@ -1662,14 +1841,20 @@ function render() {
     overlay.style.display = "none";
   }
 
-  // readouts
-  distReadout.textContent =
+  // readouts — written only when the text changes: replacing a text node
+  // every frame invalidates the panel's layout every frame, for a string that
+  // is usually the same one
+  setText(
+    distReadout,
     `r = ${camera.dist.toFixed(1)} M   r+ = ${spinCtx.rHor.toFixed(2)} M   ` +
-    `ISCO ${spinCtx.isco.toFixed(2)} M   t = ${simT.toFixed(0)} M`;
-  physReadout.textContent =
+      `ISCO ${spinCtx.isco.toFixed(2)} M   t = ${simT.toFixed(0)} M`
+  );
+  setText(
+    physReadout,
     `r+ = ${fmtSci(spinCtx.rHor * lengthKm(massMsun))} km   ` +
-    `1 M of time = ${fmtSci(timeSec(massMsun))} s   ` +
-    `T peak ${fmtSci(effTempK)} K (${bandLabel(effTempK)})`;
+      `1 M of time = ${fmtSci(timeSec(massMsun))} s   ` +
+      `T peak ${fmtSci(effTempK)} K (${bandLabel(effTempK)})`
+  );
   const hills = hillsMassMsun(spinCtx.rHor);
   let tdeText =
     `sun-like star: r_t = ${tidalRadiusM(massMsun).toFixed(1)} M   ` +
@@ -1690,11 +1875,22 @@ function render() {
           : `debris stream spreading, flare peak in ${Math.max(0, tde.tDisrupt! + FALLBACK_T0 - simT).toFixed(0)} M`);
     }
   }
-  tdeReadout.textContent = tdeText;
+  setText(tdeReadout, tdeText);
   frames++;
   const now = performance.now();
   if (now - fpsT0 > 500) {
-    fpsReadout.textContent = `${((frames * 1000) / (now - fpsT0)).toFixed(0)} fps`;
+    // What the frame is costing and at what size, beside the rate: the rate
+    // alone sits on the display's ceiling on any machine with headroom and
+    // says nothing about how much of it there is. The sample count shows the
+    // refinement working, and "converged" that the march has stopped.
+    let text = `${((frames * 1000) / (now - fpsT0)).toFixed(0)} fps`;
+    if (accumN >= ACCUM_MAX) text += ` · still, converged (${ACCUM_MAX} samples)`;
+    else {
+      if (Number.isFinite(sceneMs)) text += ` · scene ${sceneMs.toFixed(1)} ms`;
+      text += ` · ${sceneFbo.w}×${sceneFbo.h}`;
+      if (accumN > 1) text += ` · refining ${accumN}/${ACCUM_MAX}`;
+    }
+    setText(fpsReadout, text);
     frames = 0;
     fpsT0 = now;
   }

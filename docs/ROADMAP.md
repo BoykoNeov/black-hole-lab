@@ -330,8 +330,53 @@ Units are geometrized (G = c = M = 1) throughout.
       the shader, but no rendered frame checks it: the jet measurement runs with
       the disk off, which is the one condition under which that branch does not
       execute. And the per-step cost the continuation now pays wherever matter
-      is on is unmeasured — the frame-rate readout sits on the display's ceiling
-      either way, which that tool's own comment already calls an upper bound
+      is on was unmeasured — the frame-rate readout sat on the display's ceiling
+      either way. Slice 19's GPU timer closed that: at 1280×800 on an RTX 5090
+      the scene pass reads 2.6 ms with the ladder off and 2.8 ms with it on at
+      the pitch clamp, which `npm run band` now prints in place of the fps
+
+19. **Still pictures refined, moving ones scaled** — rendering, not physics:
+    every pixel that is drawn is marched exactly as before ✅
+    - 19a refinement: a still picture (paused or clock stopped, camera at rest,
+      no knob moving) traces each new frame through a different sub-pixel point
+      of every pixel (`adaptive.ts`'s `jitterOffset`, the R2 sequence) and
+      blends it into the scene target at 1/n, so the target is the running
+      mean. At 32 samples the march STOPS; a paused lab idles at the cost of the
+      bloom and the HUD. The photon ring's sub-rings, thinner than a pixel by
+      e^(−γ) each, resolve instead of aliasing. `npm run shot` measures it: 32
+      samples reached, 37-40% of pixels moved by more than 3 codes (the star
+      field and the lensed star texture around the ring), 0.9% by more than
+      150, mean |d| 10.6 over three channels ✅
+    - 19b the auto preset: the scene pass timed on the GPU
+      (`EXT_disjoint_timer_query_webgl2`) and the render scale held where its
+      cost fits 80% of the frame-rate limit's period, by the square-root cost
+      model. **The timer stalls, and that shaped the controller.** In headless
+      chromium the span reads its true 1-5 ms most frames and the whole 16.7 ms
+      frame period on the rest, in runs of up to eight and once longer than the
+      16-frame window: the GPU is waiting on frame pacing inside the span. A
+      median took those as cost and hunted the scale from 0.35 to 0.75 and
+      back every second; the MINIMUM of a window cannot be fooled by a stall,
+      which only ever adds, and with one decision capped at three steps down
+      the preset goes 1.0 → 0.85 → 0.8 against a 3.3 ms budget in seven
+      seconds and holds there, reading 2.8 ms, with no dip in a minute.
+      A still picture is lifted to full resolution regardless. Without a timer
+      (Firefox, Safari) the frame period stands in, trusted only when it is
+      over budget, with a step-up probe that backs off twice as long each time
+      it fails ✅
+    - 19c the canvas is the frame's own size and the composite resamples a
+      smaller scene target up itself (Catmull-Rom, clamped to the four nearest
+      texels against ringing on HDR edges, bypassed at scale 1) where the
+      browser used to bilinear the whole canvas; half a code of dither before
+      the 8-bit quantization; stars drawn no narrower than 0.7 px with their
+      flux conserved, which halves the plain frame's distance from the converged
+      one over the sky (4.5 codes against 9.0) and brings its sky flux onto the
+      converged value (a 1.2% over-read before); uniform locations cached;
+      the panel's readouts rewritten only when their text changes ✅
+    - the harness pins refinement OFF alongside quality high, for the same
+      reason: `npm run pol` and `npm run band` difference frames of one scene.
+      Both pass unchanged — pol's mean angle 0.34/0.36/0.30°, band's tripwire
+      zero at five views, hairlines to 0.027 half-turns, disk light 0.10 against
+      0.0000 ✅
 
 ## Open hurdles
 
@@ -508,17 +553,35 @@ from a frame's.
 
 ## Queued
 
-Nothing argued is outstanding and nothing is queued: every entry in the register
-above is closed, by design, or measured and found not to be a problem. The next
-slice is a new idea rather than a carried-over one — so ask before starting one,
-rather than inferring it from this file.
+Every entry in the register above is closed, by design, or measured and found
+not to be a problem, so what is queued is rendering rather than physics. Slice
+19 left a plan for it — `docs/PLAN-slice-20.md`, written to be executed
+step by step, with the measurement each step has to pass — and this is the
+short form, in the order it argues for:
 
-Two things slice 18 measured and deliberately did not act on, in case they read
-as gaps later:
+- **The sky as a cubemap.** Every escaped ray still evaluates three octaves of
+  hashed stars and two fbm nebula fields per frame, for a sky that never
+  changes; a cubemap rendered once, sampled with mipmaps, would make the sky
+  resolution-independent (no star floor needed) and take that cost off every
+  frame. The plan says how to keep `npm run pol` and `npm run band` blind to it.
+- **A hard seam in the disk right of the shadow** at the default camera: a
+  vertical discontinuity in the disk's texture, visible in a 3× crop, most
+  likely a gas tail's end. Slice 19 saw it and did not chase it.
+- **The auto preset on a real display.** Every number in 19b is from headless
+  chromium, whose frame pacing is not a monitor's. The plan has the
+  measurement to run in a real browser window and what to change if the
+  stalls look different there.
+- **Skipping the bloom, composite and HUD too** once a still picture has
+  converged and nothing overlaid has changed — the march is already skipped,
+  which is most of the cost, so this is a small idle-power item.
+- **Touch: pinch to zoom.** The camera zooms on the wheel only.
+
+Two things earlier slices measured and deliberately did not act on, in case
+they read as gaps later:
 
 - **`npm run band` has still not been run under software GL.** Slice 17 said so
-  and it is still true; slice 18 added a check to that harness rather than
-  changing how it waits.
+  and it is still true; slices 18 and 19 added checks to that harness rather
+  than changing how it waits.
 - **The jet's own emission model stays artistic.** Slice 18 moved its ENVELOPE
   and its geometric profile into `src/matter.ts` so the harness and the shader
   cannot drift apart, and moved nothing else: the fbm knots, the travelling

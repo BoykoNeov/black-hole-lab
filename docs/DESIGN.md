@@ -1778,6 +1778,189 @@ What did NOT move is the emission model: the fbm knots, the travelling pulse,
 the beaming clamp, the colour ramp. Those are artistic (see the jet's badge in
 the HUD) and they stay where the artistic decisions are.
 
+## Slice 19 — still pictures refined, moving ones scaled
+
+The first slice that changes no physics and no picture element: every pixel
+that is marched is marched exactly as before. What it changes is WHICH pixels
+are marched, and how many times.
+
+### Why refinement rather than anti-aliasing
+
+A frame is one geodesic per pixel, sampled at the pixel's centre. The photon
+ring's rungs are thinner than a pixel by e^(−γ) each, the sky's third star
+octave has a cell smaller than a pixel, and the disk's inner edge is a step —
+so a single frame aliases exactly where the picture is most interesting, and
+the aliasing changes with every camera move, which is what reads as shimmer.
+
+The standard fixes do not fit a per-pixel geodesic march. Multisampling the
+target does nothing: the cost is per sample, and the shader's samples are its
+pixels. Supersampling every frame multiplies the one cost the lab already
+cannot afford. Temporal anti-aliasing with reprojection needs a motion vector
+per pixel, and a lensed image has no useful one — a point of sky moves across
+the screen in a direction that depends on how many times its ray wound.
+
+What is affordable is spending the frames nobody is waiting on. When the
+picture is still — paused or the clock stopped, the camera at rest, no knob
+moving — the renderer has time and nothing to do with it. So each new frame is
+traced through a different sub-pixel point of every pixel and averaged with the
+last, and after 32 the picture is converged and the march stops. A moving
+picture is exactly the frame it always was; a still one becomes the limit that
+frame was approximating.
+
+### The running mean is a blend, and sample 1 is not
+
+The average is kept in the scene target itself: sample n is drawn with blending
+on, `CONSTANT_ALPHA` at 1/n against `ONE_MINUS_CONSTANT_ALPHA`, which turns the
+target into the running mean with no second buffer and no copy pass. Both
+attachments blend — the Stokes pair is linear, so its mean is the mean
+polarization, and the tick pass reads a better number than the plain frame's.
+
+Sample 1 overwrites rather than blending at alpha 1. Blending at 1 still
+multiplies the target's old contents by zero, and zero times NaN is NaN: a
+fresh texture or a poisoned pixel would survive into the mean instead of being
+replaced. It is also why compare mode's gutter clear runs only on sample 1 — a
+clear on sample 2 throws the mean away, and the gutter is already black from
+the plain frame the refinement started on.
+
+The offsets are the R2 sequence, the two-dimensional golden ratio: for every n
+the first n offsets are spread evenly over the pixel, so the mean after any
+number of frames is as good as that number allows, and sample 0 is the centre,
+so an unrefined frame is the frame the renderer always drew. 32 is the cap
+because the mean lives in float16, whose ten-bit mantissa stops registering a
+1/n contribution before n reaches the hundreds, and because the eye cannot tell
+32 from more.
+
+### What counts as a change
+
+Everything the scene pass reads, as one string: camera, clock, every content
+toggle and knob, the spin, the temperature and brightness the coupling
+produced, the TDE body count. Three things are deliberately NOT in it. Bloom
+and exposure are applied downstream of the target, so they can move without
+throwing the samples away — turning the exposure up on a converged frame is
+instant. And the target's own size is out, because the auto preset changes it
+BECAUSE the picture went still, and a key that noticed would call that a
+change, reset the stillness, put the size back, and oscillate every other
+frame. Reallocation resets the sample count directly instead.
+
+### The star floor, calibrated against the converged frame
+
+The refinement gave the lab something it never had: a ground truth for the
+sky. The converged frame is what a single sample should be closest to, and the
+distance from it can be measured for any change to the plain frame.
+
+A star's gaussian is sampled once per pixel, so a star a fifth of a pixel wide
+is caught near its peak or missed, at random, by where the pixel's centre
+falls — and re-drawn on every camera move. Drawing it no narrower than 0.7 px
+and dimming it by the same factor squared keeps its flux where it was. Measured
+over the sky at 1280×800:
+
+| floor | plain vs converged, sky | sky flux, plain vs converged |
+|------:|------------------------:|-----------------------------:|
+| none  | 9.0 codes               | 465 vs 459 (+1.2%)           |
+| 0.7 px| 4.5 codes               | 475 vs 475                   |
+| 1.0 px| 4.9 codes               | 480 vs 481                   |
+
+Half the distance, and the flux the plain frame over-read by lucky hits
+brought onto the truth. The floor is in pixels of the viewport being drawn, so a
+half-resolution frame draws each star at the same screen size as the full one.
+The other half of the residual is the lensed star texture around the ring,
+which the floor cannot reach and the refinement does.
+
+### The auto preset, and what the GPU timer turned out to measure
+
+Render scale is the lever the presets already pull; the auto preset measures
+what the scene pass costs and pulls it by itself. Cost is proportional to the
+pixels marched, so the scale that meets a budget is `scale · √(budget / cost)`,
+and the controller is that square root with damping, a 0.05 grid (each change
+reallocates the target), a dead band between 70% and 100% of the budget, and a
+move of at least one step in the direction the budget demands — the damped
+model step can be smaller than the grid, and rounding it away left an
+over-budget scale exactly where it was, which the first test caught.
+
+The cost has to come from the GPU. The CPU cannot see it: rAF paces on vsync,
+so a frame's period reads the display whatever the shader cost until the GPU
+is the slower of the two. Headless chromium at a 240 fps limit drew 60.0 fps
+at every preset. `EXT_disjoint_timer_query_webgl2` reads the span between two
+commands on the GPU's own clock, and at a fixed preset it is steady: 4.5 ms at
+1920×1080, 1.1 ms at half that, with rare spikes.
+
+**Across a change it is not steady, and that shaped the controller.** Right
+after any change the span reads its true cost on some frames and the whole
+16.7 ms frame period on others — `16.6 4.6 6.5 2.8 14.9 2.7 18.8 2.5` on a
+switch to medium, and at LOW quality, where the true cost is 1.1 ms, a run of
+eight readings between 15.5 and 17.3. The GPU is stalling on frame pacing
+inside the span. A median over 8 readings took those runs as cost and hunted
+the scale between 0.35 and 0.75 every second; the readings were right and the
+statistic was wrong. A stall can only add time, so the reading that saw the work
+alone is the smallest one in the window, and the window is 16 frames to give a
+run of stalls something to be smaller than. One run in a minute was longer than
+that, read as a scene ten times over budget, and would have sent the model to
+the bottom of the range — so one decision moves at most three steps down and
+two up, and a fully stalled window costs one dip the next window undoes.
+
+Two more things the readings needed. A reading lands frames after the span it
+measured, so a reading from the OLD target arrives after a scale change and,
+after a step up, says the new scale is cheaper than it is: each span carries
+the render target's generation as a tag, and only the current generation's
+readings feed the controller. And a still frame is drawn at full resolution on
+purpose, for the refinement, so its readings are tagged out too — judged, they
+would pull the scale down for the frames that are not still.
+
+Landed: against a 3.3 ms budget the preset goes 1.0 → 0.85 → 0.8 in seven
+seconds and holds, reading 2.8 ms inside the band, with no dip over a minute
+of watching; before the cap the same run touched 0.75 and once fell to 0.55
+for a second. Every one of those
+numbers is from headless chromium, whose frame pacing is not a monitor's;
+`docs/PLAN-slice-20.md` has the measurement to repeat in a real window.
+
+Without the extension (Firefox and Safari withhold it) the frame period stands
+in, and the controller knows what that is worth: over budget it is trusted,
+since a frame longer than the display allows was held up by the GPU; under
+budget it says nothing, so the fallback probes — a step up after 128 healthy
+frames, taken back if the next window is over, and twice the wait before the
+next try. It has been unit-tested and not run in a real browser without the
+timer, and the plan says so.
+
+### The canvas is the frame, and the upscale is the composite's
+
+Before this slice the canvas was the scene target's size and CSS stretched it
+to the frame, so the medium and low presets were bilinear-blurred by the
+browser. Now the canvas is always the frame's size and the composite pass —
+which runs at that size and costs nothing next to the march — resamples the
+scene target up itself with Catmull-Rom: nine bilinear fetches at offsets that
+fold the 4×4 kernel into the hardware filter. Its lobes go negative, and on HDR
+values next to a ring a thousand times brighter than the sky that is a dark
+halo a texel wide, so the result is clamped to the range of the four texels
+around the sample point. At scale 1 the weights are (0, 1, 0, 0) and the
+kernel is the identity, but that is not relied on: the full-resolution frame
+takes the single fetch it always had, so `npm run pol` and `npm run band` read
+the pixels the march drew and nothing derived from them. The polarization
+ticks are drawn in this pass, so they are drawn at the frame's size at every
+preset now.
+
+The composite also adds half a code of noise before quantizing to 8 bits. The
+nebula and the disk's rim are gradients a few codes deep across the frame, and
+without it they band into contour lines. The noise is a hash of the pixel and
+nothing else — a frozen frame is the same frame every time, which the harness
+relies on when it differences a ticks-on frame against a ticks-off one.
+
+### What the harness does with it
+
+`openLab` pins refinement OFF beside quality high, and for the same reason:
+every check but one differences frames of one scene, and with a still scene
+converging under each capture, the difference would be reading how far each
+had got. `npm run shot` is the one that turns it on — and it checks the sample
+count, that the refined frame moved many pixels by a little (37-40% by more
+than 3 codes) and almost none by a lot (0.9% by more than 150 of 765), and
+that the readout says the march has stopped.
+
+The layout the renderer publishes gained the scene target's size beside the
+canvas's, since the two now differ below scale 1, and the split is in the
+target's pixels. The band harness's frame-time line, which slice 18 called an
+upper bound, now prints the timer's reading: 2.6 ms with the ladder off and
+2.8 ms on, at the pitch clamp. That was the number slice 18 said it could not
+measure without a change to the renderer, and this was the change.
+
 ## The visual harness — measuring instead of remembering
 
 `tools/visual/` exists because every visual check before it was rebuilt from

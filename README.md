@@ -285,6 +285,47 @@ shape approximate, tick lengths only — and it is registered as
 worth the algebra, is in
 [`docs/DESIGN.md`](docs/DESIGN.md#slice-10--polarization-and-what-it-does-not-cost).
 
+### Still pictures refined, moving ones scaled (slice 19)
+
+A frame is one geodesic per pixel, sampled at the pixel's centre, and the
+photon ring's sub-rings are thinner than a pixel — so a single frame aliases
+where the picture is most interesting. Slice 19 does two things about it, and
+neither touches the physics: the pixels that are drawn are marched exactly as
+before.
+
+**Refine when still.** When nothing is changing — paused or the clock stopped,
+the camera at rest, no knob moving — each new frame is traced through a
+different sub-pixel point of every pixel (`adaptive.ts`'s `jitterOffset`, the
+R2 sequence) and blended into the scene target at 1/n, so the target is the
+running mean. After 32 samples the picture is converged and **the march stops**:
+a paused lab idles at the cost of the bloom and the HUD. Any change starts
+over from a plain frame, so a moving picture is exactly the frame it always was.
+Bloom and exposure are applied downstream of the target, so they can move
+without throwing the samples away.
+
+**Auto quality.** A fourth preset measures what the scene pass costs on the GPU
+(`gl.ts`'s `GpuTimer`, where the browser offers timer queries) and holds the
+render scale where that cost fits the frame-rate limit's share, moving it as the
+view gets harder or easier — cost goes as the square of the scale, so the model
+is one square root. A still picture is lifted to full resolution regardless,
+since it is being refined and nobody is waiting on it. Without a timer the
+frame period stands in, trusted in one direction only.
+
+Two smaller things came with them. The canvas is now always the frame's size
+and the composite pass resamples a smaller scene target up itself, with
+Catmull-Rom and an anti-ringing clamp, where the browser used to bilinear the
+whole canvas — so the medium and low presets keep the ring and the stars sharp.
+And the sky's stars are drawn no narrower than 0.7 px: a star a fifth of a pixel
+wide, sampled once, was caught or missed by where the pixel centre fell, and
+that lottery was re-drawn on every camera move. Widened to the pixel and dimmed
+by the same factor squared, the plain frame's sky sits half as far from the
+converged one as it did (4.5 codes against 9.0) and carries the same flux.
+
+Everything above is measured rather than argued: `npm run shot` refines a still
+frame and checks the sample count, the change and the readout;
+`docs/DESIGN.md` has the timer's frame-pacing stalls, which are why the
+controller judges a window's minimum and not its median.
+
 ## File map
 
 ### `src/`
@@ -336,6 +377,13 @@ worth the algebra, is in
   scalars and no metric, taking V^t from the null condition because the linear
   constraint divides by 1 − f and f = 1 is the ergosphere (pure, tested against
   a step-refined march in different coordinates)
+- `src/adaptive.ts` — slice 19's two pure pieces: `jitterOffset`, the
+  sub-pixel sequence a still picture is refined with (R2, sample 0 at the
+  centre so an unrefined frame is the plain one), and `autoStep`, the auto
+  preset's render-scale controller — the square-root cost model, the grid and
+  its hysteresis, the minimum-of-a-window judgement that survives the GPU's
+  frame-pacing stalls, the cap on one decision's move, and the probing
+  fallback for a browser with no GPU timer (pure, tested)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -405,20 +453,33 @@ worth the algebra, is in
 - `src/shaders.ts` — GLSL: per-pixel Kerr–Schild march, disk, matter, sky, bloom.
   Also `LADDER_RUNGS`, the ladder view's palette as data — the GLSL that paints
   the bands is generated from it and `hud.ts`'s legend reads it, so the two
-  cannot disagree
+  cannot disagree. Since slice 19 the scene pass takes a sub-pixel `uJitter`
+  and draws no star narrower than `STAR_MIN_PX`, and the composite resamples a
+  smaller scene target with Catmull-Rom (`sceneAt`, anti-ringing clamped, and
+  bypassed at scale 1 so the harness reads the march's own pixels) and dithers
+  half a code before quantizing
 - `src/main.ts` — GL pipeline, UI, render loop, matter state advance
   (`?dbg` URL flag scans render targets for NaN/Inf — one bad pixel smears
   black blocks through the bloom pyramid). Also the frame-rate cap and the
   quality presets: the scene shader integrates a geodesic per pixel of the
   HDR target, so **render scale** is the whole lever — cost falls with its
-  square while the pixels that are drawn stay exactly as physical. The GL
-  target scales; the HUD canvas keeps true DPR, so overlays stay sharp over
-  a half-res scene. Only the low preset touches the march itself (shorter
-  step budget, coarser arc length — a softer photon ring for a linear
-  saving). The default preset is byte-identical to the pre-cap renderer
+  square while the pixels that are drawn stay exactly as physical. The scene
+  target scales; the canvas and the HUD keep the frame's size and true DPR,
+  so overlays stay sharp over a half-res scene. Only the low preset touches
+  the march itself (shorter step budget, coarser arc length — a softer photon
+  ring for a linear saving). The default preset draws the pixels the pre-cap
+  renderer drew. Since slice 19 it also owns the still-picture bookkeeping —
+  the scene key whose change resets the refinement, the 1/n blend into the
+  target, and the skipped march once it has converged — and feeds the GPU
+  timer's readings to the auto preset's controller; the fps readout shows the
+  scene pass's GPU cost, its size and the sample count. Dev hooks `__sceneMs`
+  and `__sceneScale` publish the same for a harness
 - `src/camera.ts` — orbit controls (plus the `claimed` hook that lets a HUD
   handle take a pointerdown before it becomes an orbit drag)
-- `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects
+- `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects,
+  and `GpuTimer` (slice 19), a pool of `EXT_disjoint_timer_query_webgl2`
+  queries around the scene pass with a tag that rides along, since a reading
+  lands frames after the span it measured
 - `src/hud.ts` — 2D overlay canvas above the GL view (init/resize/clear,
   shared HUD style, clock faces, effective-potential inset, embedding-diagram
   funnel, orbit trails, dashed shadow outline, the ladder legend, γ printed
@@ -599,11 +660,16 @@ and `tsconfig` covers `src` + `test`.
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame
-  as many ways as you like.
+  as many ways as you like. Since slice 19 it is also the one run that turns
+  refinement ON — `openLab` pins it off, since every other check differences
+  frames of one scene and would otherwise be reading how far each had
+  converged — and checks that a still frame reaches its 32 samples, differs
+  from the plain one by a little everywhere and a lot almost nowhere, and that
+  the readout says the march has stopped.
 
 ## Roadmap
 
-Eighteen slices have landed: the lensed sky, the disk, matter in motion, the
+Nineteen slices have landed: the lensed sky, the disk, matter in motion, the
 Kerr integrator, physical scales and TDEs, the educational overlays, compare
 mode, the analytic capture criterion, the photon-ring ladder with the exact
 outline, polarization, the separated continuation that finishes a ray the march
@@ -611,8 +677,10 @@ cannot — over the spin axis, and carrying the disk light it collects — the
 ladder's spacing pointwise around the ring rather than per equatorial edge,
 Chandrasekhar's tabulated polarized fraction in place of a fit, the embedding
 funnel drawn at measured radii rather than at a coordinate, a visual harness
-that runs where there is no GPU, and the stars, jet and debris lit along the
-continuation's own path as well as the march's. The full list and the register of open
-scientific hurdles (what is approximate, by how much, and the path to closing
-each) are in [`docs/ROADMAP.md`](docs/ROADMAP.md); nothing argued is currently
-outstanding there.
+that runs where there is no GPU, the stars, jet and debris lit along the
+continuation's own path as well as the march's, and still pictures refined to
+32 samples while moving ones are scaled to the GPU. The full list and the
+register of open scientific hurdles (what is approximate, by how much, and the
+path to closing each) are in [`docs/ROADMAP.md`](docs/ROADMAP.md); the queued
+work there is rendering, not physics, and
+[`docs/PLAN-slice-20.md`](docs/PLAN-slice-20.md) spells it out step by step.

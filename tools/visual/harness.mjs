@@ -257,7 +257,9 @@ function installLab() {
     if (!L) throw new Error("no __layout — capture() first");
     if (!L.compare) throw new Error("strips need compare mode on");
     const r = L.split[half];
-    const s = canvas.width / L.gl.w;
+    // The split is in the scene target's pixels, which since slice 19 is the
+    // canvas's size only at scale 1 — the composite resamples it to the frame.
+    const s = canvas.width / (L.scene ?? L.gl).w;
     return { x: Math.round(r.x * s), y: 0, w: Math.round(r.w * s), h: canvas.height };
   };
 
@@ -501,7 +503,16 @@ export async function openLab({ controls = {}, viewport = VIEWPORT } = {}) {
   // same size, which keeps every measurement below in one coordinate space.
   // It is already the default — setting it means a leaked state or a changed
   // default cannot quietly reintroduce the mismatch.
-  await page.evaluate(setControlsIn, Object.entries({ quality: "high", ...controls }));
+  //
+  // Refinement (slice 19) is pinned OFF for the same reason in the other
+  // direction: a still scene would otherwise be averaging jittered frames under
+  // every capture, and a measurement that differences two captures would then
+  // read how far each had converged. The checks here want the plain frame the
+  // march draws; smoke.mjs turns refinement on deliberately, to check it.
+  await page.evaluate(
+    setControlsIn,
+    Object.entries({ quality: "high", refine: false, ...controls })
+  );
 
   // What one frame costs HERE, and what one capture costs, which are not the
   // same quantity. Measured after the controls are set, so they are the cost

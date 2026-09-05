@@ -104,6 +104,66 @@ try {
     `jaccard ${diff.distance.toFixed(3)}, ${diff.left} vs ${diff.right} lit px`
   );
   await lab.shot("smoke-compare.png");
+
+  // Slice 19's refinement, which openLab pins off for every other run. Stop
+  // the clock, capture the plain frame, let the still picture refine, and
+  // capture again: the second frame has to report its sample count and differ
+  // from the first by a little everywhere — jittered rays resolve sub-pixel
+  // structure the plain frame sampled at its centres — but not by much, since
+  // it is the same picture. The plain frame is kept in a data URL because the
+  // capture after it replaces the page's copy.
+  await lab.set({ compare: false, "edu-trails": false, timespeed: 0 });
+  await lab.settle();
+  await lab.capture();
+  const plain = await lab.dataUrl({ layer: "gl" });
+  await lab.set({ refine: true });
+  await lab.settle(40); // ACCUM_MAX is 32; the rest is slack for the still gate
+  const refined = await lab.capture();
+  check(
+    "a still picture refines to its full sample count",
+    refined.samples === 32,
+    `${refined.samples} samples averaged`
+  );
+  const refinedUrl = await lab.dataUrl({ layer: "gl" });
+  const changed = await lab.page.evaluate(
+    async ([a, b]) => {
+      const load = (u) => new Promise((r) => { const i = new Image(); i.onload = () => r(i); i.src = u; });
+      const [ia, ib] = [await load(a), await load(b)];
+      const px = (img) => {
+        const c = document.createElement("canvas");
+        c.width = img.width; c.height = img.height;
+        const g = c.getContext("2d", { willReadFrequently: true });
+        g.drawImage(img, 0, 0);
+        return g.getImageData(0, 0, c.width, c.height).data;
+      };
+      const [da, db] = [px(ia), px(ib)];
+      let n = 0, big = 0, sum = 0;
+      for (let i = 0; i < da.length; i += 4) {
+        const d = Math.abs(da[i] - db[i]) + Math.abs(da[i + 1] - db[i + 1]) + Math.abs(da[i + 2] - db[i + 2]);
+        if (d > 3) n++;
+        if (d > 150) big++;
+        sum += d;
+      }
+      const N = da.length / 4;
+      return { frac: n / N, big: big / N, mean: sum / N };
+    },
+    [plain, refinedUrl]
+  );
+  // Measured on the GPU here: 40% of pixels move by more than 3 codes — the
+  // star field and the lensed star texture around the ring, which a single
+  // centre sample gets wrong everywhere — at a mean |d| of 10 summed over the
+  // three channels, and 0.9% move far, at the disk's edges. A refinement that
+  // moved nothing would be off; one that moved the mean by tens of codes
+  // would be blurring or shifting the picture rather than resolving it.
+  check(
+    "the refined frame is the same picture, resolved: many pixels move, few far",
+    changed.frac > 0.02 && changed.mean < 20 && changed.big < 0.02,
+    `${(100 * changed.frac).toFixed(1)}% of pixels moved by > 3 codes, ` +
+      `${(100 * changed.big).toFixed(1)}% by > 150, mean |d| ${changed.mean.toFixed(2)}`
+  );
+  await lab.shot("smoke-refined.png");
+  const idle = await lab.page.evaluate(() => document.getElementById("fps-readout").textContent);
+  check("the readout says the march has stopped", /converged/.test(idle), idle.trim());
 } finally {
   await lab.close();
 }

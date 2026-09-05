@@ -84,3 +84,66 @@ export function destroyFbo(gl: WebGL2RenderingContext, f: Fbo): void {
   gl.deleteTexture(f.tex);
   if (f.tex2) gl.deleteTexture(f.tex2);
 }
+
+/**
+ * GPU time of a span of draw calls, via EXT_disjoint_timer_query_webgl2
+ * (slice 19). The CPU cannot measure this: rAF paces on vsync, so a frame's
+ * period reads the display whatever the shader cost until the GPU is the
+ * slower of the two, and only the auto preset's fallback settles for that.
+ *
+ * Results arrive frames later, so queries are pooled and polled in order;
+ * `poll` hands back the oldest finished span, or null. A disjoint event
+ * (power state change, context switch) invalidates every query in flight,
+ * and those are dropped rather than read.
+ *
+ * `available` is false where the browser withholds the extension (Firefox and
+ * Safari at the time of writing), and every method is then a no-op.
+ */
+export class GpuTimer {
+  readonly available: boolean;
+  private readonly ext: { TIME_ELAPSED_EXT: number; GPU_DISJOINT_EXT: number } | null;
+  private readonly pool: WebGLQuery[] = [];
+  private readonly pending: { q: WebGLQuery; tag: number }[] = [];
+  private active: WebGLQuery | null = null;
+
+  constructor(private readonly gl: WebGL2RenderingContext) {
+    this.ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+    this.available = this.ext !== null;
+  }
+
+  /** `tag` rides with the span and comes back with its reading, since the
+   *  reading lands frames after the span was drawn and the caller may need to
+   *  know what kind of frame it was. */
+  begin(tag = 0): void {
+    if (!this.ext || this.active) return;
+    const q = this.pool.pop() ?? this.gl.createQuery()!;
+    this.gl.beginQuery(this.ext.TIME_ELAPSED_EXT, q);
+    this.active = q;
+    this.pendingTag = tag;
+  }
+  private pendingTag = 0;
+
+  end(): void {
+    if (!this.ext || !this.active) return;
+    this.gl.endQuery(this.ext.TIME_ELAPSED_EXT);
+    this.pending.push({ q: this.active, tag: this.pendingTag });
+    this.active = null;
+  }
+
+  /** Milliseconds of the oldest completed span and its tag, or null if none is ready. */
+  poll(): { ms: number; tag: number } | null {
+    if (!this.ext || this.pending.length === 0) return null;
+    const gl = this.gl;
+    if (gl.getParameter(this.ext.GPU_DISJOINT_EXT)) {
+      for (const p of this.pending) this.pool.push(p.q);
+      this.pending.length = 0;
+      return null;
+    }
+    const { q, tag } = this.pending[0];
+    if (!gl.getQueryParameter(q, gl.QUERY_RESULT_AVAILABLE)) return null;
+    this.pending.shift();
+    const ns = gl.getQueryParameter(q, gl.QUERY_RESULT) as number;
+    this.pool.push(q);
+    return { ms: ns / 1e6, tag };
+  }
+}

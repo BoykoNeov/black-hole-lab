@@ -68,7 +68,7 @@
 
   <div id="panel">
     <h1>Black Hole Lab</h1>
-    <div class="sub">Slice 6 — educational overlays</div>
+    <div class="sub">Kerr geodesics, marched per pixel</div>
 
     <label title="Kerr spin parameter a. The shadow shape, frame dragging, ISCO and horizon all follow exactly."><span>Black hole spin a <span class="badge phys">physics</span></span><span id="spin-val"></span></label>
     <input id="spin" type="range" min="0" max="0.998" step="0.002" value="0.7" />
@@ -148,13 +148,19 @@
 
     <div class="sub" style="margin-top:12px">Performance</div>
 
-    <label title="Renders the per-pixel geodesic march at a fraction of screen resolution — cost falls with the square of the scale, and the pixels that are drawn stay fully integrated. Overlays and text stay sharp at any setting. Low additionally shortens the march budget, which softens the photon ring slightly: it is the only setting that trades physical fidelity for speed."><span>Quality <span class="badge disp">display</span></span></label>
+    <label title="Renders the per-pixel geodesic march at a fraction of screen resolution — cost falls with the square of the scale, and the pixels that are drawn stay fully integrated, then resampled sharply to the screen. Overlays and text stay sharp at any setting. Low additionally shortens the march budget, which softens the photon ring slightly: it is the only setting that trades physical fidelity for speed. Auto measures what the march costs on your GPU and picks the resolution that keeps it inside the frame-rate limit, moving it as the view gets harder or easier; a still picture is drawn at full resolution regardless."><span>Quality <span class="badge disp">display</span></span></label>
     <select id="quality">
+      <option value="auto">Auto — fits the frame-rate limit</option>
       <option value="low">Low — half resolution</option>
       <option value="medium">Medium — 72% resolution</option>
       <option value="high" selected>High — full resolution</option>
     </select>
-    <div class="hint">Scales the geodesic march with the square of resolution; overlays stay sharp. Low also shortens the march — the only setting that trades physical accuracy (a slightly softer photon ring) for speed.</div>
+    <div class="hint">Scales the geodesic march with the square of resolution; overlays stay sharp. Low also shortens the march — the only setting that trades physical accuracy (a slightly softer photon ring) for speed. Auto measures the march on your GPU and adapts.</div>
+
+    <div class="check">
+      <input id="refine" type="checkbox" checked />
+      <label for="refine" style="margin:0" title="When nothing is moving — paused, or the clock stopped, and the camera at rest — each new frame is traced through a slightly different point of every pixel and averaged with the last, so the photon ring's sub-rings and the stars resolve instead of aliasing. After 32 frames the picture is converged and the march stops, so a paused lab costs almost nothing. Any change starts over from a plain frame.">Refine when still <span class="badge disp">display</span></label>
+    </div>
 
     <label title="Caps how often the frame is redrawn. Simulation time is measured from the real clock, so the physics runs at the same speed at any limit — only the GPU does less work."><span>Frame rate limit <span class="badge disp">display</span></span><span><input id="fpslimit-num" type="number" min="15" max="240" step="1" value="60" /> fps</span></label>
     <input id="fpslimit" type="range" min="15" max="240" step="1" value="60" />
