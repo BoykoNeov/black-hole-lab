@@ -1889,6 +1889,45 @@ was reverted for its cost rather than for this — see `docs/ROADMAP.md` — but
 this is the half that would have been a regression even if the cost had been
 worth having.
 
+### The seam that was the shadow's edge
+
+Slice 19 left a note about a hard vertical line in the disk right of the
+shadow, and slice 20's plan guessed at a gas tail's end. It is neither a defect
+nor in the disk: it is the critical curve, the boundary between rays that fall
+in and rays that get out, and a sharp edge there is the correct picture rather
+than something to soften.
+
+Three things about the way it was found are worth keeping, because the same
+shapes will come up again.
+
+The statistic has to match the artefact. The first scan scored the brightness
+gradient down each column, which is what a seam usually is — and found nothing,
+because brightness runs across this one perfectly smoothly (63, 66, 70, 79 over
+the four pixels where it sits). What steps is TEXTURE: a horizontal Laplacian,
+which cancels smooth gradients and keeps pixel-scale detail, goes from 1.0 to
+12 across the same four pixels. A texture discontinuity with no brightness step
+is exactly what a badly pasted edge looks like, which is why the eye reads it
+as one, and why a brightness-based measure will never see it.
+
+Attribution beats inspection, and one emitter makes it exact. Gas is additive
+in the march — `accum += thru * gasEmit(...)`, never touching `thru` — so a
+converged gas-on frame minus the same frame with gas off IS the gas layer, not
+an impression that things got better. It showed the two frames agreeing column
+for column either side of the line. The disk lacks that property
+(`thru *= 1 - d.a`), so the same subtraction would not have been clean for it,
+which is the reason to test gas first. What settled the identification was the
+same trick on the sky: sky-on minus sky-off is the sky's own contribution, and
+it is exactly zero for every column inside the line. No sky reaches the camera
+there. That is the definition of the shadow.
+
+A feature measured in one strip has not been measured. Everything decisive was
+read off eighty rows near mid-frame, where the boundary is straight to 8 px in
+120 rows — and on that evidence "a straight vertical line" was about to be
+written down as a property of the thing. Traced row by row it is an arc,
+1082 px at the top of the frame, 1210 at the middle, 1045 at the bottom: the
+shadow's outline, cropped at its flattest point. The straightness belonged to
+the crop, not to the feature.
+
 ### The auto preset, and what the GPU timer turned out to measure
 
 Render scale is the lever the presets already pull; the auto preset measures

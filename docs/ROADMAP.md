@@ -557,13 +557,10 @@ Every entry in the register above is closed, by design, or measured and found
 not to be a problem, so what is queued is rendering rather than physics. Slice
 19 left a plan for it — `docs/PLAN-slice-20.md`, written to be executed
 step by step, with the measurement each step has to pass — and this is the
-short form, in the order it argues for. Its first item, the sky as a cubemap,
-was built and then measured away; it is below with the rest of what was tried
-and not kept.
+short form, in the order it argues for. Its first two items — the sky as a
+cubemap, and the seam right of the shadow — were chased and closed without a
+code change; both are below with the rest of what was tried and not kept.
 
-- **A hard seam in the disk right of the shadow** at the default camera: a
-  vertical discontinuity in the disk's texture, visible in a 3× crop, most
-  likely a gas tail's end. Slice 19 saw it and did not chase it.
 - **The auto preset on a real display.** Every number in 19b is from headless
   chromium, whose frame pacing is not a monitor's. The plan has the
   measurement to run in a real browser window and what to change if the
@@ -573,7 +570,7 @@ and not kept.
   which is most of the cost, so this is a small idle-power item.
 - **Touch: pinch to zoom.** The camera zooms on the wheel only.
 
-Three things measured and deliberately not acted on, in case they read as gaps
+Four things measured and deliberately not acted on, in case they read as gaps
 later:
 
 - **The sky as a cubemap was built, measured and taken back out.** The plan's
@@ -616,6 +613,43 @@ later:
   **The general lesson, for the rest of that plan:** the march is ~95% of the
   scene pass. A rendering item that does not touch the march cannot change the
   cost much, whatever it does per pixel.
+
+- **The "hard seam in the disk right of the shadow" is the shadow's edge.** The
+  plan's second item, chased on 2026-09-06 and closed with no code change. The
+  line is the critical curve: rays inside it are captured and never reach the
+  sky, rays outside it escape. Measured on a frozen, refined frame at the
+  default camera, the sky's own contribution — a sky-on frame differenced
+  against a sky-off one — is EXACTLY zero for every column from x 1150 to 1205
+  and lifts off at 1207, where the texture steps from 1.0 to 12 while the
+  brightness runs 63, 66, 70, 79 with no step at all. A texture discontinuity
+  with no brightness step is what a pasted edge looks like, which is why it
+  draws the eye.
+
+  It is an arc, not a line. Traced row by row it runs x 1082 at y 300, 1132 at
+  380, 1196 at 460, a maximum of 1210 at 540, then back down to 1045 at 780 —
+  the shadow's outline. Between y 480 and 600 it moves 8 px in 120 rows, and
+  that flat top at mid-frame height is what a crop there reads as a straight
+  vertical line. The plan's "about 150 px right of the shadow's edge" was a
+  fair eyeball: the near side of the disk is drawn in front of the shadow, so
+  the dark blob the eye picks out ends near x 1100-1140 and is not the curve.
+
+  The plan's own candidate list was wrong, and the checks that killed it are
+  worth keeping. It is NOT the gas: gas-on and gas-off frames agree column for
+  column either side, differing only in x 1208-1244 where a blob happens to
+  sit, and the step at 1207 is in both — so `gasEmit` was never touched and
+  `npm run pol` and `npm run band` had nothing to check. It is not the disk,
+  the jets or the stars, each of which can be turned off with the boundary
+  still there. It is not screen-space: at fov 40/60/80 it sits 390/244/166 px
+  from centre against tan-ratio predictions of 387/244/168, so it is pinned to
+  a sky direction. It is not sampling noise: one jittered sample and the
+  converged 32 give the same texture magnitude, ~12 either way, where averaging
+  noise would have given ~5× less. And it is not aliasing: just outside the
+  curve the texture reads 12.3 against 9.8 and 7.7 in ordinary sky elsewhere in
+  the same frame. The drafted fix — fading a gas tail's end — would have
+  changed a shader with nothing to do with the feature.
+
+  `M:\claud_projects\temp\blackhole-perf\seam-finding.md` has the full write-up
+  and names the seven scripts behind it.
 
 - **`npm run band` has still not been run under software GL.** Slice 17 said so
   and it is still true; slices 18 and 19 added checks to that harness rather

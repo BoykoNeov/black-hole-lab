@@ -118,6 +118,19 @@ the hardware's level.
 
 ## Item 2 — the hard seam in the disk right of the shadow
 
+**Chased and closed with no code change (2026-09-06).** The line is the
+critical curve — the boundary between captured rays and escaping ones. The
+sky's own contribution, measured as a sky-on frame differenced against a
+sky-off one, is exactly zero for every column inside it, so no sky reaches the
+camera there; a sharp edge at that boundary is the correct picture. It reads as
+a seam because brightness is continuous across it and only texture steps (1.0
+to 12 in four pixels). It is an arc, not a line: x 1082 at y 300, 1210 at
+y 540, 1045 at y 780, and the crop that found it happened to sit on the flat
+top. None of the candidates below survived — see `docs/ROADMAP.md` for what
+each toggle showed and `docs/DESIGN.md` for why the first measurement missed
+it. **Do not apply the fix drafted below**; `gasEmit` has nothing to do with
+this. The candidate list is kept as written for the record.
+
 ### What was seen
 
 At the default camera (spin 0.9, 1920×1080, sim running), a 3× crop of the
