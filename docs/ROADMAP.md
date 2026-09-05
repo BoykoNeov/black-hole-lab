@@ -414,8 +414,12 @@ Units are geometrized (G = c = M = 1) throughout.
       should be. Second-smallest interval rather than smallest (one spurious
       short frame would switch the clamp off), floored at 60 Hz (believing a
       slow GPU's rate is the display's is a deadlock in which nothing is ever
-      over budget). After: 1.00 at every limit on both paths, and still 0.95 at
-      3840×2160 where the GPU genuinely is the slower party ✅
+      over budget). After: the fallback reads 1.00 at every limit, and the
+      timer path 1.00 or, in two runs of five above the refresh rate, one grid
+      step below it — the budget there is now the display's own 5.5 ms against
+      a 4.3 ms scene, which puts the setting inside the dead band instead of
+      clearly over it, and one step is the dead band doing its job. Still 0.95
+      at 3840×2160 where the GPU genuinely is the slower party ✅
     - 20d all three visual runs green, unit tests 323 green. The three harness
       scripts live in `M:\claud_projects\temp\blackhole-perf\` —
       `headed-timer.mjs` (raw readings), `headed-settle.mjs` (the preset

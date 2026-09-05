@@ -2325,8 +2325,9 @@ reading from the previous one still standing. Every number below is off those.
 
 The true costs are slice 19's to the tenth of a millisecond — 4.5 ms at
 1920×1080, 1.1 ms at low, 2.6 ms at 1280×800 — so this is the same measurement,
-not a different one. What is absent is the frame-period readings. The single
-5.8 ms spike each run is the frame the target was reallocated on, and it is one
+not a different one. What is absent is the frame-period readings. Each run's
+preset change produces exactly one spike — 5.8 ms at 1920×1080, 3.4 ms at
+1280×800 — which is the frame the render target was reallocated on. One
 reading, not eight.
 
 Read that from the raw sequences rather than from the "above 3× the floor"
@@ -2398,6 +2399,16 @@ dips to 0.90 for about a second and is back at 1.00 by 1.9 s, which is the
 controller correctly answering genuinely slow first frames while the shader
 compiles, and then correctly taking it back. Warm, there is no dip at all.
 
+The ring is deliberately NOT cleared when the frame limit changes, and that is
+safe in both directions rather than by luck. The estimate is a minimum, and a
+minimum left over from a SLOWER cadence can only overstate the frame period,
+which can only relax the budget — never tighten it. Going 60 → 240 the stale
+16.7 ms entries read as a 60 Hz display for a few frames, which is the limit the
+frames were actually drawn at; going 240 → 60 the stale 6.9 ms entries read as
+144 Hz, and the user's own 60 then wins the min. Either way the clamp errs
+toward leaving the picture alone, and the ring has turned over inside a few
+frames anyway.
+
 Two things the fix deliberately does not do. It does not touch the case where
 the GPU really is the slower party: forced to 3840×2160, where the pass costs
 13 ms against a 13.3 ms budget, the preset still steps down to 0.95 and holds.
@@ -2409,10 +2420,32 @@ That is a trade, not an oversight: the alternative is the deadlock above.
 
 ### What a real window changed, and what it did not
 
-With the fix in, at 1920×1080 on the 144 Hz panel, quality auto holds 1.00 at
-every limit, reading 4.3 ms of scene inside a 6.9 ms frame, with no dip over
-twenty seconds of watching; a still picture goes to full resolution and refines,
-as it did headless. The headless numbers slice 19 quoted stand — the same costs
+With the fix in, at 1920×1080 on the 144 Hz panel, quality auto sits at 1.00 at
+every limit, reading 4.3 ms of scene inside a 6.9 ms frame; a still picture goes
+to full resolution and refines, as it did headless.
+
+Not perfectly still, and the reason is worth writing down rather than rounding
+off. Above the refresh rate the budget is now the display's own — 0.8 × 6.9 =
+5.5 ms — against a 4.3 ms scene, so the setting sits INSIDE the dead band rather
+than clearly over it, where before the fix a 3.3 ms budget put it clearly over.
+The margin to the upper edge is about 1.2 ms and the readings reach 5.0 ms at
+p95, so a window whose minimum lands above 5.5 ms happens. Over five runs at a
+200 fps limit (three trajectories of 20 s, two sweeps) the scale reads 1.00
+three times and 0.95 twice, once returning to 1.00 by itself and once resting
+there.
+
+That is the controller working, not failing. 0.95 is one grid step; the
+composite resamples it with the Catmull-Rom filter slice 19 added for exactly
+this, and the scene then costs 3.9 ms of a 6.9 ms frame, which is the margin the
+80% share exists to keep. It is worth knowing where the better signal would come
+from if it ever does matter: the frames actually delivered. A frame cadence
+already at the display's rate says the GPU is not the bottleneck no matter what
+share of the frame the march takes, so a down-step could be suppressed outright
+while the lab is keeping up — the same insight `budgetFps` rests on, applied one
+level in. That is a change to when the controller may step down at all, so it
+wants its own slice and its own measurement rather than a constant nudged here.
+
+The headless numbers slice 19 quoted stand — the same costs
 come back to the tenth of a millisecond — so headless remains a fair place to
 measure cost. It is not a fair place to measure PACING: its rAF runs at 60 Hz
 whatever the machine, which is precisely why a defect that needs a display
