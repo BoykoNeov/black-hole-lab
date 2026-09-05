@@ -625,9 +625,13 @@ later:
   with no brightness step is what a pasted edge looks like, which is why it
   draws the eye.
 
-  It is an arc, not a line. Traced row by row it runs x 1082 at y 300, 1132 at
-  380, 1196 at 460, a maximum of 1210 at 540, then back down to 1045 at 780 —
-  the shadow's outline. Between y 480 and 600 it moves 8 px in 120 rows, and
+  It is an arc, not a line. Traced row by row over y 380–700, where the trace
+  is monotone on both sides of its maximum, it runs x 1132 at y 380, 1196 at
+  460, 1210 at 540, then back down to 1128 at 700. (Above y ≈ 360 the trace
+  wobbles ~20 px: the disk's lensed image lies between camera and sky there, so
+  "no sky difference in this column" stops meaning "captured", and a stricter
+  threshold walks past the faint edge rather than sharpening it.) Between y 480
+  and 600 the boundary moves 8 px in 120 rows, and
   that flat top at mid-frame height is what a crop there reads as a straight
   vertical line. The plan's "about 150 px right of the shadow's edge" was a
   fair eyeball: the near side of the disk is drawn in front of the shadow, so

@@ -1923,10 +1923,16 @@ there. That is the definition of the shadow.
 A feature measured in one strip has not been measured. Everything decisive was
 read off eighty rows near mid-frame, where the boundary is straight to 8 px in
 120 rows — and on that evidence "a straight vertical line" was about to be
-written down as a property of the thing. Traced row by row it is an arc,
-1082 px at the top of the frame, 1210 at the middle, 1045 at the bottom: the
-shadow's outline, cropped at its flattest point. The straightness belonged to
-the crop, not to the feature.
+written down as a property of the thing. Traced row by row over y 380–700 it
+is an arc, and monotone on both sides of a maximum: 1132 px at y 380, 1210 at
+540, 1128 at 700. The straightness belonged to the crop, not to the feature.
+
+Above y ≈ 360 that trace stops being trustworthy — it wobbles about 20 px
+where the disk's lensed image lies between the camera and the sky, so "this
+column shows no sky difference" stops meaning "this ray was captured".
+Raising the threshold makes it worse rather than better, because the edge
+there is faint and a stricter test walks past it. The rows quoted above are
+the ones where the test measures what it claims to.
 
 ### The auto preset, and what the GPU timer turned out to measure
 

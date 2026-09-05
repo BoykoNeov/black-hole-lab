@@ -124,9 +124,9 @@ sky's own contribution, measured as a sky-on frame differenced against a
 sky-off one, is exactly zero for every column inside it, so no sky reaches the
 camera there; a sharp edge at that boundary is the correct picture. It reads as
 a seam because brightness is continuous across it and only texture steps (1.0
-to 12 in four pixels). It is an arc, not a line: x 1082 at y 300, 1210 at
-y 540, 1045 at y 780, and the crop that found it happened to sit on the flat
-top. None of the candidates below survived — see `docs/ROADMAP.md` for what
+to 12 in four pixels). It is an arc, not a line: over y 380–700, where the
+trace is monotone, x runs 1132 at y 380, 1210 at 540 and 1128 at 700, and the
+crop that found it happened to sit on the flat top. None of the candidates below survived — see `docs/ROADMAP.md` for what
 each toggle showed and `docs/DESIGN.md` for why the first measurement missed
 it. **Do not apply the fix drafted below**; `gasEmit` has nothing to do with
 this. The candidate list is kept as written for the record.
