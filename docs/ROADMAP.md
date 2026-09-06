@@ -647,16 +647,14 @@ Every entry in the register above is closed, by design, or measured and found
 not to be a problem, so what is queued is rendering rather than physics. Slice
 19 left a plan for it — `docs/PLAN-slice-20.md`, written to be executed
 step by step, with the measurement each step has to pass — and this is the
-short form, in the order it argues for. Its first four items are done: the
-sky as a cubemap and the seam right of the shadow were chased and closed
-without a code change (both below, with the rest of what was tried and not
-kept); the auto preset on a real display is slice 20c above — it found the
-controller budgeting for frames no display could show and fixed it; and
-skipping the bloom, composite and HUD once a still picture has converged is
-20e-20f, which turned out to be worth 6-8 W of board power rather than the
-rounding error it was queued as.
-
-- **Touch: pinch to zoom.** The camera zooms on the wheel only.
+short form, in the order it argues for. **All five of its items are done**,
+so nothing is queued: the sky as a cubemap and the seam right of the shadow
+were chased and closed without a code change (both below, with the rest of
+what was tried and not kept); the auto preset on a real display is slice 20c
+above — it found the controller budgeting for frames no display could show and
+fixed it; skipping the bloom, composite and HUD once a still picture has
+converged is 20e-20f, which turned out to be worth 6-8 W of board power rather
+than the rounding error it was queued as; and pinch to zoom is 20g.
 
 Four things measured and deliberately not acted on, in case they read as gaps
 later:
