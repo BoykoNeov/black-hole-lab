@@ -378,10 +378,11 @@ Units are geometrized (G = c = M = 1) throughout.
       zero at five views, hairlines to 0.027 half-turns, disk light 0.10 against
       0.0000 ✅
 
-20. **The auto preset in front of a real monitor** — slice 19's rendering
-    follow-ups, taken in the order its plan argued for. Items 1 and 2 were
-    chased and closed with no code change (below); item 3 found a bug in the
-    shipped controller and fixed it ✅
+20. **The auto preset in front of a real monitor, and a still frame that
+    stops being drawn** — slice 19's rendering follow-ups, taken in the order
+    its plan argued for. Items 1 and 2 were chased and closed with no code
+    change (below); item 3 found a bug in the shipped controller and fixed it;
+    item 4 stopped a converged still picture redrawing at all ✅
     - 20a the harness can open a real window (`LAB_HEADED=1`) and can withhold
       the GPU timer extension from the page on hardware that has it
       (`LAB_NO_TIMER=1`), which is how the Firefox/Safari branch was exercised
@@ -425,6 +426,29 @@ Units are geometrized (G = c = M = 1) throughout.
       `headed-timer.mjs` (raw readings), `headed-settle.mjs` (the preset
       settling), `fallback-sweep.mjs` and `arming-race.mjs` (the bug and its
       trajectory) ✅
+    - 20e **a converged still picture now draws nothing at all.** Slice 19
+      stopped re-marching it; the bloom chain, the composite and the HUD still
+      ran every frame. `downstreamKey` in `src/adaptive.ts` is the second half
+      of the still test — what the passes AFTER the scene target read, which
+      the scene's own key deliberately omits — and `render` skips the whole
+      frame when the march has converged and that key has not moved either.
+      The scene's key is joined onto it rather than reasoned around: nearly
+      everything the overlays read is frozen by the camera and clock already
+      being still, but that argument is about the convergence rule and nothing
+      tests it, so a string concatenation retires it. Measured: 0 of 74 frames
+      drew over a settled still picture, and the frame comes back for a
+      HUD-only toggle (the clocks), which moves nothing in the scene's key ✅
+    - 20f **the checks a capture cannot make.** Every harness capture sets
+      `__wantShot`, which forces a full frame on purpose — so no picture the
+      harness takes can show whether the skip is working, and a skip that
+      blanked the canvas would pass every check written that way. Two readings
+      that do see it: a `__draws` hook counting frames that ran the passes,
+      against `__frames` counting every call to `render`; and a compositor
+      screenshot, which goes through what the user is shown and does not touch
+      `__wantShot`. `npm run shot` asserts both, plus that a full frame drawn
+      after 60 skipped ones is identical at tolerance zero. Cost, at 1280×800
+      on an RTX 5090, over two runs: 0.73 and 0.80 ms of main-thread submission
+      time per frame, and 6-8 W of board power ✅
 
 ## Open hurdles
 
@@ -605,15 +629,15 @@ Every entry in the register above is closed, by design, or measured and found
 not to be a problem, so what is queued is rendering rather than physics. Slice
 19 left a plan for it — `docs/PLAN-slice-20.md`, written to be executed
 step by step, with the measurement each step has to pass — and this is the
-short form, in the order it argues for. Its first three items are done: the
+short form, in the order it argues for. Its first four items are done: the
 sky as a cubemap and the seam right of the shadow were chased and closed
 without a code change (both below, with the rest of what was tried and not
-kept), and the auto preset on a real display is slice 20c above — it found the
-controller budgeting for frames no display could show and fixed it.
+kept); the auto preset on a real display is slice 20c above — it found the
+controller budgeting for frames no display could show and fixed it; and
+skipping the bloom, composite and HUD once a still picture has converged is
+20e-20f, which turned out to be worth 6-8 W of board power rather than the
+rounding error it was queued as.
 
-- **Skipping the bloom, composite and HUD too** once a still picture has
-  converged and nothing overlaid has changed — the march is already skipped,
-  which is most of the cost, so this is a small idle-power item.
 - **Touch: pinch to zoom.** The camera zooms on the wheel only.
 
 Four things measured and deliberately not acted on, in case they read as gaps

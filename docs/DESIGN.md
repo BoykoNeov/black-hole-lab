@@ -2473,3 +2473,114 @@ visibility, focus, the canvas size, the device pixel ratio and the median rAF
 interval — beside what it asked for, and the refresh rate is a first-class
 number in the tables rather than an assumption, because the whole question is
 what the frame period is.
+
+## Slice 20 item 4 — a still frame that is not drawn at all
+
+Slice 19 stopped re-marching a converged still picture. The bloom chain, the
+composite and the HUD went on running every frame regardless, drawing exactly
+the picture already on the screen — sixty times a second, for as long as the tab
+is open. This is the rest of it: when the march has converged and nothing the
+passes below it read has moved either, `render` returns before the first of
+them and the frame is not drawn.
+
+### Nothing has to be redrawn for the canvas to keep showing something
+
+The thing that makes this safe rather than a flicker is a rule in the WebGL
+spec: the drawing buffer is cleared before the next drawing *command* after a
+composite, not at the composite. A frame that issues no commands leaves the last
+composited image standing, and the browser has no reason to re-composite a layer
+nothing touched. The HUD is a 2D canvas beside it with the same property — it is
+only cleared by `clearHud`, and `resizeHud` already no-ops unless the size
+changed, which was worth checking rather than assuming: setting `width` on a 2D
+canvas clears it, and `resize()` runs at the top of `render`, ahead of the early
+return. Had it been unconditional, every skipped frame would have shown a blank
+overlay, and nothing described below would have caught it.
+
+### The scene's key is joined on rather than reasoned around
+
+`sceneKey` says what the march depends on. The obvious move is to write a second
+key for the passes below and test the two independently, and the first draft
+did: the trails, the clocks' proper times, the debris positions and the star
+field are all frozen once the camera and the clock are still, so none of them
+needs to be in a key.
+
+Every one of those arguments is true and every one of them is load-bearing on
+the convergence rule, which nothing tests. `downstreamKey` is therefore joined
+onto `sceneKey` with a separator and the pair compared as one string. It costs a
+concatenation per frame and deletes the entire class of "is this already
+frozen?" reasoning, including the ones nobody thought to make. What is left is a
+single question — is every field that can move the frame without moving the
+march present? — and that is written down beside the interface, exclusions and
+all: the frame-rate limit and the quality preset (neither is drawn), the manual
+disk temperature and the coupling switch (both reach the frame only through the
+peak temperature, which is in the scene's key), and whether the clock is paused
+(a running clock moves simulation time, which is in the scene's key; a stopped
+one moves nothing).
+
+### The one failure a capture cannot see
+
+Every capture the visual harness takes sets `__wantShot`, which forces a full
+frame — deliberately, since a capture that read a skipped frame would be reading
+an older one. That makes the obvious check useless: two captures either side of
+sixty idle frames are two freshly drawn frames, and they agree whether the skip
+is working, broken, or blanking the canvas between them. The plan's check is
+still worth having — it catches GL state escaping the early return into the next
+full draw, and it reads zero at tolerance zero — but it is not the check for
+this item.
+
+Two readings that do see it, both in `npm run shot`:
+
+- **`__draws` against `__frames`.** The first counts frames that ran the passes,
+  the second every call to `render`. Over sixty settled frames the run reports
+  `0 of 74 frames drew`. Without this, a version where the early return never
+  fires at all passes every other check here, and the item is entirely about the
+  branch firing.
+- **A compositor screenshot.** `page.screenshot` goes through what the user is
+  actually shown and touches nothing in the renderer, so it is the only reading
+  that can see a blanked canvas. Two of them across sixty idle frames are
+  byte-identical. Its own failure mode would be coming back constant, which
+  would make that comparison vacuous — so the same screenshot is taken once more
+  after a HUD-only toggle and must differ, which it does.
+
+The clocks overlay is what that last toggle uses, and it earns its place twice:
+it draws only on the HUD, so nothing in the scene's key moves when it comes on.
+A frame that woke for it woke for the downstream key alone.
+
+### What it saves, and what could not be measured
+
+The app's GPU timer spans the scene pass only, so it cannot see these passes at
+all, and building it a second span for a question this size was not worth it.
+Two things that can be measured without touching the app, at 1280×800 on an
+RTX 5090 (`M:\claud_projects\temp\blackhole-perf\slice20-item4-cost.mjs`, two
+runs): the main thread's own busy time, from CDP's cumulative counters, and the
+board's power draw, from the driver.
+
+The measurement needs a converged picture that is redrawn every frame, which the
+change itself makes impossible — so it is driven from a slider that is in the
+downstream key and invisible on screen (the potential curve's angular momentum,
+with the potential inset hidden). Its control is a slider in no key at all (the
+manual disk temperature, dead while temperature is coupled to mass and rate), so
+the per-frame cost of nudging a slider appears in both conditions and cancels.
+
+| condition | draws | main thread ms/frame | board W |
+| --- | --- | --- | --- |
+| idle, untouched | 0 | 1.39 / 1.48 | 46.1 / 47.6 |
+| idle, nudged (control) | 0 | 3.23 / 3.40 | 50.7 / 51.0 |
+| drawn every frame | 600 | 3.96 / 4.20 | 56.5 / 58.6 |
+
+So the passes cost 0.73 and 0.80 ms of main-thread submission time per frame
+across the two runs, and 6-8 W of board power. The main-thread figure is the
+smaller half of the story by design — the thread only submits this work, and the
+shading is the GPU's, which is what the watts are measuring. GPU *utilisation*
+percentage was sampled too and is not quoted: at one sample a second on a card
+that is also driving the desktop, it moved by one point where the power moved by
+six, and a number that cannot resolve the effect is not evidence for it.
+
+### The readout says idle, because a frame rate would be a lie
+
+The fps readout is written from the bottom of `render`, which a skipped frame
+never reaches, so leaving it alone would freeze whatever rate was last measured
+— sixty, on any machine with headroom, for a renderer doing nothing. The idle
+branch writes `idle · still, converged (32 samples)` instead and resets the
+rate's counting window, so the first drawn frame after a quiet stretch is not
+divided by the length of the stretch.

@@ -1,5 +1,5 @@
 /**
- * Slice 19: the two pure pieces of "render only what the frame needs".
+ * Slices 19 and 20: the pure pieces of "render only what the frame needs".
  *
  * 1. Progressive refinement. The scene shader integrates one geodesic per
  *    pixel per frame, sampled at the pixel's centre, so a frame is a single
@@ -22,6 +22,11 @@
  *    where a frame period says "over budget" reliably and "under budget"
  *    not at all, because a vsync-bound frame reads the display's period
  *    whatever the GPU cost.
+ *
+ * 4. What a still frame's OUTPUT depends on. Once the march has stopped, the
+ *    bloom, composite and overlay passes are the whole cost, and they can be
+ *    skipped too whenever nothing they read has moved. `downstreamKey` is the
+ *    half of that test the scene's own key does not cover.
  *
  * Pure, so tested; main.ts owns the GL and DOM halves.
  */
@@ -281,4 +286,80 @@ export function autoStep(
     st.quiet = 0;
   }
   return st.scale !== before;
+}
+
+/**
+ * Everything the frame draws AFTER the scene target, as one string (slice 20).
+ *
+ * Slice 19 stopped re-marching a converged still picture, but the bloom chain,
+ * the composite and the HUD were still redrawn every frame: a fan that never
+ * stops for a picture that never changes. A frame can be skipped whole when the
+ * scene target is converged AND nothing downstream of it has moved, and this
+ * key is the second half of that test — main.ts's `sceneKey` is the first.
+ *
+ * The caller joins the two rather than reasoning about them separately. Almost
+ * everything the overlays read (the trails, the clocks' proper times, the
+ * debris positions, the star field) can only move when simulation time or the
+ * camera moves, and both of those are already in the scene's key — but that is
+ * a chain of arguments about the convergence rule, and nothing tests it. The
+ * join costs one string concatenation and makes the whole argument unnecessary.
+ *
+ * What is deliberately absent, and why:
+ *
+ * - The frame-rate limit and the quality preset. Neither is drawn. A preset
+ *   change resizes the scene target, which restarts refinement anyway, and
+ *   the size is here in its own right.
+ * - `coupleT` and the manual disk temperature. What either can do is move the
+ *   peak temperature, which is in the scene's key and in the readout's text
+ *   through the same number; when they agree, nothing on screen differs.
+ * - Whether the clock is paused. A running clock moves simulation time, which
+ *   is in the scene's key; a stopped one moves nothing.
+ */
+export interface DownstreamState {
+  /** Bloom strength, the bright pass's threshold, and the tone map's exposure. */
+  bloom: number;
+  threshold: number;
+  exposure: number;
+  /** The frame in device px, in CSS px, and the scene target's own size. All
+   *  three are read: the composite resamples between the last two, and every
+   *  HUD layout is in the middle one. */
+  frameW: number;
+  frameH: number;
+  cssW: number;
+  cssH: number;
+  sceneW: number;
+  sceneH: number;
+  /** The overlay toggles the scene pass does not read. The ladder, the
+   *  polarization ticks and compare mode are in the scene's key instead —
+   *  they change the marched pixels, not only the layer above them. */
+  callouts: boolean;
+  shadow: boolean;
+  trails: boolean;
+  clocks: boolean;
+  potential: boolean;
+  embed: boolean;
+  /** The two insets' drag scales, and the test particle's angular momentum,
+   *  which is the potential curve's only free parameter. */
+  potScale: number;
+  embedScale: number;
+  eduL: number;
+  /** Which resize grip the pointer is over ("" for none). Hovering one
+   *  highlights it, and that is a change to the drawn frame with no other
+   *  cause — no clock and no camera moved. Must not contain a separator. */
+  grip: string;
+  /** The mass and accretion rate the readouts quote. The disk's temperature
+   *  and brightness reach the scene's key already; these two also appear as
+   *  text, in km, seconds, solar masses and Eddington units. */
+  massExp: number;
+  mdotExp: number;
+}
+
+/** The state above as one comparable string. Every field is read; see the test. */
+export function downstreamKey(s: DownstreamState): string {
+  return (
+    `${s.bloom},${s.threshold},${s.exposure},` +
+    `${s.frameW},${s.frameH},${s.cssW},${s.cssH},${s.sceneW},${s.sceneH},` +
+    `${s.callouts},${s.shadow},${s.trails},${s.clocks},${s.potential},${s.embed},` +
+    `${s.potScale},${s.embedScale},${s.eduL},${s.grip},${s.massExp},${s.mdotExp}`
+  );
 }

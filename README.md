@@ -298,11 +298,21 @@ before.
 the camera at rest, no knob moving — each new frame is traced through a
 different sub-pixel point of every pixel (`adaptive.ts`'s `jitterOffset`, the
 R2 sequence) and blended into the scene target at 1/n, so the target is the
-running mean. After 32 samples the picture is converged and **the march stops**:
-a paused lab idles at the cost of the bloom and the HUD. Any change starts
-over from a plain frame, so a moving picture is exactly the frame it always was.
-Bloom and exposure are applied downstream of the target, so they can move
-without throwing the samples away.
+running mean. After 32 samples the picture is converged and **the march stops**.
+Any change starts over from a plain frame, so a moving picture is exactly the
+frame it always was. Bloom and exposure are applied downstream of the target,
+so they can move without throwing the samples away.
+
+**And then nothing is drawn at all.** Slice 20 took the rest: with the march
+converged AND nothing the bloom, composite and overlay passes read having moved
+either (`adaptive.ts`'s `downstreamKey`, joined onto the scene's own key), the
+frame is skipped whole. The canvas keeps what it already shows — WebGL clears
+the drawing buffer before the next drawing *command*, and issuing none leaves
+the last frame standing — and the readout says `idle` rather than reporting a
+frame rate for frames that drew nothing. A still lab costs 6-8 W less on the
+board it was measured on. `render` is still called every frame, so a control,
+an overlay toggle or a pointer over an inset's grip brings the picture back on
+the next one.
 
 **Auto quality.** A fourth preset measures what the scene pass costs on the GPU
 (`gl.ts`'s `GpuTimer`, where the browser offers timer queries) and holds the
@@ -387,7 +397,11 @@ controller judges a window's minimum and not its median.
   fallback for a browser with no GPU timer; and `budgetFps` (slice 20), which
   keeps the controller from budgeting for frames the display cannot show — a
   limit above the refresh rate is one the renderer already ignores, and
-  budgeting for it shrank the picture to buy frames nobody saw (pure, tested)
+  budgeting for it shrank the picture to buy frames nobody saw; and
+  `downstreamKey` (slice 20), everything the frame draws AFTER the scene
+  target — the composite's knobs, the frame's three sizes, the overlay toggles
+  and inset scales the march never sees — which is what lets a converged still
+  frame be skipped whole rather than merely un-marched (pure, tested)
 - `src/astro.ts` — physical scales: unit conversions, Shakura–Sunyaev peak
   temperature, tidal radius / Hills mass, t^(-5/3) fallback flare (pure,
   tested)
@@ -676,7 +690,11 @@ and `tsconfig` covers `src` + `test`.
   frames of one scene and would otherwise be reading how far each had
   converged — and checks that a still frame reaches its 32 samples, differs
   from the plain one by a little everywhere and a lot almost nowhere, and that
-  the readout says the march has stopped.
+  the readout says the march has stopped. Since slice 20 it also checks that
+  the converged frame is not being drawn at all, which no capture can show:
+  every capture forces a full frame on purpose, so the evidence is the
+  `__draws` hook against `__frames`, and a compositor screenshot — which sees
+  what the user sees without asking the renderer for anything.
 
 ## Roadmap
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { DownstreamState } from "../src/adaptive";
 import {
   ACCUM_MAX,
   AUTO,
@@ -6,6 +7,7 @@ import {
   autoStep,
   budgetFps,
   displayHz,
+  downstreamKey,
   frameBudgetMs,
   jitterOffset,
   makeAutoState,
@@ -293,5 +295,61 @@ describe("the rate the budget is taken from", () => {
     const r = ring(50); // 50 ms frames: the GPU, not the panel
     for (let i = 0; i < AUTO.window; i++) autoStep(st, 50, budgetFps(240, r), false);
     expect(st.scale).toBeLessThan(1);
+  });
+});
+
+describe("the key for everything downstream of the scene target", () => {
+  // Every field at a value distinct from the others, so a key that dropped one
+  // and gained another's copy would still read as changed when either moved.
+  const BASE: DownstreamState = {
+    bloom: 0.7,
+    threshold: 1.1,
+    exposure: 1.2,
+    frameW: 1920,
+    frameH: 1080,
+    cssW: 1600,
+    cssH: 900,
+    sceneW: 1344,
+    sceneH: 756,
+    callouts: false,
+    shadow: false,
+    trails: false,
+    clocks: false,
+    potential: false,
+    embed: false,
+    potScale: 1.3,
+    embedScale: 1.4,
+    eduL: 3.4641,
+    grip: "",
+    massExp: 6.5,
+    mdotExp: -1,
+  };
+
+  it("is the same string for the same state", () => {
+    expect(downstreamKey({ ...BASE })).toBe(downstreamKey({ ...BASE }));
+  });
+
+  // The one failure this whole module exists to prevent: a field declared on
+  // the state and then forgotten in the string. The frame it would leave stale
+  // is a HUD overlay nobody redraws, and no capture can see it — every harness
+  // capture forces a full frame, which draws the overlay from current state.
+  it("moves when any single field moves", () => {
+    const base = downstreamKey(BASE);
+    for (const k of Object.keys(BASE) as (keyof DownstreamState)[]) {
+      const v = BASE[k];
+      const bumped: DownstreamState = {
+        ...BASE,
+        [k]: typeof v === "boolean" ? !v : typeof v === "number" ? v + 1 : v + "x",
+      };
+      expect(downstreamKey(bumped), `field ${k} is not in the key`).not.toBe(base);
+    }
+  });
+
+  it("separates its fields, so a value cannot borrow its neighbour's digits", () => {
+    // 12 | 3 and 1 | 23 are different states; an unseparated join makes them
+    // one string and idles a frame whose bloom and threshold both changed.
+    expect(downstreamKey({ ...BASE, bloom: 12, threshold: 3 })).not.toBe(
+      downstreamKey({ ...BASE, bloom: 1, threshold: 23 })
+    );
   });
 });

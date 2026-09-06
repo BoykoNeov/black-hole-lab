@@ -26,6 +26,7 @@ import {
   FRAME_RING,
   autoStep,
   budgetFps,
+  downstreamKey,
   jitterOffset,
   makeAutoState,
   quantizeScale,
@@ -825,6 +826,37 @@ const setText = (el: HTMLElement, text: string) => {
 };
 
 // ---------- render loop ----------
+/**
+ * The hooks the visual harness reads. One object at module scope rather than a
+ * cast per frame, because the idle branch below returns long before the block
+ * at the bottom of `render` that writes most of them, and both halves have to
+ * be talking about the same window.
+ *
+ * __wantShot captures the canvas synchronously before the drawing buffer is
+ * cleared (headless screenshots miss slow WebGL frames), and forces a full
+ * frame: a capture must never read a frame the idle branch skipped.
+ */
+const w = window as unknown as {
+  __wantShot?: boolean;
+  __shot?: string;
+  __shotHud?: string;
+  __layout?: unknown;
+  __frames?: number;
+  __draws?: number;
+  __sceneMs?: number;
+  __sceneMsRaw?: number;
+  __sceneMsTag?: number;
+  __sceneMsN?: number;
+  __sceneScale?: number;
+};
+
+/** What the whole frame — scene AND everything drawn from it — last depended
+ *  on. Unchanged with the march converged means there is nothing to redraw. */
+let lastFrameKey = "";
+
+/** Written while the frame is being skipped; see the idle branch in render. */
+const IDLE_READOUT = `idle · still, converged (${ACCUM_MAX} samples)`;
+
 let frames = 0;
 let fpsT0 = performance.now();
 let firstFrame = true;
@@ -1252,6 +1284,75 @@ function render() {
     gl.disable(gl.BLEND);
   }
 
+  // dev hook: a monotonic count of frames, so a headless harness can wait for
+  // the renderer instead of for the clock — under software GL a frame costs
+  // seconds, and any fixed millisecond wait is then either a stall on a GPU or
+  // a timeout without one. Deliberately not the `frames` counter above, which
+  // is zeroed twice a second for the fps readout.
+  //
+  // Counted HERE, ahead of the branch below, so that it counts every call to
+  // render rather than every frame that drew: a harness waiting on it has to be
+  // able to wait out a stretch of skipped frames rather than hang on one.
+  // __draws is the other half of the pair, counted where the drawing resumes.
+  w.__frames = (w.__frames ?? 0) + 1;
+
+  // ---- is anything downstream of the scene target moving? (slice 20) ----
+  // Slice 19 stopped re-marching a converged still picture, but the bloom
+  // chain, the composite and the HUD were redrawn every frame regardless — a
+  // fan that never stops for a picture that never changes. With the march
+  // converged AND nothing the passes below read having moved, the frame is
+  // skipped whole and the canvas keeps what it already shows: WebGL clears the
+  // drawing buffer before the next drawing COMMAND, so issuing none leaves the
+  // last composited frame standing, and the HUD's 2D canvas is only cleared by
+  // clearHud (resizeHud no-ops unless the size changed).
+  //
+  // The scene's key is joined on rather than reasoned about: nearly everything
+  // the overlays read is frozen by the camera and the clock already being
+  // still, but that is an argument about the convergence rule, and this way it
+  // does not have to be made. See downstreamKey for what is deliberately out.
+  const frameKey =
+    sceneKey +
+    "|" +
+    downstreamKey({
+      bloom: params.bloom,
+      threshold: params.threshold,
+      exposure: params.exposure,
+      frameW: canvas.width,
+      frameH: canvas.height,
+      cssW: canvas.clientWidth,
+      cssH: canvas.clientHeight,
+      sceneW: sceneFbo.w,
+      sceneH: sceneFbo.h,
+      callouts: params.eduCallouts,
+      shadow: params.eduShadow,
+      trails: params.eduTrails,
+      clocks: params.eduClocks,
+      potential: params.eduPotential,
+      embed: params.eduEmbed,
+      potScale: params.potScale,
+      embedScale: params.embedScale,
+      eduL: params.eduL,
+      grip: gripHot ? `${gripHot.id}:${gripHot.side ?? ""}` : "",
+      massExp: params.massExp,
+      mdotExp: params.mdotExp,
+    });
+  const idle = converged && frameKey === lastFrameKey && !w.__wantShot;
+  lastFrameKey = frameKey;
+  if (idle) {
+    // Not a frame rate: the window a rate is measured over would be mostly
+    // frames that drew nothing, and would report the display's cadence while
+    // the GPU is doing none of the work that cadence is supposed to describe.
+    // The counting window restarts with it, so the first rate reported after a
+    // quiet stretch is not divided by the length of the stretch. That leaves
+    // the word "idle" standing for the half-second the next window takes to
+    // close, which is the staleness this readout has always had.
+    setText(fpsReadout, IDLE_READOUT);
+    frames = 0;
+    fpsT0 = now0;
+    requestAnimationFrame(render);
+    return;
+  }
+
   // dev diagnostics (?dbg): scan render targets for NaN/Inf/negatives —
   // a single bad scene pixel smears black blocks through the bloom pyramid
   const dbgScan = location.search.includes("dbg") && frames === 0;
@@ -1271,6 +1372,12 @@ function render() {
     }
     console.log(`dbg ${label}: ${f.w}x${f.h} nan=${nan} inf=${inf} neg=${neg} max=${mx.toFixed(1)}`);
   };
+
+  // dev hook: frames that actually ran the passes below, against __frames,
+  // which counts every call. The two diverging is the only direct evidence
+  // that a still picture is being skipped rather than silently redrawn — a
+  // harness capture forces a full frame, so no picture it takes can show it.
+  w.__draws = (w.__draws ?? 0) + 1;
 
   // Bright pass -> bloom level 0
   gl.bindFramebuffer(gl.FRAMEBUFFER, bloomFbos[0].fb);
@@ -1805,20 +1912,6 @@ function render() {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
   }
 
-  // dev hook: __wantShot captures the canvas synchronously before the
-  // drawing buffer is cleared (headless screenshots miss slow WebGL frames)
-  const w = window as unknown as {
-    __wantShot?: boolean;
-    __shot?: string;
-    __shotHud?: string;
-    __layout?: unknown;
-    __frames?: number;
-    __sceneMs?: number;
-    __sceneMsRaw?: number;
-    __sceneMsTag?: number;
-    __sceneMsN?: number;
-    __sceneScale?: number;
-  };
   // dev hook: the GPU's latest reading of the scene pass and the scale in
   // force, so a harness can watch the auto preset settle instead of reading
   // the readout's half-second samples of it
@@ -1829,12 +1922,6 @@ function render() {
   w.__sceneMsTag = rawTag;
   w.__sceneMsN = rawN;
   w.__sceneScale = sceneFbo.w / Math.max(1, Math.floor(canvas.clientWidth * Math.min(window.devicePixelRatio || 1, MAX_DPR)));
-  // dev hook: a monotonic count of frames actually DRAWN, so a headless
-  // harness can wait for the renderer instead of for the clock — under
-  // software GL a frame costs seconds, and any fixed millisecond wait is then
-  // either a stall on a GPU or a timeout without one. Deliberately not the
-  // `frames` counter above, which is zeroed twice a second for the fps readout.
-  w.__frames = (w.__frames ?? 0) + 1;
   if (w.__wantShot) {
     w.__wantShot = false;
     w.__shot = canvas.toDataURL("image/png");

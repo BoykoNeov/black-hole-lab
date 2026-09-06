@@ -26,7 +26,38 @@ function check(name, ok, detail) {
 // render". The sky is a bloomed nebula, so a real frame clears this hugely.
 const MIN_LIT = 5000;
 
+/** Frames waited out to prove the renderer really has stopped drawing. Long
+ *  enough that a redraw on any plausible period would land inside it. */
+const IDLE_FRAMES = 60;
+
 const lab = await openLab({ controls: { spin: 0.9 } });
+
+/**
+ * Pixels differing between two PNG data URLs, at tolerance zero.
+ *
+ * Decoded in the page rather than here: the harness carries no PNG decoder and
+ * this run must not grow a dependency for one. `lab.pixelDiff` cannot do it —
+ * it compares two LAYERS of one capture, and these are two captures.
+ */
+const diffPixels = (a, b) =>
+  lab.page.evaluate(async ([a, b]) => {
+    const load = (u) => new Promise((r) => { const i = new Image(); i.onload = () => r(i); i.src = u; });
+    const px = async (u) => {
+      const img = await load(u);
+      const c = document.createElement("canvas");
+      c.width = img.width;
+      c.height = img.height;
+      const g = c.getContext("2d", { willReadFrequently: true });
+      g.drawImage(img, 0, 0);
+      return g.getImageData(0, 0, c.width, c.height).data;
+    };
+    const [da, db] = [await px(a), await px(b)];
+    if (da.length !== db.length) return -1;
+    let n = 0;
+    for (let i = 0; i < da.length; i += 4)
+      if (da[i] !== db[i] || da[i + 1] !== db[i + 1] || da[i + 2] !== db[i + 2]) n++;
+    return n;
+  }, [a, b]);
 try {
   // Which server, not just which port: several vite projects share this range.
   console.log(`lab found at ${lab.url}`);
@@ -162,8 +193,83 @@ try {
       `${(100 * changed.big).toFixed(1)}% by > 150, mean |d| ${changed.mean.toFixed(2)}`
   );
   await lab.shot("smoke-refined.png");
-  const idle = await lab.page.evaluate(() => document.getElementById("fps-readout").textContent);
-  check("the readout says the march has stopped", /converged/.test(idle), idle.trim());
+
+  // ---- slice 20: a converged still picture stops redrawing altogether ----
+  //
+  // Nothing here can be a picture the harness takes: every capture sets
+  // __wantShot, which forces a full frame on purpose, so a capture always
+  // shows a freshly drawn frame whether or not the skip is working. Hence two
+  // measurements a capture cannot make — the renderer's own count of frames
+  // that DREW, and a compositor screenshot, which goes through what the user
+  // is actually shown and does not touch __wantShot.
+  await lab.settle(2); // let the last capture's forced frame go by
+  const seen0 = await lab.page.evaluate(() => ({ f: window.__frames, d: window.__draws }));
+  const still0 = await lab.page.screenshot();
+  await lab.settle(IDLE_FRAMES);
+  const seen1 = await lab.page.evaluate(() => ({ f: window.__frames, d: window.__draws }));
+  const still1 = await lab.page.screenshot();
+  check(
+    "a converged still picture keeps calling render",
+    seen1.f - seen0.f >= IDLE_FRAMES,
+    `${seen1.f - seen0.f} frames`
+  );
+  check(
+    "...and draws none of them",
+    seen1.d - seen0.d === 0,
+    `${seen1.d - seen0.d} of ${seen1.f - seen0.f} frames drew`
+  );
+  // The screenshot is the only check here that can see a blanked canvas. Its
+  // own failure mode is coming back constant, which would make the comparison
+  // above vacuous — the clocks toggle below is what rules that out.
+  check(
+    "what the compositor shows does not change while the frame is skipped",
+    still0.equals(still1),
+    `${still0.length} vs ${still1.length} bytes`
+  );
+
+  const readout = await lab.page.evaluate(
+    () => document.getElementById("fps-readout").textContent
+  );
+  check(
+    "the readout says the march has stopped, and that nothing is being drawn",
+    /converged/.test(readout) && /idle/.test(readout),
+    readout.trim()
+  );
+
+  // The other half: a frame drawn after a run of skipped ones must be the
+  // frame that would have been drawn without them. Tolerance zero — this is
+  // the same picture from the same target, so anything at all differing means
+  // the early return left GL state behind it.
+  await lab.capture();
+  const restedUrl = await lab.dataUrl({ layer: "composite" });
+  await lab.settle(IDLE_FRAMES);
+  await lab.capture();
+  const wokenUrl = await lab.dataUrl({ layer: "composite" });
+  check(
+    "the frame drawn after a run of skipped ones is identical to the one before",
+    (await diffPixels(restedUrl, wokenUrl)) === 0,
+    `${await diffPixels(restedUrl, wokenUrl)} px differ`
+  );
+
+  // And the frame must WAKE for an overlay that draws nothing the scene pass
+  // knows about: the clocks are HUD-only, so nothing in the scene's own key
+  // moves when they come on.
+  await lab.set({ "edu-clocks": true });
+  await lab.settle();
+  await lab.capture();
+  const clocksUrl = await lab.dataUrl({ layer: "composite" });
+  check(
+    "a HUD-only toggle wakes the skipped frame",
+    (await diffPixels(wokenUrl, clocksUrl)) > 0,
+    `${await diffPixels(wokenUrl, clocksUrl)} px changed`
+  );
+  const stillClocks = await lab.page.screenshot();
+  check(
+    "the compositor screenshot really does track the frame",
+    !stillClocks.equals(still1),
+    `${stillClocks.length} vs ${still1.length} bytes`
+  );
+  await lab.set({ "edu-clocks": false });
 } finally {
   await lab.close();
 }
