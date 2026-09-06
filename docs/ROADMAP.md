@@ -463,8 +463,10 @@ Units are geometrized (G = c = M = 1) throughout.
       keeps a finger sliding off the canvas inside the gesture — is exercised:
       two fingers spread from a 160 px gap to 440 pull 25 M in to 9.0909, the
       ratio exactly; one finger over the same ground moves the distance not at
-      all; and two fingers moved together with the gap held change neither the
-      distance nor a single pixel ✅
+      all while moving essentially the whole frame, which is what says the
+      orbit branch is still alive rather than merely quiet; and two fingers
+      moved together with the gap held change neither the distance nor a single
+      pixel ✅
 
 ## Open hurdles
 

@@ -310,17 +310,25 @@ try {
   );
 
   // One finger over the same ground: it orbits, as it always has, and must not
-  // touch the distance. Without this the zoom check below is satisfied by an
-  // implementation that zooms on every pointermove.
+  // touch the distance. Without the distance half, the zoom check below is
+  // satisfied by an implementation that zooms on every pointermove; without
+  // the pixels, every check here is satisfied by an orbit branch that is dead,
+  // which is the one thing this change could have regressed. The pixel bound
+  // is nowhere near marginal — yaw moves, so the scene's key moves, so the
+  // still picture starts accumulating again from one sample.
   const oneBefore = await dist();
+  await lab.capture();
+  const beforeOrbit = await lab.dataUrl({ layer: "composite" });
   await touch("touchStart", 560);
   for (const x of [540, 500, 460, 420]) await touch("touchMove", x);
   await touch("touchEnd");
   await lab.settle(3);
+  await lab.capture();
+  const orbited = await diffPixels(beforeOrbit, await lab.dataUrl({ layer: "composite" }));
   check(
-    "one finger does not zoom",
-    (await dist()) === oneBefore,
-    `dist ${oneBefore} -> ${await dist()}`
+    "one finger still orbits, and does not zoom",
+    (await dist()) === oneBefore && orbited > 0,
+    `dist ${oneBefore} -> ${await dist()}, ${orbited} px moved`
   );
 
   // And the gesture itself. The distance is not merely smaller: fingers that

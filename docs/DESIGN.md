@@ -2665,14 +2665,20 @@ reading. `npm run shot` takes three, at 1280×800:
 | gesture | reading |
 | --- | --- |
 | two fingers, gap 160 px → 440 px | 25 M → 9.0909 M, against 25 × 160/440 = 9.0909 |
-| one finger, same 140 px of travel | 25 M → 25 M |
+| one finger, same 140 px of travel | 25 M → 25 M, and 1,004,602 of 1,024,000 px move |
 | two fingers moved together, gap held | 25 M → 25 M, and 0 pixels of the composite differ |
 
 The first is an equality to within a float's noise, not a direction: the
 telescoping above means the whole four-move gesture is predicted by its first
 and last gaps alone, so a zoom that responded to the wrong pair of positions
-would miss it. The second is the control on the gate. The third is the only one
-that can see the no-orbit half of the rule — the distance is unchanged either
+would miss it. The second is the control on the gate, and it reads the frame as
+well as the distance: every check here is passed *more* easily by an orbit
+branch that has gone dead, which is the one behaviour a rewrite of the pointer
+handlers could have regressed, so "one finger orbits exactly as it always did"
+needs a reading of its own. It is not a marginal one — yaw moves, so the scene's
+key moves, so the converged still picture starts over from one sample and nearly
+the whole frame changes. The third is the only one that can see the no-orbit
+half of the rule — the distance is unchanged either
 way, so it is the *pixels* that carry it, and they can be compared at tolerance
 zero because the picture is a converged still one by that point in the run
 (item 4's idle frame is what makes that comparison free of drift).
