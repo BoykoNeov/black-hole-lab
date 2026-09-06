@@ -2294,10 +2294,12 @@ SwiftShader that costs 213 s per call and returns two distinct numbers,
 It also makes the tool honest about something the old line was accidentally
 right about. The old comment said the frame rate was "an upper bound on the
 cost, not the cost", and the new number is an upper bound too, for a different
-reason: ladder off and ladder on both read 2.8 ms on the GPU, where the old
-scrape read 2.7 and 2.9 — two samples of the same statistic, half a run apart,
-read as a difference. The ladder's own cost is below what this measurement
-resolves, on either machine. Under SwiftShader the ladder-on reading came back
+reason. One GPU run of it reads 2.8 ms with the ladder off and 2.8 ms with it
+on; the old scrape, on its own single run, read 2.7 and 2.9. Neither pair is
+reproducible to that last digit — a single run is one sample of each — and that
+is the point: the gap the old pair looked like it had measured is the size of
+the scatter between two runs, so the ladder's own cost is below what this
+measurement resolves. Under SwiftShader the ladder-on reading came back
 2% BELOW ladder-off, which is the same statement in a noisier form.
 
 The Firefox and Safari branch is handled rather than assumed: with no timer

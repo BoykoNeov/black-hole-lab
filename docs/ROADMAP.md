@@ -486,7 +486,8 @@ Units are geometrized (G = c = M = 1) throughout.
       came back as the same stale text, twice. `frameTime` is now `sceneCost`,
       waiting on sixteen fresh GPU-timer readings and reading `__sceneMs`
       rather than scraping the readout — and the ladder's cost turns out to sit
-      below what either machine resolves ✅
+      below what either machine resolves, the old scrape's 2.7 against 2.9
+      being the scatter between two runs rather than a difference ✅
 
 ## Open hurdles
 

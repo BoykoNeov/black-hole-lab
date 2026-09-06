@@ -686,8 +686,8 @@ and `tsconfig` covers `src` + `test`.
   the ladder off and on, taken from the GPU timer after sixteen fresh readings
   rather than from the readout's text after four seconds of wall clock — a wait
   in milliseconds that a software-GL run showed printing one measurement twice.
-  It reads 2.8 ms either way, which is an upper bound on what the ladder costs
-  rather than the cost: the same tool run twice moves the figure by as much
+  The two readings sit inside the scatter the same tool has run to run, so what
+  it gives is an upper bound on what the ladder costs rather than the cost
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame
