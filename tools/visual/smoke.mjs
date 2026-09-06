@@ -270,6 +270,76 @@ try {
     `${stillClocks.length} vs ${still1.length} bytes`
   );
   await lab.set({ "edu-clocks": false });
+
+  // ---- slice 20: two fingers zoom, one finger does not ----
+  //
+  // Real touch through CDP rather than dispatched PointerEvents: a synthetic
+  // pointer is not an active one, so setPointerCapture throws on it and the
+  // second finger's capture — the thing that keeps a finger sliding off the
+  // canvas from dropping out of the gesture — would go untested. Touch
+  // emulation is turned on here, at the end of the run, and never in openLab:
+  // that context is shared with `npm run pol` and `npm run band`, and
+  // maxTouchPoints and `pointer: coarse` are not theirs to have changed.
+  const cdp = await lab.page.context().newCDPSession(lab.page);
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  const TOUCH_Y = 400; // mid-height: clear of the panel column and the insets
+  const touch = async (type, ...xs) =>
+    cdp.send("Input.dispatchTouchEvent", {
+      type,
+      touchPoints: xs.map((x, i) => ({ x, y: TOUCH_Y, id: i + 1 })),
+    });
+  const dist = () => lab.page.evaluate(() => window.__cameraDist);
+
+  // Two fingers moved together, the gap between them held: the camera must not
+  // move at all. This is the half of the rule a zoom check cannot see — orbit
+  // is off entirely while two are down, and a camera that swung under the
+  // gesture would still pass "the distance got smaller".
+  const panned0 = await dist();
+  await lab.capture();
+  const beforePan = await lab.dataUrl({ layer: "composite" });
+  await touch("touchStart", 560, 720);
+  for (const dx of [20, 40, 60]) await touch("touchMove", 560 + dx, 720 + dx);
+  await touch("touchEnd");
+  await lab.settle(3);
+  await lab.capture();
+  check(
+    "two fingers moved together neither zoom nor orbit",
+    (await dist()) === panned0 &&
+      (await diffPixels(beforePan, await lab.dataUrl({ layer: "composite" }))) === 0,
+    `dist ${panned0} -> ${await dist()}`
+  );
+
+  // One finger over the same ground: it orbits, as it always has, and must not
+  // touch the distance. Without this the zoom check below is satisfied by an
+  // implementation that zooms on every pointermove.
+  const oneBefore = await dist();
+  await touch("touchStart", 560);
+  for (const x of [540, 500, 460, 420]) await touch("touchMove", x);
+  await touch("touchEnd");
+  await lab.settle(3);
+  check(
+    "one finger does not zoom",
+    (await dist()) === oneBefore,
+    `dist ${oneBefore} -> ${await dist()}`
+  );
+
+  // And the gesture itself. The distance is not merely smaller: fingers that
+  // spread by a factor divide the distance by exactly that factor, and the
+  // per-move ratios telescope, so the whole gesture is predicted by its first
+  // and last gaps alone. Tolerance is for the float, not for the physics.
+  const pinchBefore = await dist();
+  await touch("touchStart", 560, 720);
+  for (const [a, b] of [[540, 740], [500, 780], [460, 820], [420, 860]])
+    await touch("touchMove", a, b);
+  await touch("touchEnd");
+  await lab.settle(3);
+  const pinchAfter = await dist();
+  const want = pinchBefore * (160 / 440); // the gap at touchStart, over the last one
+  check(
+    "two fingers spreading pull the camera in by the ratio they spread",
+    Math.abs(pinchAfter - want) < 1e-6,
+    `dist ${pinchBefore} -> ${pinchAfter.toFixed(4)}, predicted ${want.toFixed(4)}`
+  );
 } finally {
   await lab.close();
 }

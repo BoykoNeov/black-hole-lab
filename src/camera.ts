@@ -47,26 +47,59 @@ export function cameraBasis(s: CameraState): CameraBasis {
  * `claimed` lets an overlay take a pointerdown before the camera sees it: the
  * HUD canvas is pointer-events:none (so camera drags pass straight through to
  * here), which also means its own hit regions never receive the event. Without
- * this hook, dragging a HUD handle would spin the camera underneath it.
+ * this hook, dragging a HUD handle would spin the camera underneath it. A
+ * claimed pointer is deliberately never tracked below, so dragging an inset's
+ * grip with one finger and touching the canvas with another cannot be read as
+ * a pinch.
  */
 export function attachControls(
   canvas: HTMLCanvasElement,
   state: CameraState,
   claimed?: (e: PointerEvent) => boolean
 ): void {
-  let dragging = false;
+  /** Every pointer the camera owns, by id: one orbits, two pinch. */
+  const down = new Map<number, { x: number; y: number }>();
   let lastX = 0;
   let lastY = 0;
+  /** Finger separation at the previous move; 0 while fewer than two are down. */
+  let spread = 0;
+
+  /** Separation of the first two pointers down, which are the ones that pinch. */
+  const gap = (): number => {
+    const [a, b] = [...down.values()];
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
+
+  const zoom = (factor: number): void => {
+    state.dist = Math.max(DIST_MIN, Math.min(DIST_MAX, state.dist * factor));
+  };
 
   canvas.addEventListener("pointerdown", (e) => {
     if (claimed?.(e)) return;
-    dragging = true;
+    down.set(e.pointerId, { x: e.clientX, y: e.clientY });
     lastX = e.clientX;
     lastY = e.clientY;
+    spread = down.size >= 2 ? gap() : 0;
+    // Last, and it has to stay last: a synthetic pointerdown (the visual
+    // harness dispatches its own) has no active pointer to capture, so this
+    // throws there, and everything the gesture needs is already set above.
     canvas.setPointerCapture(e.pointerId);
   });
   canvas.addEventListener("pointermove", (e) => {
-    if (!dragging) return;
+    const p = down.get(e.pointerId);
+    if (!p) return;
+    p.x = e.clientX;
+    p.y = e.clientY;
+    if (down.size >= 2) {
+      // Fingers moving apart magnify the picture, and magnifying it is coming
+      // closer — so the ratio divides. Orbiting is off entirely while two are
+      // down: a pinch is never symmetric enough for the midpoint to hold still,
+      // and the camera would swing under the gesture.
+      const now = gap();
+      if (spread > 0 && now > 0) zoom(spread / now);
+      spread = now;
+      return;
+    }
     const dx = e.clientX - lastX;
     const dy = e.clientY - lastY;
     lastX = e.clientX;
@@ -76,16 +109,28 @@ export function attachControls(
     const lim = Math.PI / 2 - 0.02;
     state.pitch = Math.max(-lim, Math.min(lim, state.pitch));
   });
-  canvas.addEventListener("pointerup", (e) => {
-    dragging = false;
-    canvas.releasePointerCapture(e.pointerId);
-  });
+  const lift = (e: PointerEvent): void => {
+    if (!down.delete(e.pointerId)) return;
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    spread = 0;
+    // Re-anchor on whichever finger is still down. Without this, lifting one of
+    // two leaves the anchor where the lifted one last was, and the next move
+    // orbits by the whole gap between them in a single frame.
+    const rest = down.values().next().value;
+    if (rest) {
+      lastX = rest.x;
+      lastY = rest.y;
+    }
+  };
+  canvas.addEventListener("pointerup", lift);
+  // A touch the browser takes back (a system gesture, a lost context) sends
+  // this and no pointerup; without it the camera stays in pinch mode forever.
+  canvas.addEventListener("pointercancel", lift);
   canvas.addEventListener(
     "wheel",
     (e) => {
       e.preventDefault();
-      state.dist *= Math.exp(e.deltaY * 0.0012);
-      state.dist = Math.max(DIST_MIN, Math.min(DIST_MAX, state.dist));
+      zoom(Math.exp(e.deltaY * 0.0012));
     },
     { passive: false }
   );

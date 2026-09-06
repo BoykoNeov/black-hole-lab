@@ -2584,3 +2584,102 @@ never reaches, so leaving it alone would freeze whatever rate was last measured
 branch writes `idle · still, converged (32 samples)` instead and resets the
 rate's counting window, so the first drawn frame after a quiet stretch is not
 divided by the length of the stretch.
+
+## Slice 20 item 5 — two fingers, and a check that a broken pinch would fail
+
+`attachControls` zoomed on the wheel and nothing else. On a touch screen that
+left the lab half-usable: the camera orbited under a finger, but nothing could
+move it in or out, and `touch-action: none` on the canvas — there so a drag
+across the view is an orbit rather than a page scroll — suppresses the browser's
+own pinch as well, so there was no fallback either.
+
+### The pointer count is the gate, and a claimed pointer is not counted
+
+The camera now keeps its live pointers in a Map keyed by `pointerId`. One
+pointer orbits, exactly as it always did. Two divide the distance by the factor
+the fingers spread by, and orbiting is off entirely while both are down — a real
+pinch is never symmetric enough for the midpoint between the fingers to hold
+still, so a camera that kept orbiting would swing under the gesture.
+
+Three details in that Map are worth more than their line count:
+
+- **A claimed pointer is never added.** `claimed` is the hook that lets an
+  inset's resize grip take a pointerdown before the camera turns it into an
+  orbit drag, and it still runs first on every pointerdown, unchanged. Adding
+  claimed pointers to the Map would mean a finger dragging a grip and a second
+  finger touching the canvas counted as a pinch — the camera zooming while the
+  user resizes an inset.
+- **`pointercancel` shares the release path.** A touch the system takes back
+  (a gesture the OS claims, a lost context) sends this and never sends a
+  `pointerup`. Without it the Map keeps an entry for a finger that is gone and
+  the camera sits in pinch mode with nothing on the glass.
+- **Lifting one of two re-anchors the drag on the other.** The orbit anchor is
+  wherever the last pointer event was, which after a pinch is the lifted
+  finger's position. Left alone, the next move of the surviving finger orbits by
+  the whole gap between them in one frame — a visible snap at the end of every
+  pinch.
+
+The zoom itself is `state.dist *= previous gap / current gap`, through the same
+clamp the wheel uses (`DIST_MIN` = 3.2, just outside the photon sphere). Because
+the per-move ratios multiply, a whole gesture telescopes to its first gap over
+its last, whatever path the fingers took in between — which is what makes the
+check below an equality rather than an inequality.
+
+This is DOM wiring and stays untested per the repo's conventions: the only math
+in it is `Math.hypot`, and a unit test would be testing that. What is tested is
+the gesture end to end, in the visual harness.
+
+### Real touch, not dispatched events
+
+The plan called for synthesizing the gesture with `page.evaluate` and
+`dispatchEvent`. That works — the pinch math runs and the distance falls — but
+it tests less than it looks like it does. A dispatched `PointerEvent` is not an
+*active* pointer, so `setPointerCapture` throws `NotFoundError` on it and every
+touch leaves an uncaught error in the page. Capture is not incidental here: it
+is what keeps a finger that slides off the canvas mid-pinch inside the gesture,
+and it is the one thing a synthetic pointer cannot exercise.
+
+Chrome will deliver the real thing over CDP —
+`Emulation.setTouchEmulationEnabled` and then `Input.dispatchTouchEvent` —
+which arrives as trusted pointer events with `pointerType: "touch"`, working
+capture, and a second `pointerdown` for the second finger while the first holds
+capture. That last one is the behaviour the whole item rests on and the reason
+the route was worth checking rather than assuming.
+
+Touch emulation is turned on inside `smoke.mjs`, at the end of the run, and
+deliberately not in `openLab`: that browser context is shared with `npm run pol`
+and `npm run band`, and `maxTouchPoints` and `pointer: coarse` are not theirs to
+have changed for one check.
+
+The pointerdown handler takes its capture as the **last** statement, after the
+Map and the gap are set. That ordering costs nothing and means the synthetic
+route still exercises the gesture for anyone who reaches for it, since the throw
+lands after everything the pinch needs.
+
+### Three readings, and what each one rules out
+
+"The distance got smaller" is passed just as well by an implementation that
+zooms on every pointer move, so the gate on the pointer count needs its own
+reading. `npm run shot` takes three, at 1280×800:
+
+| gesture | reading |
+| --- | --- |
+| two fingers, gap 160 px → 440 px | 25 M → 9.0909 M, against 25 × 160/440 = 9.0909 |
+| one finger, same 140 px of travel | 25 M → 25 M |
+| two fingers moved together, gap held | 25 M → 25 M, and 0 pixels of the composite differ |
+
+The first is an equality to within a float's noise, not a direction: the
+telescoping above means the whole four-move gesture is predicted by its first
+and last gaps alone, so a zoom that responded to the wrong pair of positions
+would miss it. The second is the control on the gate. The third is the only one
+that can see the no-orbit half of the rule — the distance is unchanged either
+way, so it is the *pixels* that carry it, and they can be compared at tolerance
+zero because the picture is a converged still one by that point in the run
+(item 4's idle frame is what makes that comparison free of drift).
+
+`__cameraDist` is the dev hook all three read. It is written beside `__frames`,
+above the idle early return, rather than with `__sceneScale` at the bottom of
+`render` where the plan put it: everything below that return is only as fresh as
+the last frame that drew. Distance cannot in fact move without waking a frame,
+because it is in the scene's key — but that is a fact about a different key, and
+item 4 is the argument for not leaning on those.

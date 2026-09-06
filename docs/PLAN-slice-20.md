@@ -290,6 +290,21 @@ carry them (pixelDiff against the previous capture > 0).
 
 ## Item 5 — pinch to zoom
 
+**Done (2026-09-06), built as written with two changes.** The dev hook goes
+beside `__frames`, above the idle early return, not with `__sceneScale` at the
+bottom of `render`: everything below that return is only as fresh as the last
+frame that drew. And the harness drives real touch through CDP
+(`Emulation.setTouchEmulationEnabled` + `Input.dispatchTouchEvent`) rather than
+dispatching `PointerEvent`s — a synthetic pointer is not an active one, so
+`setPointerCapture` throws on it, and capture is exactly what keeps a finger
+sliding off the canvas inside the gesture. The plan's single check ("before:
+unchanged, after: smaller") is also passed by an implementation that zooms on
+every pointer move, so `npm run shot` takes three: the pinch as an equality
+(25 M → 9.0909 against 25 × 160/440), one finger over the same ground as the
+control, and two fingers moved together with the gap held, which is the only
+one that can see the no-orbit half of the rule. See `docs/ROADMAP.md` 20g and
+`docs/DESIGN.md`'s slice 20 item 5 section.
+
 ### Why
 
 `src/camera.ts` zooms on the wheel only. On a touch screen the lab orbits but

@@ -492,11 +492,13 @@ controller judges a window's minimum and not its median.
   timer's readings to the auto preset's controller, along with the intervals
   between drawn frames that `budgetFps` reads the display's own rate off; the
   fps readout shows the scene pass's GPU cost, its size and the sample count.
-  Dev hooks `__sceneMs` and `__sceneScale` publish the same for a harness, and
+  Dev hooks `__sceneMs` and `__sceneScale` publish the same for a harness,
   `__sceneMsRaw` / `__sceneMsTag` / `__sceneMsN` the timer's readings
-  unsmoothed, since `__sceneMs` is the minimum of sixteen
-- `src/camera.ts` — orbit controls (plus the `claimed` hook that lets a HUD
-  handle take a pointerdown before it becomes an orbit drag)
+  unsmoothed, since `__sceneMs` is the minimum of sixteen, and `__cameraDist`
+  where the camera is, so a harness can drive the gestures a user has
+- `src/camera.ts` — orbit controls: drag or one finger orbits, the wheel or two
+  fingers pinched zoom (plus the `claimed` hook that lets a HUD handle take a
+  pointerdown before it becomes an orbit drag)
 - `src/gl.ts` — WebGL boilerplate: program compilation, framebuffer objects,
   and `GpuTimer` (slice 19), a pool of `EXT_disjoint_timer_query_webgl2`
   queries around the scene pass with a tag that rides along, since a reading

@@ -378,11 +378,12 @@ Units are geometrized (G = c = M = 1) throughout.
       zero at five views, hairlines to 0.027 half-turns, disk light 0.10 against
       0.0000 ✅
 
-20. **The auto preset in front of a real monitor, and a still frame that
-    stops being drawn** — slice 19's rendering follow-ups, taken in the order
-    its plan argued for. Items 1 and 2 were chased and closed with no code
-    change (below); item 3 found a bug in the shipped controller and fixed it;
-    item 4 stopped a converged still picture redrawing at all ✅
+20. **The auto preset in front of a real monitor, a still frame that stops
+    being drawn, and zoom on a touch screen** — slice 19's rendering
+    follow-ups, taken in the order its plan argued for. Items 1 and 2 were
+    chased and closed with no code change (below); item 3 found a bug in the
+    shipped controller and fixed it; item 4 stopped a converged still picture
+    redrawing at all; item 5 gave a touch screen the zoom it never had ✅
     - 20a the harness can open a real window (`LAB_HEADED=1`) and can withhold
       the GPU timer extension from the page on hardware that has it
       (`LAB_NO_TIMER=1`), which is how the Firefox/Safari branch was exercised
@@ -449,6 +450,21 @@ Units are geometrized (G = c = M = 1) throughout.
       after 60 skipped ones is identical at tolerance zero. Cost, at 1280×800
       on an RTX 5090, over two runs: 0.73 and 0.80 ms of main-thread submission
       time per frame, and 6-8 W of board power ✅
+    - 20g **pinch to zoom.** `attachControls` zoomed on the wheel only, and
+      `touch-action: none` on the canvas suppresses the browser's own pinch, so
+      a touch screen could orbit the camera but never move it in or out. The
+      camera now keeps its live pointers in a Map: one orbits exactly as
+      before, two divide the distance by the factor the fingers spread by, and
+      orbiting is off entirely while two are down. A claimed pointer (an
+      inset's grip) is never tracked, and `pointercancel` shares the release
+      path with `pointerup`, so a touch the system takes back cannot leave the
+      camera stuck in a gesture. `npm run shot` drives it as real touch through
+      CDP rather than dispatched events, so pointer capture — the thing that
+      keeps a finger sliding off the canvas inside the gesture — is exercised:
+      two fingers spread from a 160 px gap to 440 pull 25 M in to 9.0909, the
+      ratio exactly; one finger over the same ground moves the distance not at
+      all; and two fingers moved together with the gap held change neither the
+      distance nor a single pixel ✅
 
 ## Open hurdles
 

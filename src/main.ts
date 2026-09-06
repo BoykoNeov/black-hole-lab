@@ -470,8 +470,9 @@ canvas.addEventListener("pointermove", (e) => {
 canvas.addEventListener("pointerup", (e) => {
   if (!insetDrag) return;
   insetDrag = null;
-  // The camera's own pointerup runs first and releases the capture we took,
-  // so this would otherwise throw on an already-released pointer.
+  // The camera releases only the pointers it tracks, and a claimed one is not
+  // among them, so this is the release for a grip drag. Guarded anyway: the
+  // camera's pointerup runs first and the ordering is not this file's to keep.
   if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
 });
 
@@ -848,6 +849,7 @@ const w = window as unknown as {
   __sceneMsTag?: number;
   __sceneMsN?: number;
   __sceneScale?: number;
+  __cameraDist?: number;
 };
 
 /** What the whole frame — scene AND everything drawn from it — last depended
@@ -1295,6 +1297,12 @@ function render() {
   // able to wait out a stretch of skipped frames rather than hang on one.
   // __draws is the other half of the pair, counted where the drawing resumes.
   w.__frames = (w.__frames ?? 0) + 1;
+
+  // dev hook: where the camera is, for a harness driving the controls the user
+  // has — pinch, drag, wheel. Written here rather than with the other hooks at
+  // the bottom for the same reason __frames is: everything below the idle
+  // branch is only as fresh as the last frame that drew.
+  w.__cameraDist = camera.dist;
 
   // ---- is anything downstream of the scene target moving? (slice 20) ----
   // Slice 19 stopped re-marching a converged still picture, but the bloom
