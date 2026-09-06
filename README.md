@@ -28,8 +28,10 @@ npm run band    # slices 11-14 and 18: the drawn photon-ring ladder vs the CPU
 ```
 
 All three visual runs wait on frames drawn rather than on the clock, so they
-work where a frame costs seconds. `LAB_SOFTWARE_GL=1` forces ANGLE's software
-rasterizer to prove that on a machine with a GPU; `LAB_HEADED=1` opens a real
+work where a frame costs seconds, and all three have now been run that way:
+`shot` in 1510 s, `pol` in 1421 s and `band` in 5551 s, against 3, 4 and 111
+with a GPU under them. `LAB_SOFTWARE_GL=1` forces ANGLE's software rasterizer
+to prove it on a machine with a GPU; `LAB_HEADED=1` opens a real
 window rather than a headless one, and `LAB_NO_TIMER=1` withholds the GPU timer
 extension from the page. Each run prints the renderer it actually got, and the
 measured cost of a frame and of a capture, on its first line.
@@ -680,10 +682,12 @@ and `tsconfig` covers `src` + `test`.
   24% with the new line disabled in the shader. It has to be read off a
   deliberately dim frame with the ladder's false colour off: at the normal
   exposure the march's own jet light clips these pixels to white and nothing can
-  be seen in them at all. And the frame rate, which
-  sits on the display's
-  ceiling either way — an upper bound on the cost, and the tool says so rather
-  than dressing it up as a measurement
+  be seen in them at all. And what the scene pass costs at the pitch clamp with
+  the ladder off and on, taken from the GPU timer after sixteen fresh readings
+  rather than from the readout's text after four seconds of wall clock — a wait
+  in milliseconds that a software-GL run showed printing one measurement twice.
+  It reads 2.8 ms either way, which is an upper bound on what the ladder costs
+  rather than the cost: the same tool run twice moves the figure by as much
 - `tools/visual/smoke.mjs` — `npm run shot`. Proves the harness can boot the
   lab, capture a non-blank composited frame and measure it, and doubles as the
   worked example of the intended shape: capture once, then measure that frame

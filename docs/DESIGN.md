@@ -2215,12 +2215,95 @@ tick angle is 2.29°, 2.37°, 0.86° at the three spins against 2.30°, 2.38°,
 0.86°. The physics measurement did not change; only the clock did, which is
 the whole point.
 
-`npm run band` was NOT run that way, and this says so rather than claiming all
-three. Every wait in it is a `settle()` or the deliberate millisecond one, both
-exercised by the two runs above, and it opens the lab with the ladder already
-on, so its own boot measurement sits on the expensive path from the start. What
-a software run of it would measure is runtime, not wait logic — two of the three
-are portable by measurement, and the third by argument.
+`npm run band` has now been run that way too (2026-09-06), and the sentence
+this replaces was wrong in the direction that mattered. It said a software run
+of it "would measure runtime, not wait logic", leaving the third harness
+portable by argument rather than by measurement. The runtime is real enough —
+5551 s against 111 s with the GPU under it, a factor of 50, from a frame that
+goes 16.5 ms to 458.8 ms and a capture that goes 82 ms to 83,390 ms — but the
+run also had wait logic in it that the other two do not exercise, and half of
+that logic failed.
+
+The half that held is every wait counted in FRAMES, and one of those was the
+open question this entry left. `captureCeiling` is derived from a SINGLE boot
+sample — eight times the boot capture, or three minutes, whichever is larger —
+so the way it breaks is a later capture dearer than boot's. Boot sampled
+83,390 ms here, the ceiling came out at 11.1 minutes, and no capture in the run
+reached it, including the ones at the pitch clamp with the ladder on, which is
+the expensive path. Nothing timed out anywhere and the run finished green.
+
+### What the software rasterizer disagreed with the GPU about, and what it did not
+
+Every claim about the PHYSICS came back identical. The tripwire read zero at
+all five ladder views on both machines. The whole-turn crossings matched the
+CPU's winding the same way at every view — 6, 9, 9, 6 and 6 crossings drawn,
+none missing, at worst offsets of 0.0101, 0.0269, 0.0092, 0.0090 and 0.0094
+half-turns, the same to four decimals on a 5090 and on SwiftShader. So did the
+ink in all thirty printed exponents, and so did every band-pixel count in
+slice 18's two jet views.
+
+What moved is small and, measured, not the rasterizer's doing. Captured-pixel
+counts moved by at most 22 in ~57,000 (0.04%); slice 13's median disk light
+went 0.1017 to 0.1005 at a = 0.9 and 0.1777 to 0.1568 at a = 0.998; slice 18's
+proportion went 132% to 129% at a = 0.9 and did not move at all at a = 0.998.
+
+Those look like differences until the same run is repeated on the same GPU,
+which is the control this comparison needs and did not originally have. Two
+GPU runs of `band` disagree with EACH OTHER by as much or more: captured pixels
+by up to 18, slice 13's median by 0.1017 against 0.1005 at a = 0.9 — the very
+number the software run produced — and 0.1777 against 0.1710 at a = 0.998, and
+slice 18 by 132% against 136%. The software rasterizer therefore sits inside
+the scatter this tool already has on one machine, with one exception worth
+naming rather than hiding: slice 13 at a = 0.998, where 0.1568 sits below both
+GPU readings. That median is taken over EIGHT pixels, so one pixel moving is
+the whole difference; it is a sample size, not a disagreement about light.
+
+Where the same-driver scatter itself comes from is not measured here. What it
+is for is calibration: a delta between two machines means nothing until you
+know what one machine does twice.
+
+### The one wait that was not counted in frames
+
+`frameTime` waited four seconds of wall clock and scraped the fps readout, and
+the comment above it argued that this HAD to be in milliseconds, because the
+readout averages over its own 500 ms window and waiting for frames would
+measure whatever that window happened to contain. The software run falsified
+that argument twice over in one line, printed twice:
+
+```
+frame time at the pitch clamp, ladder off: 0 fps - scene 12495.2 ms - 1280x800
+frame rate at the pitch clamp, ladder on:  0 fps - scene 12495.2 ms - 1280x800
+```
+
+A frame costs 12.5 s under SwiftShader, so four seconds bought ZERO frames and
+the second call scraped the first call's text — one measurement printed twice,
+identical to a tenth of a millisecond across a control change that was supposed
+to be the point of taking two. And the rate itself is not a quantity anyone can
+measure on such a machine: one frame in 12.5 s rounds to 0 fps however long you
+wait for it, so it repeated the frame period and told you nothing.
+
+So the rate is gone and the cost is counted rather than timed. Slice 19 had
+already put a GPU timer query behind `__sceneMs` — the minimum over the last
+sixteen readings, a minimum because frame pacing stalls some frames and a stall
+reads the whole frame period, which is not a cost. `sceneCost` now waits for
+sixteen FRESH readings, which is a wait on progress like every other wait in
+the harness, and reads the hook rather than the readout's text. Under
+SwiftShader that costs 213 s per call and returns two distinct numbers,
+13055.8 ms and 12785.2 ms, which is the check that the staleness is gone.
+
+It also makes the tool honest about something the old line was accidentally
+right about. The old comment said the frame rate was "an upper bound on the
+cost, not the cost", and the new number is an upper bound too, for a different
+reason: ladder off and ladder on both read 2.8 ms on the GPU, where the old
+scrape read 2.7 and 2.9 — two samples of the same statistic, half a run apart,
+read as a difference. The ladder's own cost is below what this measurement
+resolves, on either machine. Under SwiftShader the ladder-on reading came back
+2% BELOW ladder-off, which is the same statement in a noisier form.
+
+The Firefox and Safari branch is handled rather than assumed: with no timer
+extension there are no readings to wait for, `__sceneMsN` never moves, and the
+tool says "no GPU timer in this browser" instead of printing a number with
+nothing behind it.
 
 One thing the change buys that a merely longer wait would not: under SwiftShader
 `settle(TRAIL_FRAMES)` produced MORE trail than on the GPU, not less — 16785 and

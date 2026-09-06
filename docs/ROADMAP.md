@@ -383,7 +383,9 @@ Units are geometrized (G = c = M = 1) throughout.
     follow-ups, taken in the order its plan argued for. Items 1 and 2 were
     chased and closed with no code change (below); item 3 found a bug in the
     shipped controller and fixed it; item 4 stopped a converged still picture
-    redrawing at all; item 5 gave a touch screen the zoom it never had ✅
+    redrawing at all; item 5 gave a touch screen the zoom it never had. With
+    the plan finished, the last harness that had never run without a GPU was
+    run without one, and it caught a stale measurement ✅
     - 20a the harness can open a real window (`LAB_HEADED=1`) and can withhold
       the GPU timer extension from the page on hardware that has it
       (`LAB_NO_TIMER=1`), which is how the Firefox/Safari branch was exercised
@@ -467,6 +469,24 @@ Units are geometrized (G = c = M = 1) throughout.
       orbit branch is still alive rather than merely quiet; and two fingers
       moved together with the gap held change neither the distance nor a single
       pixel ✅
+    - 20h **the third harness under software GL, and the wait it caught.**
+      `npm run band` had never been run without a GPU — slice 17 called it
+      portable by argument, since its waits are the same `settle()` the other
+      two exercise. It is portable by measurement now: 5551 s against 111 s on
+      the GPU, a frame going 16.5 ms to 458.8 ms and a capture 82 ms to
+      83,390 ms, green, with no timeout firing. The capture ceiling was the
+      thing at risk, being eight times a single boot sample; boot gave 11.1
+      minutes and no capture came near it. Every physics figure matched to four
+      decimals — the tripwire zero at five views, 36 whole-turn crossings drawn
+      at the same worst offsets, the printed exponents, the jet's band counts —
+      and the handful of figures that moved move as much between two runs on
+      the SAME GPU, which is the control that reading them needs. What did NOT
+      port is the one wait counted in milliseconds: at 12.5 s a frame, four
+      seconds bought zero frames and the ladder-off and ladder-on cost lines
+      came back as the same stale text, twice. `frameTime` is now `sceneCost`,
+      waiting on sixteen fresh GPU-timer readings and reading `__sceneMs`
+      rather than scraping the readout — and the ladder's cost turns out to sit
+      below what either machine resolves ✅
 
 ## Open hurdles
 
@@ -656,7 +676,7 @@ fixed it; skipping the bloom, composite and HUD once a still picture has
 converged is 20e-20f, which turned out to be worth 6-8 W of board power rather
 than the rounding error it was queued as; and pinch to zoom is 20g.
 
-Four things measured and deliberately not acted on, in case they read as gaps
+Three things measured and deliberately not acted on, in case they read as gaps
 later:
 
 - **The sky as a cubemap was built, measured and taken back out.** The plan's
@@ -741,9 +761,6 @@ later:
   `M:\claud_projects\temp\blackhole-perf\seam-finding.md` has the full write-up
   and names the seven scripts behind it.
 
-- **`npm run band` has still not been run under software GL.** Slice 17 said so
-  and it is still true; slices 18 and 19 added checks to that harness rather
-  than changing how it waits.
 - **The jet's own emission model stays artistic.** Slice 18 moved its ENVELOPE
   and its geometric profile into `src/matter.ts` so the harness and the shader
   cannot drift apart, and moved nothing else: the fbm knots, the travelling

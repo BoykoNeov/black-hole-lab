@@ -975,27 +975,57 @@ async function checkJetLight(lab, label) {
   return { judged: 1, controlled: 1 };
 }
 
+/** Readings the app takes its own minimum over; see sceneMsRing in main.ts. */
+const TIMER_RING = 16;
+/** Frames to give the timer to fill that ring before reporting what it has. */
+const TIMER_PATIENCE = 8 * TIMER_RING;
+
 /**
- * Frames per second, from the lab's own readout after it has settled.
+ * What the scene pass costs at this view, from the GPU timer's own readings.
  *
- * The limiter is raised to its maximum first, or this measures the limiter. It
- * still cannot measure the second loop's cost: the browser drives the frame
- * from requestAnimationFrame, which will not run faster than the display, so
- * 60 is a CEILING and both readings sit on it. What that says is that the pole
- * passage does not eat the frame's headroom at 1280x800 — an upper bound on
- * the cost, not the cost. A real number would need a GPU timer query, which is
- * a change to the renderer rather than to this tool.
+ * This used to report the readout's frames per second after four seconds of
+ * wall clock, on the argument that the readout averages over its own 500 ms
+ * window and so could not be waited for in frames. A software-GL run
+ * falsified that argument twice over. A frame costs 12.5 s there, so four
+ * seconds bought ZERO frames and both calls scraped the same stale line — the
+ * same rate and the same cost to a tenth of a millisecond, ladder off and
+ * ladder on, which is one measurement printed twice. And the RATE is not a
+ * measurement anyone can make on such a machine: one frame in 12.5 s rounds to
+ * 0 fps however long the wait is, so it said nothing the frame period had not
+ * already said.
  *
- * The one wait left in here counted in milliseconds, and it has to be: the
- * readout averages over its own 500 ms window, so waiting for FRAMES would
- * measure whatever that window happened to contain. Four seconds of real time
- * is what makes the readout worth reading, on any machine.
+ * So the rate is gone and the cost is counted rather than timed. Slice 19 put
+ * a GPU timer query behind `__sceneMs`, the minimum over the last TIMER_RING
+ * readings — a minimum because frame pacing stalls some frames and a stall
+ * reads the whole frame period, which is not a cost. Waiting for that many
+ * FRESH readings is what makes the number this view's rather than the previous
+ * view's, and it is a wait on progress, so it costs what the machine costs.
+ *
+ * The limiter is still raised first: it does not change what the pass costs,
+ * but a capped frame rate is a capped reading rate, and this waits on readings.
  */
-async function frameTime(lab, label) {
+async function sceneCost(lab, label) {
   await lab.set({ fpslimit: 240 });
-  await lab.page.waitForTimeout(4000);
-  const text = await lab.page.evaluate(() => document.getElementById("fps-readout").textContent);
-  console.log(`${label}: ${text.trim()}`);
+  const readings = () => lab.page.evaluate(() => window.__sceneMsN ?? 0);
+  const before = await readings();
+  let n = before;
+  for (let f = 0; f < TIMER_PATIENCE && n < before + TIMER_RING; f++) {
+    await lab.settle(1);
+    n = await readings();
+  }
+  if (n === before) {
+    // Firefox and Safari withhold the extension, and then there is no cost to
+    // report at all — the readout drops its scene figure too. Say which of the
+    // two happened rather than printing a number with no reading behind it.
+    console.log(`${label}: no GPU timer in this browser`);
+    return;
+  }
+  const ms = await lab.page.evaluate(() => window.__sceneMs);
+  const fresh = n - before;
+  console.log(
+    `${label}: scene ${ms.toFixed(1)} ms` +
+      (fresh < TIMER_RING ? ` (over ${fresh} readings, not ${TIMER_RING})` : "")
+  );
 }
 
 /**
@@ -1067,9 +1097,9 @@ try {
   if (jetJudged === 0)
     fail("no view had enough band px to judge slice 18's jet light");
   await lab.set({ "edu-ladder": false, timespeed: 1 });
-  await frameTime(lab, "\nframe time at the pitch clamp, ladder off");
+  await sceneCost(lab, "\nscene pass at the pitch clamp, ladder off");
   await lab.set({ "edu-ladder": true });
-  await frameTime(lab, "frame rate at the pitch clamp, ladder on (60 = the display's ceiling)");
+  await sceneCost(lab, "scene pass at the pitch clamp, ladder on");
 } finally {
   await lab.close();
   await vite.close();
